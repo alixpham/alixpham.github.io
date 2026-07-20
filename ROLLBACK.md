@@ -48,3 +48,19 @@ git checkout <this-commit> -- index.html   # or re-copy the game entry
 | `/index-portfolio.html` | — | Portfolio (live backup) |
 | `/flagster/` | Flagster game | Flagster game (unchanged) |
 | `css/`, `js/`, `lib/`, `templates/`, `img/` | Portfolio assets | Portfolio assets (unchanged) |
+
+## Custom domain (alixpham.com)
+
+The `CNAME` file was **removed** so the site serves directly at
+`https://alixpham.github.io/`. Previously `CNAME` contained `alixpham.com`,
+which made GitHub Pages redirect there — but that domain's DNS points at Azure
+(`168.62.48.183`), not GitHub Pages, so the site was unreachable.
+
+To use `alixpham.com` again later:
+
+1. At your DNS registrar, point the apex domain at GitHub Pages and remove the
+   Azure `A 168.62.48.183` record:
+   - **A:** `185.199.108.153`, `185.199.109.153`, `185.199.110.153`, `185.199.111.153`
+   - **AAAA:** `2606:50c0:8000::153`, `2606:50c0:8001::153`, `2606:50c0:8002::153`, `2606:50c0:8003::153`
+2. Recreate the `CNAME` file with a single line: `alixpham.com`
+   (`echo alixpham.com > CNAME`), then commit and push.
