@@ -40,7 +40,7 @@
     { id: 'BRA', name: 'Brazil',        flag: '🇧🇷', colors: ['#009c3b', '#ffdf00'], alt: ['#ffdf00', '#002776'], rating: 77 },
     { id: 'AUT', name: 'Austria',       flag: '🇦🇹', colors: ['#ed2939', '#ffffff'], alt: ['#ffffff', '#ed2939'], rating: 81 },
     { id: 'DEN', name: 'Denmark',       flag: '🇩🇰', colors: ['#c8102e', '#ffffff'], alt: ['#ffffff', '#c8102e'], rating: 76 },
-    { id: 'ISR', name: 'Israel',        flag: '🇮🇱', colors: ['#0038b8', '#ffffff'], alt: ['#ffffff', '#0038b8'], rating: 78 },
+    { id: 'ESP', name: 'Spain',         flag: '🇪🇸', colors: ['#c60b1e', '#ffc400'], alt: ['#1a3a6b', '#c60b1e'], rating: 80 },
     { id: 'PAN', name: 'Panama',        flag: '🇵🇦', colors: ['#005293', '#da121a'], alt: ['#ffffff', '#005293'], rating: 75 }
   ];
 
@@ -58,7 +58,7 @@
     BRA: ['Silva','Santos','Oliveira','Souza','Costa','Pereira','Almeida','Lima','Gomes','Ribeiro','Carvalho','Rocha'],
     AUT: ['Gruber','Huber','Bauer','Wagner','Steiner','Moser','Berger','Fischer','Winkler','Lang','Egger','Wimmer'],
     DEN: ['Jensen','Nielsen','Hansen','Andersen','Larsen','Kristensen','Madsen','Sørensen','Møller','Holm','Dahl','Bech'],
-    ISR: ['Cohen','Levi','Mizrahi','Peretz','Biton','Avraham','Friedman','Katz','Shapira','Barak','Golan','Ronen'],
+    ESP: ['García','Martínez','López','Sánchez','Rodríguez','Fernández','González','Ruiz','Díaz','Moreno','Álvarez','Romero'],
     PAN: ['Barría','Quintero','Cedeño','Villarreal','Sánchez','Pinzón','Delgado','Aguilar','Batista','Espinoza','Serrano','Caballero']
   };
   var FIRST_NAMES = {
