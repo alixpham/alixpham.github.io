@@ -8,8 +8,9 @@ preserved and can be restored at any time — nothing was deleted.
 
 - **Live backup:** it still works at **`/index-portfolio.html`**
   (all its assets — `css/`, `js/`, `lib/`, `templates/`, `img/` — are untouched).
-- **Git tag:** `portfolio-site` points at the last commit where the portfolio
-  was the homepage.
+- **Git history:** the `master` branch still has the portfolio as its homepage,
+  so `master:index.html` is the original, unchanged portfolio entry point.
+  (A local tag `portfolio-site` also marks it, if present in your clone.)
 
 ## Roll back to the portfolio homepage
 
@@ -23,10 +24,10 @@ git commit -am "Restore portfolio as homepage"
 git push
 ```
 
-**B. From the git tag (restores the exact original index.html):**
+**B. From git history (restores the exact original index.html from master):**
 
 ```bash
-git checkout portfolio-site -- index.html
+git checkout master -- index.html
 git commit -m "Restore portfolio as homepage"
 git push
 ```
