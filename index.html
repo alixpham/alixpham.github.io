@@ -1,29 +1,32 @@
 <!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="initial-scale=1, maximum-scale=1, user-scalable=no, width=device-width">
-    <title>Anthony Alix-Pham</title>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0b3d1e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="description" content="Flagster — Olympic 5v5 flag football game. Play World quick play, Team Builder franchise, and Road to Glory superstar modes.">
+  <title>Flagster — Olympic Flag Football</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8F%88%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="flagster/css/flagster.css">
+  <!--
+    Flagster is now the homepage. The previous personal portfolio is preserved:
+      • live at  /index-portfolio.html
+      • git tag  portfolio-site
+    See ROLLBACK.md to restore the portfolio as the homepage.
+  -->
+</head>
+<body>
+  <div id="app"><div class="boot">Loading Flagster…</div></div>
 
-    <link href="lib/ionic/css/ionic.css" rel="stylesheet">
-    <link href="css/style.css" rel="stylesheet">
-
-    <!-- IF using Sass (run gulp sass first), then uncomment below and remove the CSS includes above
-    <link href="css/ionic.app.css" rel="stylesheet">
-    -->
-
-    <!-- ionic/angularjs js -->
-    <script src="lib/ionic/js/ionic.bundle.js"></script>
-
-    <!-- cordova script (this will be a 404 during development) -->
-    <script src="cordova.js"></script>
-
-    <!-- your app's js -->
-    <script src="js/app.js"></script>
-    <script src="js/controllers.js"></script>
-  </head>
-
-  <body ng-app="app">
-    <ion-nav-view></ion-nav-view>
-  </body>
+  <script src="flagster/js/data.js"></script>
+  <script src="flagster/js/storage.js"></script>
+  <script src="flagster/js/engine.js"></script>
+  <script src="flagster/js/ui.js"></script>
+  <script src="flagster/js/world.js"></script>
+  <script src="flagster/js/teambuilder.js"></script>
+  <script src="flagster/js/roadtoglory.js"></script>
+  <script src="flagster/js/main.js"></script>
+</body>
 </html>
