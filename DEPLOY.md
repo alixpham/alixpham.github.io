@@ -6,6 +6,7 @@ notable live deploy (newest first).
 
 | Date (UTC) | Commit | What shipped |
 | --- | --- | --- |
+| 2026-07-21 | `c7204a8fb6f7074e18a0a976ab19ea7b4ec67626` | Three.js top-down 3D player animations on the menu + this deploy doc (#4) |
 | 2026-07-21 | `d4cf30a30b46e2dd7d0249efb5a1cd2dda09ad87` | Replace Israel with Spain in the nations roster (#3) |
 | 2026-07-20 | `58436bfbf73f1c5ab459f49eedda01cc3d58e11b` | Remove CNAME — site serves at alixpham.github.io (#2) |
 | 2026-07-20 | `ae33742080bd49014bc0edeaf08a69b0ca5612e4` | Make Flagster the homepage (#1) |
