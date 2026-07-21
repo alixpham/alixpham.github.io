@@ -101,6 +101,7 @@
     var playersRef = null;
 
     var camFx = MID;           // smoothed camera focus (field X)
+    var camFz = null;          // smoothed camera lateral follow (world Z)
     var prevInAir = false;
 
     function makeRing() {
@@ -155,7 +156,10 @@
 
       var vx = gp.vx || 0, vy = gp.vy || 0;
       var speed = Math.hypot(vx, vy);
-      var moving = speed > 1.0;
+      // Only treat players as "moving" while the ball is live — between plays
+      // (playcall/presnap/dead/final) residual velocity must NOT keep them running.
+      var live = (state.phase === 'live');
+      var moving = live && speed > 1.0;
       var isOff = (gp.team === state.possession);
       var carrier = state.carrier;
       var ballInAir = !!(state.ball && state.ball.inAir);
@@ -224,12 +228,12 @@
         var sp = clamp(speed / 6, 0.6, 1.8);
         if (ud.celebT > 0) {
           P.play('celebrate');
-        } else if (backpedal) {
+        } else if (live && backpedal) {
           P.play('backpedal'); P.setSpeed(sp);
-        } else if (moving) {
+        } else if (live && moving) {
           P.play('run'); P.setSpeed(sp);
         } else {
-          P.play('idle');
+          P.play('idle');                       // stand down between/at end of plays
         }
       }
 
@@ -242,16 +246,30 @@
     function cols0(gp) { return gp.team === 'home' ? homeCols[0] : awayCols[0]; }
 
     function updateCamera(state, dt) {
+      // Madden-style: sit BEHIND the user's side and look downfield toward the
+      // opponent. Offense always attacks +x, so when the user is on offense the
+      // camera is behind -x looking +x; on defense it's behind +x looking -x.
       var focusFx = MID;
       if (state.carrier) focusFx = state.carrier.x;
       else if (state.ball && state.ball.inAir) focusFx = state.ball.x;
-      else if (state.losX != null) focusFx = state.losX + 4;
-      focusFx = clamp(focusFx, GOAL_L + 2, GOAL_R + 2);
-      camFx = lerp(camFx, focusFx, clamp(dt * 2.2, 0, 1));
+      else if (state.losX != null) focusFx = state.losX;
+      focusFx = clamp(focusFx, GOAL_L, GOAL_R);
+      camFx = lerp(camFx, focusFx, clamp(dt * 2.4, 0, 1));
+
+      var userSide = (engine && engine.userSide) || 'home';
+      var userOff = (state.possession === userSide);
+      var dir = userOff ? 1 : -1;               // +1: look toward +x ; -1: toward -x
+
+      // gentle lateral follow toward the ball for life
+      var focusFy = 0;
+      if (state.carrier) focusFy = state.carrier.y;
+      else if (state.ball) focusFy = state.ball.y;
+      camFz = (camFz == null) ? wz(focusFy) : lerp(camFz, wz(focusFy), clamp(dt * 2.0, 0, 1));
 
       var fxw = wx(camFx);
-      camera.position.set(fxw - 13, 27, 21);
-      camera.lookAt(fxw + 5, 0.5, 0);
+      var BEHIND = 17, HEIGHT = 10.5, AHEAD = 16;
+      camera.position.set(fxw - dir * BEHIND, HEIGHT, camFz * 0.55);
+      camera.lookAt(fxw + dir * AHEAD, 1.6, camFz * 0.3);
     }
 
     // ---------------------------- RESIZE -----------------------------------
