@@ -119,6 +119,34 @@
       userSide: cfg.userSide, quarters: cfg.quarters, quarterLen: cfg.quarterLen,
       startPossession: cfg.startPossession || 'away', rtg: cfg.rtg
     });
+
+    // --- Optional 3D field renderer (Three.js). Falls back to 2D canvas if
+    // THREE / WebGL is unavailable, or if the 3D renderer errors mid-game. ---
+    this.field3d = null;
+    if (global.THREE && global.FLAGSTER.Field3D) {
+      var gl3d = h('canvas', { class: 'field-canvas field-canvas-3d', id: 'flag-field-3d' });
+      if (canvas.nextSibling) wrap.insertBefore(gl3d, canvas.nextSibling);
+      else wrap.appendChild(gl3d);
+      try {
+        var f3 = global.FLAGSTER.Field3D.mount(gl3d, eng);
+        if (f3) {
+          this.field3d = f3;
+          this.canvas3d = gl3d;
+          canvas.style.display = 'none';              // hide the 2D canvas
+          eng.externalRender = function (state) { f3.render(state); };
+          eng.onExternalFail = function () {           // hard fallback to 2D
+            try { f3.stop(); } catch (e) {}
+            gl3d.remove(); self.field3d = null;
+            canvas.style.display = '';
+          };
+        } else {
+          gl3d.remove();
+        }
+      } catch (e) {
+        gl3d.remove();
+        if (global.console) console.warn('Flagster: 3D field unavailable, using 2D renderer.', e);
+      }
+    }
     // team abbreviations for HUD
     cfg.home.abbr = cfg.home.id; cfg.away.abbr = cfg.away.id;
 
@@ -132,6 +160,7 @@
   GameShell.prototype.destroy = function () {
     if (this._tick) clearInterval(this._tick);
     if (this.engine) this.engine.stop();
+    if (this.field3d) { try { this.field3d.stop(); } catch (e) {} this.field3d = null; }
   };
 
   GameShell.prototype._onEngineEvent = function (ev) {
@@ -183,6 +212,17 @@
     }
     // Snap prompt on presnap
     if (s.phase === 'presnap') this._presnapHint();
+
+    // Flash message: the 2D renderer paints this onto its canvas, but the 3D
+    // renderer does not, so surface it via the DOM banner when 3D is active.
+    if (this.field3d && this.banner) {
+      if (s.message && eng._t < s.flashUntil) {
+        this.banner.textContent = s.message;
+        this.banner.classList.remove('hidden');
+      } else {
+        this.banner.classList.add('hidden');
+      }
+    }
   };
 
   GameShell.prototype._presnapHint = function () {

@@ -64,8 +64,44 @@
     var confetti = makeConfetti(THREE);
     scene.add(confetti.group);
 
+    // ---- Ball controller (shared prop; owned by whichever move holds it) ---
+    // Modes: 'idle' (hidden), 'held' (positioned by an animation each frame),
+    // 'flight' (projectile physics — arcs downfield and lands).
+    var ballCtrl = {
+      mesh: ball,
+      mode: 'idle',
+      vx: 0, vy: 0, vz: 0,
+      hold: function (x, y, z) { this.mode = 'held'; this.mesh.visible = true; this.mesh.position.set(x, y, z); },
+      hide: function () { this.mode = 'idle'; this.mesh.visible = false; },
+      launch: function (x, y, z, vx, vy, vz) {
+        this.mesh.position.set(x, y, z);
+        this.vx = vx; this.vy = vy; this.vz = vz;
+        this.mode = 'flight'; this.mesh.visible = true;
+      },
+      update: function (dt) {
+        if (this.mode !== 'flight') return;
+        this.vy -= 9 * dt;
+        this.mesh.position.x += this.vx * dt;
+        this.mesh.position.y += this.vy * dt;
+        this.mesh.position.z += this.vz * dt;
+        this.mesh.rotation.x += 8 * dt; this.mesh.rotation.z += 3 * dt;
+        if (this.mesh.position.y < 0.2) this.hide();
+      }
+    };
+
+    // ---- Move rotation --------------------------------------------------
+    // Each player cycles through a list of animations, switching every few
+    // seconds. Poses are reset on each switch so transitions aren't jarring.
+    // The ball is only ever touched by the "star" (red) rotation, and the
+    // loose flag only by the defender (green) rotation, so props never fight.
+    var ctx = { ball: ballCtrl, looseFlag: looseFlag, confetti: confetti, THREE: THREE };
+
+    setupRotation(runner,   ['run', 'juke', 'highstep', 'run'],           { x: -3.4, z: 0 },   0.0);
+    setupRotation(star,     ['celebrate', 'throw', 'celebrate', 'dive'],  { x: 0,    z: 0.2 }, 1.5);
+    setupRotation(defender, ['flagpull', 'run', 'highstep', 'flagpull'],  { x: 3.4,  z: 0 },   3.0);
+
     // ---- Animation state ---------------------------------------------------
-    var raf = null, t0 = null, running = true;
+    var raf = null, t0 = null, lastT = null, running = true;
 
     function resize() {
       var w = canvas.clientWidth || canvas.parentElement.clientWidth || 600;
@@ -94,15 +130,20 @@
     function frame(t) {
       if (!running) return;
       if (!canvas.isConnected) { cleanup(); return; } // self-clean on navigation
-      if (t0 == null) t0 = t;
+      if (t0 == null) { t0 = t; lastT = t; }
       var time = (t - t0) / 1000;
+      var dt = Math.min((t - lastT) / 1000, 0.05); // clamp for tab-switch jumps
+      lastT = t;
+
       camera.position.x = Math.sin(time * 0.25) * 0.5; // gentle sway
       camera.lookAt(0, 0.7, -0.2);
 
-      animateRun(runner, time);
-      animateCelebrate(star, ball, confetti, time);
-      animateFlagPull(defender, looseFlag, time);
-      confetti.update(0.016);
+      updatePlayer(runner, time, ctx);
+      updatePlayer(star, time, ctx);
+      updatePlayer(defender, time, ctx);
+
+      ballCtrl.update(dt);
+      confetti.update(dt);
 
       renderer.render(scene, camera);
       raf = global.requestAnimationFrame(frame);
@@ -251,19 +292,198 @@
     return { group: group, burst: burst, update: update };
   }
 
+  /* --------------------- MOVE ROTATION / STATE MACHINE ------------------- */
+  // How long (seconds) each kind of move plays before rotating to the next.
+  var MOVE_DUR = {
+    run: 5.0, juke: 4.5, highstep: 4.5,
+    throw: 5.5, dive: 4.2, celebrate: 5.0, flagpull: 5.0
+  };
+
+  function setupRotation(p, moves, base, startOffset) {
+    var d = p.userData;
+    d.moves = moves;
+    d.base = base;
+    d.moveIdx = 0;
+    // Negative moveStart advances a player into its first move so the three
+    // players are out of phase with each other from frame one.
+    d.moveStart = -(startOffset || 0);
+    resetPose(p, base);
+  }
+
+  function resetPose(p, base) {
+    var d = p.userData;
+    d.torso.rotation.set(0, 0, 0);
+    d.head.rotation.set(0, 0, 0);
+    d.lArm.rotation.set(0, 0, 0); d.rArm.rotation.set(0, 0, 0);
+    d.lLeg.rotation.set(0, 0, 0); d.rLeg.rotation.set(0, 0, 0);
+    d.lFlag.rotation.set(0, 0, 0); d.rFlag.rotation.set(0, 0, 0);
+    p.rotation.set(0, 0, 0);
+    p.position.set(base.x, 0, base.z);
+    p._spiked = p._thrown = p._dove = p._caught = p._pulled = false;
+  }
+
+  function updatePlayer(p, time, ctx) {
+    var d = p.userData;
+    var name = d.moves[d.moveIdx];
+    var dur = MOVE_DUR[name] || 5;
+    if (time - d.moveStart >= dur) {
+      d.moveIdx = (d.moveIdx + 1) % d.moves.length;
+      d.moveStart = time;
+      resetPose(p, d.base);
+      name = d.moves[d.moveIdx];
+    }
+    var lt = time - d.moveStart;           // local time within this move
+    if (lt < 0) lt = 0;
+    (ANIMS[name] || ANIMS.run)(p, lt, d.base, ctx);
+  }
+
   /* --------------------------- ANIMATIONS -------------------------------- */
-  function animateRun(p, t) {
+  var ANIMS = {
+    run: animateRun,
+    juke: animateJuke,
+    highstep: animateHighStep,
+    throw: animateThrow,
+    dive: animateDive,
+    celebrate: animateCelebrate,
+    flagpull: animateFlagPull
+  };
+
+  // Weaving run — pumps limbs, bobs, and jukes side to side around home.
+  function animateRun(p, t, base) {
     var d = p.userData, swing = Math.sin(t * 9) * 0.9;
     d.lLeg.rotation.x = swing; d.rLeg.rotation.x = -swing;
     d.lArm.rotation.x = -swing; d.rArm.rotation.x = swing;
     p.position.y = Math.abs(Math.sin(t * 9)) * 0.12;        // stride bob
-    p.position.x = -3.4 + Math.sin(t * 1.1) * 1.7;          // weave/juke
-    p.rotation.y = Math.sin(t * 1.1 + Math.PI / 2) * 0.5;   // lean into cuts
+    p.position.x = base.x + Math.sin(t * 1.3) * 1.5;        // weave/juke
+    p.rotation.y = Math.cos(t * 1.3) * 0.45;                // lean into cuts
     d.lFlag.rotation.x = -swing * 0.6; d.rFlag.rotation.x = swing * 0.6;
   }
 
-  function animateCelebrate(p, ball, confetti, t) {
+  // Juke spin — a jog that periodically breaks into a full 360 spin move.
+  function animateJuke(p, t, base) {
+    var d = p.userData, sw = Math.sin(t * 10) * 0.8;
+    d.lLeg.rotation.x = sw; d.rLeg.rotation.x = -sw;
+    d.lArm.rotation.x = -sw * 0.7; d.rArm.rotation.x = sw * 0.7;
+    p.position.y = Math.abs(Math.sin(t * 10)) * 0.1;
+    p.position.x = base.x + Math.sin(t * 1.1) * 1.2;
+    var C = 1.9, ph = (t % C) / C, spin;
+    if (ph < 0.4) spin = 0;
+    else if (ph < 0.72) spin = ((ph - 0.4) / 0.32) * Math.PI * 2;  // whip around
+    else spin = Math.PI * 2;
+    p.rotation.y = spin;
+    p.rotation.z = Math.sin(spin) * 0.16;                   // lean through the cut
+  }
+
+  // High-step strut — exaggerated knee lifts, chest puffed, showboating.
+  function animateHighStep(p, t, base) {
     var d = p.userData;
+    d.lLeg.rotation.x = Math.max(0, Math.sin(t * 6.5)) * 1.35;
+    d.rLeg.rotation.x = Math.max(0, Math.sin(t * 6.5 + Math.PI)) * 1.35;
+    d.lArm.rotation.x = -Math.sin(t * 6.5) * 0.8;
+    d.rArm.rotation.x = Math.sin(t * 6.5) * 0.8;
+    p.position.y = Math.abs(Math.sin(t * 6.5)) * 0.16;
+    p.position.x = base.x + Math.sin(t * 0.7) * 0.8;        // slow strut drift
+    p.rotation.y = Math.sin(t * 0.7) * 0.25;
+    d.torso.rotation.x = -0.14;                             // chest out
+    d.lFlag.rotation.x = d.lLeg.rotation.x * -0.4;
+    d.rFlag.rotation.x = d.rLeg.rotation.x * -0.4;
+  }
+
+  // QB drop-back + throw — winds up and RELEASES the ball, which arcs downfield.
+  function animateThrow(p, t, base, ctx) {
+    var d = p.userData, ball = ctx.ball;
+    var C = 2.6, ph = (t % C) / C;
+    if (ph < 0.3) {
+      // drop back into the pocket, ball cradled at chest
+      var k = ph / 0.3;
+      p.position.z = base.z + k * 0.6;
+      p.position.y = Math.abs(Math.sin(t * 11)) * 0.05;
+      d.lLeg.rotation.x = Math.sin(t * 11) * 0.25;
+      d.rLeg.rotation.x = -Math.sin(t * 11) * 0.25;
+      d.rArm.rotation.x = -0.6; d.rArm.rotation.z = -0.3;
+      d.lArm.rotation.x = -1.0;
+      ball.hold(base.x - 0.2, 1.55, p.position.z + 0.1);
+      p._thrown = false;
+    } else if (ph < 0.46) {
+      // wind up — cock the arm back, rotate the torso
+      var k2 = (ph - 0.3) / 0.16;
+      p.position.z = base.z + 0.6;
+      p.position.y = 0;
+      d.rArm.rotation.x = -0.6 - k2 * 2.5;
+      d.rArm.rotation.z = -0.3 - k2 * 0.3;
+      d.torso.rotation.y = k2 * 0.5;
+      d.lArm.rotation.x = -1.2;
+      ball.hold(base.x - 0.38, 1.7 + k2 * 0.45, base.z + 0.7);
+    } else if (ph < 0.54) {
+      // release — whip the arm through and launch the ball downfield
+      var k3 = (ph - 0.46) / 0.08;
+      d.rArm.rotation.x = -3.1 + k3 * 3.7;
+      d.rArm.rotation.z = -0.6 + k3 * 0.6;
+      d.torso.rotation.y = 0.5 - k3 * 0.7;
+      if (!p._thrown) {
+        p._thrown = true;
+        ball.launch(base.x - 0.1, 2.15, base.z + 0.4,
+          (Math.random() - 0.5) * 1.2, 4.6, -4.2);
+      }
+    } else {
+      // follow through + reset back toward the line
+      var k4 = (ph - 0.54) / 0.46;
+      p.position.z = base.z + 0.6 * (1 - k4);
+      p.position.y = 0;
+      d.rArm.rotation.x = 0.6 * (1 - k4);
+      d.rArm.rotation.z = 0.15 * (1 - k4);
+      d.torso.rotation.y = -0.18 * (1 - k4);
+      d.lArm.rotation.x = -0.4 * (1 - k4);
+    }
+  }
+
+  // Diving catch — runs up, launches horizontal with arms extended to snag a
+  // pass, secures it on the turf, then pops up presenting the ball.
+  function animateDive(p, t, base, ctx) {
+    var d = p.userData, ball = ctx.ball;
+    var C = 4.2, ph = (t % C) / C;
+    if (ph < 0.25) {
+      // sprint up while the pass sails in from downfield
+      var k = ph / 0.25, sw = Math.sin(t * 11) * 0.7;
+      d.lLeg.rotation.x = sw; d.rLeg.rotation.x = -sw;
+      d.lArm.rotation.x = -sw; d.rArm.rotation.x = sw;
+      p.position.y = Math.abs(Math.sin(t * 11)) * 0.1;
+      ball.hold(base.x + (1 - k) * 1.8, 1.6 + (1 - k) * 1.4, base.z - 2.4 + k * 1.3);
+      p._dove = false; p._caught = false;
+    } else if (ph < 0.5) {
+      // DIVE — pitch forward, body horizontal, both arms stretched out
+      var k2 = (ph - 0.25) / 0.25, arc = Math.sin(k2 * Math.PI);
+      p.position.z = base.z - k2 * 1.9;
+      p.position.y = arc * 0.6;
+      p.rotation.x = -k2 * 1.25;
+      d.lArm.rotation.x = -2.7; d.rArm.rotation.x = -2.7;
+      d.lArm.rotation.z = 0.3; d.rArm.rotation.z = -0.3;
+      d.lLeg.rotation.x = 0.5; d.rLeg.rotation.x = 0.5;
+      ball.hold(p.position.x, 1.15 + arc * 0.45, p.position.z - 0.7);
+      if (!p._caught && k2 > 0.55) { ctx.confetti.burst(p.position.x, 1.2, p.position.z - 0.6); p._caught = true; }
+    } else if (ph < 0.64) {
+      // landed — ball tucked, sprawled on the turf
+      p.position.z = base.z - 1.9;
+      p.position.y = 0;
+      p.rotation.x = -1.25;
+      d.lArm.rotation.x = -2.2; d.rArm.rotation.x = -2.2;
+      ball.hold(p.position.x, 0.5, p.position.z - 0.55);
+    } else {
+      // pop up and present the catch
+      var k4 = (ph - 0.64) / 0.36;
+      p.position.z = base.z - 1.9 * (1 - k4);
+      p.position.y = 0;
+      p.rotation.x = -1.25 * (1 - k4);
+      d.lArm.rotation.x = -2.4 + Math.sin(t * 10) * 0.15;
+      d.rArm.rotation.x = -2.4 + Math.cos(t * 10) * 0.15;
+      ball.hold(p.position.x, 1.4 + k4 * 0.6, p.position.z);
+      if (k4 > 0.85) ball.hide();
+    }
+  }
+
+  // Catch, spike, and confetti celebration (the crowd-pleaser).
+  function animateCelebrate(p, t, base, ctx) {
+    var d = p.userData, ball = ctx.ball, confetti = ctx.confetti;
     var C = 3.2, ph = (t % C) / C;    // 0..1 cycle
     if (ph < 0.35) {
       // gather + leap to catch
@@ -271,25 +491,24 @@
       p.position.y = Math.sin(k * Math.PI) * 0.7;
       d.lArm.rotation.x = -2.4 * k; d.rArm.rotation.x = -2.4 * k;
       d.lLeg.rotation.x = 0.5 * k; d.rLeg.rotation.x = -0.3 * k;
-      ball.position.set(0, 1.4 + Math.sin(k * Math.PI) * 1.4, 0.4 - k * 0.1);
-      ball.visible = true; p._spiked = false;
+      ball.hold(base.x, 1.4 + Math.sin(k * Math.PI) * 1.4, base.z + 0.2 - k * 0.1);
+      p._spiked = false;
     } else if (ph < 0.5) {
       // caught — bring ball down
       var k2 = (ph - 0.35) / 0.15;
       p.position.y = (1 - k2) * 0.2;
       d.lArm.rotation.x = -2.4 + k2 * 1.2; d.rArm.rotation.x = -2.4 + k2 * 1.2;
-      ball.position.set(0, 2.0 - k2 * 0.5, 0.35);
+      ball.hold(base.x, 2.0 - k2 * 0.5, base.z + 0.15);
     } else if (ph < 0.62) {
       // spike!
-      if (!p._spiked) { confetti.burst(0, 2.4, 0.2); p._spiked = true; }
+      if (!p._spiked) { confetti.burst(base.x, 2.4, base.z); p._spiked = true; }
       var k3 = (ph - 0.5) / 0.12;
       d.rArm.rotation.x = -1.2 - k3 * 1.6;
-      ball.position.set(0.1, 1.8 - k3 * 1.6, 0.4);
-      ball.rotation.z += 0.5;
+      ball.hold(base.x + 0.1, 1.8 - k3 * 1.6, base.z + 0.2);
+      ball.mesh.rotation.z += 0.5;
     } else {
       // celebrate: arms up, little hops
-      ball.visible = false;
-      var k4 = (ph - 0.62) / 0.38;
+      ball.hide();
       d.lArm.rotation.x = -2.6 + Math.sin(t * 12) * 0.2;
       d.rArm.rotation.x = -2.6 + Math.cos(t * 12) * 0.2;
       d.lLeg.rotation.x = 0; d.rLeg.rotation.x = 0;
@@ -298,8 +517,9 @@
     }
   }
 
-  function animateFlagPull(p, looseFlag, t) {
-    var d = p.userData;
+  // Defender lunges, rips a flag, and it spins loose into the air.
+  function animateFlagPull(p, t, base, ctx) {
+    var d = p.userData, looseFlag = ctx.looseFlag;
     var C = 2.8, ph = (t % C) / C;
     if (ph < 0.4) {
       // jog forward toward the "ball carrier"
@@ -317,7 +537,7 @@
       // RIP — flag flies loose
       if (!p._pulled) {
         looseFlag.visible = true;
-        looseFlag.position.set(p.position.x + 0.3, 0.9, 0.2);
+        looseFlag.position.set(p.position.x + 0.3, 0.9, base.z + 0.2);
         p._pulled = true;
       }
       looseFlag.position.y += 0.09; looseFlag.rotation.z += 0.4; looseFlag.rotation.x += 0.3;

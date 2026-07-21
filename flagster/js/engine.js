@@ -987,7 +987,18 @@
       var dt = Math.min(0.05, (t - self.lastT) / 1000);
       self.lastT = t; self._t = t; self._dt = dt;
       self._update(dt);
-      self._render();
+      // Optional external renderer (e.g. Three.js 3D field). When present it
+      // replaces the 2D field draw; the simulation keeps updating unchanged.
+      if (self.externalRender) {
+        try { self.externalRender(self.state); }
+        catch (e) {
+          self._extErr = (self._extErr || 0) + 1;
+          if (self._extErr > 5) { self.externalRender = null; if (self.onExternalFail) self.onExternalFail(e); }
+          self._render();
+        }
+      } else {
+        self._render();
+      }
       self.raf = global.requestAnimationFrame(frame);
     }
     this.raf = global.requestAnimationFrame(frame);

@@ -30,3 +30,7 @@ node_modules
 .lock-wscript
 
 .idea
+# transient test artifacts
+node_modules/
+scratch-*
+_t3d_test.js
