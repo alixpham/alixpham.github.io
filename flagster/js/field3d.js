@@ -15,6 +15,13 @@
 
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
   function lerp(a, b, t) { return a + (b - a) * t; }
+  // Interpolate an angle along the shortest path (radians).
+  function lerpAngle(a, b, t) {
+    var d = b - a;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    return a + d * t;
+  }
 
   // Field constants (yards) — mirror engine.js
   var F = (global.FLAGSTER && global.FLAGSTER.Engine && global.FLAGSTER.Engine.FIELD) ||
@@ -96,57 +103,145 @@
         var cols = gp.team === 'home' ? homeCols : awayCols;
         var isOff = engine.offenseTeam ? (gp.team === engine.offenseTeam()) : true;
         var m = makePlayer(THREE, cols[0], cols[1], (gp.last || '').toUpperCase());
+        // Seed facing: offense looks downfield (+x), defense looks at offense (-x).
+        m.userData.yaw = isOff ? 0 : Math.PI;
+        m.rotation.y = -m.userData.yaw;
         scene.add(m);
         pMeshes.push(m);
       });
       playersRef = players;
     }
 
+    // Set a jointed limb's shoulder/hip swing + elbow/knee bend in one call.
+    function setLimb(l, root, bend) {
+      l.rotation.z = root;
+      l.userData.joint.rotation.z = bend;
+    }
+
     function syncPlayer(m, gp, dt, state) {
       var ud = m.userData;
       m.position.x = wx(gp.x);
       m.position.z = wz(gp.y);
-      m.rotation.y = -(gp.ang || 0);
 
-      var speed = Math.hypot(gp.vx || 0, gp.vy || 0);
-      var amp = clamp(speed / 9, 0, 1);
-      ud.phase += dt * (6 + speed * 0.9);
-      var swing = Math.sin(ud.phase) * (0.25 + amp * 0.95);
+      var vx = gp.vx || 0, vy = gp.vy || 0;
+      var speed = Math.hypot(vx, vy);
+      var moving = speed > 1.0;
+      var amp = clamp(speed / 8, 0, 1);
+      var isOff = (gp.team === state.possession);
 
-      // Throw motion timer (QB whip)
+      // ---- Timers ----------------------------------------------------------
       var throwing = ud.throwT > 0;
       if (throwing) ud.throwT = Math.max(0, ud.throwT - dt);
-      // Catch reach: this player is the target of a ball in the air
-      var reaching = state.ball && state.ball.inAir && state.thrownTo === gp;
+      if (ud.celebT > 0) ud.celebT = Math.max(0, ud.celebT - dt);
+      var reaching = !!(state.ball && state.ball.inAir && state.thrownTo === gp);
 
+      // ---- FACING: pick a target yaw (field-angle space) by role ----------
+      var yawT = ud.yaw;
+      var carrier = state.carrier;
+      var ballInAir = !!(state.ball && state.ball.inAir);
       if (throwing) {
-        var k = 1 - (ud.throwT / 0.45);            // 0..1
-        ud.rArm.rotation.x = -2.6 + k * 3.4;       // wind back -> whip forward
-        ud.rArm.rotation.z = -0.3 * (1 - k);
-        ud.lArm.rotation.x = -0.6;
-        ud.lLeg.rotation.x = 0.3; ud.rLeg.rotation.x = -0.2;
-        m.position.y = 0;
+        // QB faces the throw target at/around release.
+        var to = (state.ball && state.ball.to) || state.thrownTo;
+        if (to) yawT = Math.atan2(to.y - gp.y, to.x - gp.x);
       } else if (reaching) {
-        ud.lArm.rotation.x = -2.5; ud.rArm.rotation.x = -2.5;
-        ud.lArm.rotation.z = 0.2; ud.rArm.rotation.z = -0.2;
-        ud.lLeg.rotation.x = swing * 0.6; ud.rLeg.rotation.x = -swing * 0.6;
-        m.position.y = 0.15;
+        // Receiver turns to the incoming ball.
+        yawT = Math.atan2(state.ball.y - gp.y, state.ball.x - gp.x);
+      } else if (carrier === gp) {
+        if (moving) yawT = Math.atan2(vy, vx);        // ball carrier faces motion
+      } else if (isOff) {
+        if (moving) yawT = Math.atan2(vy, vx);        // receivers/QB face motion
       } else {
-        ud.lLeg.rotation.x = swing; ud.rLeg.rotation.x = -swing;
-        ud.lArm.rotation.x = -swing; ud.rArm.rotation.x = swing;
-        ud.lArm.rotation.z = 0; ud.rArm.rotation.z = 0;
-        m.position.y = Math.abs(Math.sin(ud.phase)) * 0.09 * amp;
+        // DEFENSE: face the thing they're playing (QB pre-throw -> ball in air
+        // -> ball carrier). This makes DBs backpedal (face offense while
+        // velocity points downfield) and rushers face the QB.
+        var chase = carrier ||
+                    (ballInAir && state.ball.to ? state.ball.to : null) ||
+                    state.thrownTo;
+        if (chase) yawT = Math.atan2(chase.y - gp.y, chase.x - gp.x);
+        else if (moving) yawT = Math.atan2(vy, vx);
       }
+      // Smooth toward target (shortest path); keep last facing when idle.
+      ud.yaw = lerpAngle(ud.yaw, yawT, clamp(10 * dt, 0, 1));
+      m.rotation.y = -ud.yaw;                          // model forward is local +X
+
+      // Backpedal = facing roughly opposite to velocity (defensive coverage).
+      var fwdDot = moving ? (Math.cos(ud.yaw) * vx + Math.sin(ud.yaw) * vy) : 0;
+      var backpedal = !isOff && moving && fwdDot < -0.4;
+
+      // ---- Gait phase ------------------------------------------------------
+      ud.phase += dt * (7 + speed * (backpedal ? 1.7 : 1.15));
+      var s = Math.sin(ud.phase);
+      var swing = s * (0.45 + amp * 0.7) * (backpedal ? 0.5 : 1);
+
+      // Nearest defender to the carrier gets a flag-rip reach pose.
+      var rip = false;
+      if (!isOff && carrier && carrier !== gp) {
+        var dxr = carrier.x - gp.x, dyr = carrier.y - gp.y;
+        if (dxr * dxr + dyr * dyr < 2.4) rip = true;   // within ~1.55 yd
+      }
+
+      var lean = -0.16 - amp * 0.12;                   // forward torso lean
+      var twist = 0, bob = 0, crouch = 0;
+
+      if (ud.celebT > 0) {
+        // Small celebration after a pull: arms up, quick hops.
+        var ch = Math.abs(Math.sin(ud.celebT * 22));
+        setLimb(ud.lArm, -2.3, -0.4); setLimb(ud.rArm, -2.3, -0.4);
+        setLimb(ud.lLeg, 0.15, -0.35); setLimb(ud.rLeg, -0.15, -0.35);
+        lean = 0.0; bob = ch * 0.22;
+      } else if (throwing) {
+        var k = 1 - (ud.throwT / 0.45);                // 0..1 release progress
+        setLimb(ud.rArm, lerp(-2.4, 0.9, k), lerp(-1.9, 0.15, k)); // over-the-top whip
+        setLimb(ud.lArm, lerp(1.1, 0.25, k), 1.1);    // off arm aims then tucks
+        setLimb(ud.lLeg, 0.32, -0.45); setLimb(ud.rLeg, -0.38, -0.55); // plant/stagger
+        twist = lerp(0.55, -0.45, k); lean = -0.22;
+      } else if (reaching) {
+        // Extend both arms toward the ball, then secure.
+        setLimb(ud.lArm, 1.6, 0.15); setLimb(ud.rArm, 1.6, 0.15);
+        setLimb(ud.lLeg, swing * 0.7, -0.4 - Math.max(0, swing) * 0.8);
+        setLimb(ud.rLeg, -swing * 0.7, -0.4 - Math.max(0, -swing) * 0.8);
+        lean = -0.28; bob = Math.abs(s) * 0.06 * amp;
+      } else if (rip) {
+        // Lower hips and rip a flag across at hip height.
+        setLimb(ud.rArm, 1.5, 0.5); setLimb(ud.lArm, 0.6, 1.2);
+        setLimb(ud.lLeg, 0.2, -0.7); setLimb(ud.rLeg, -0.2, -0.7);
+        lean = -0.3; crouch = 0.12;
+      } else if (moving) {
+        // Run cycle: arms bent ~90 pumping in opposition to driving legs.
+        setLimb(ud.lLeg, swing, -0.35 - Math.max(0, swing) * 0.9);
+        setLimb(ud.rLeg, -swing, -0.35 - Math.max(0, -swing) * 0.9);
+        setLimb(ud.lArm, -swing * 0.9, 1.4);
+        setLimb(ud.rArm, swing * 0.9, 1.4);
+        twist = -s * 0.12 * amp; bob = Math.abs(s) * 0.08 * amp;
+        if (backpedal) { crouch = 0.1; lean = -0.05; }
+      } else {
+        // Athletic ready stance: knees bent, hips low, arms carried bent ~90.
+        setLimb(ud.lLeg, 0.1, -0.4); setLimb(ud.rLeg, -0.1, -0.4);
+        setLimb(ud.lArm, 0.18, 1.45); setLimb(ud.rArm, -0.18, 1.45);
+        lean = -0.14; crouch = 0.06;
+      }
+
+      ud.upper.rotation.z = lean;
+      ud.upper.rotation.y = twist;
+      m.position.y = bob - crouch;
 
       // Flag ribbons: swing while running, hidden once pulled.
       var showFlags = !gp.flagPulled;
       ud.lFlag.visible = showFlags; ud.rFlag.visible = showFlags;
       if (showFlags) { ud.lFlag.rotation.x = -swing * 0.6; ud.rFlag.rotation.x = swing * 0.6; }
 
-      // Flag-pull effect on the transition to pulled.
+      // Flag-pull effect on the transition to pulled: burst + tag the puller.
       if (gp.flagPulled && !ud._wasPulled) {
         flags.burst(m.position.x, 0.9, m.position.z, cols0(gp));
         ud._wasPulled = true;
+        var nd = 1e9, nm = null;
+        for (var pi = 0; pi < pMeshes.length; pi++) {
+          var op = state.players[pi];
+          if (!op || op.team === gp.team) continue;   // defenders only
+          var ddx = op.x - gp.x, ddy = op.y - gp.y, dd = ddx * ddx + ddy * ddy;
+          if (dd < nd) { nd = dd; nm = pMeshes[pi]; }
+        }
+        if (nm) nm.userData.celebT = 0.8;
       }
       if (!gp.flagPulled) ud._wasPulled = false;
 
@@ -315,12 +410,41 @@
   }
 
   /* =============================== PLAYER ================================ */
-  function limb(THREE, w, h, d, color) {
-    var pivot = new THREE.Group();
-    var m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshLambertMaterial({ color: color }));
-    m.position.y = -h / 2;                 // hang from the pivot
-    pivot.add(m);
-    return pivot;
+  // A 2-segment limb. Root group pivots at the shoulder/hip; userData.joint is
+  // the elbow/knee sub-pivot at the end of the upper segment. Both segments
+  // hang along -Y so a swing (rotation.z on root) moves the limb fore/aft, and
+  // a bend (rotation.z on joint) flexes the elbow/knee. Model forward is +X, so
+  // left/right is the Z axis and all running motion is rotation about Z.
+  function makeLimb(THREE, cfg) {
+    var root = new THREE.Group();
+    var upper = new THREE.Mesh(
+      new THREE.BoxGeometry(cfg.w, cfg.upLen, cfg.d),
+      new THREE.MeshLambertMaterial({ color: cfg.upColor })
+    );
+    upper.position.y = -cfg.upLen / 2;
+    root.add(upper);
+
+    var joint = new THREE.Group();
+    joint.position.y = -cfg.upLen;
+    root.add(joint);
+
+    var lower = new THREE.Mesh(
+      new THREE.BoxGeometry(cfg.w * 0.9, cfg.loLen, cfg.d * 0.9),
+      new THREE.MeshLambertMaterial({ color: cfg.loColor })
+    );
+    lower.position.y = -cfg.loLen / 2;
+    joint.add(lower);
+
+    if (cfg.foot) {
+      var foot = new THREE.Mesh(
+        new THREE.BoxGeometry(0.34, 0.12, cfg.w * 1.05),
+        new THREE.MeshLambertMaterial({ color: 0x15181d })
+      );
+      foot.position.set(0.09, -cfg.loLen - 0.05, 0);   // extends forward (+X)
+      joint.add(foot);
+    }
+    root.userData = { joint: joint, upper: upper, lower: lower };
+    return root;
   }
 
   function makePlayer(THREE, primaryHex, secondaryHex, name) {
@@ -328,6 +452,7 @@
     var primary = toColor(THREE, primaryHex);
     var secondary = toColor(THREE, secondaryHex);
     var skin = 0xe8b98f;
+    var pants = 0x222831;
 
     // soft shadow disc
     var shadow = new THREE.Mesh(
@@ -348,35 +473,58 @@
     var jerseyMat = new THREE.MeshLambertMaterial({ color: primary });
     var skinMat = new THREE.MeshLambertMaterial({ color: skin });
 
-    var torso = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.92, 0.42), jerseyMat);
-    torso.position.y = 1.28; p.add(torso);
-    var collar = new THREE.Mesh(new THREE.BoxGeometry(0.74, 0.14, 0.44), new THREE.MeshLambertMaterial({ color: secondary }));
-    collar.position.y = 1.68; p.add(collar);
+    // Upper body group pivots at the hips so it can lean/twist as a unit.
+    // Forward is +X: chest depth on X (0.42), shoulder width on Z (0.74).
+    var upper = new THREE.Group();
+    upper.position.y = 1.02;
+    p.add(upper);
 
-    var head = new THREE.Mesh(new THREE.SphereGeometry(0.28, 16, 12), skinMat);
-    head.position.y = 2.02; p.add(head);
+    var torso = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.9, 0.74), jerseyMat);
+    torso.position.y = 0.46; upper.add(torso);
+    // subtle chest bevel toward the front for readability
+    var chest = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.5, 0.6),
+      new THREE.MeshLambertMaterial({ color: primary }));
+    chest.position.set(0.12, 0.55, 0); upper.add(chest);
 
-    var lArm = limb(THREE, 0.2, 0.82, 0.2, skin); lArm.position.set(-0.46, 1.66, 0);
-    var rArm = limb(THREE, 0.2, 0.82, 0.2, skin); rArm.position.set(0.46, 1.66, 0);
-    p.add(lArm); p.add(rArm);
+    var collar = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.14, 0.76),
+      new THREE.MeshLambertMaterial({ color: secondary }));
+    collar.position.y = 0.92; upper.add(collar);
 
-    var lLeg = limb(THREE, 0.24, 0.92, 0.24, 0x222831); lLeg.position.set(-0.2, 0.86, 0);
-    var rLeg = limb(THREE, 0.24, 0.92, 0.24, 0x222831); rLeg.position.set(0.2, 0.86, 0);
+    var head = new THREE.Mesh(new THREE.SphereGeometry(0.27, 16, 12), skinMat);
+    head.position.set(0.03, 1.24, 0); upper.add(head);
+    // little face bump so a facing read is possible up close
+    var face = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.16, 0.24),
+      new THREE.MeshLambertMaterial({ color: secondary }));
+    face.position.set(0.24, 1.24, 0); upper.add(face);
+
+    // Arms attach at the shoulders (Z = left/right). Upper arm = sleeve color,
+    // forearm = skin.
+    var lArm = makeLimb(THREE, { w: 0.19, d: 0.19, upLen: 0.42, loLen: 0.4, upColor: primary, loColor: skin });
+    var rArm = makeLimb(THREE, { w: 0.19, d: 0.19, upLen: 0.42, loLen: 0.4, upColor: primary, loColor: skin });
+    lArm.position.set(0, 0.82, -0.44);
+    rArm.position.set(0, 0.82, 0.44);
+    upper.add(lArm); upper.add(rArm);
+
+    // Legs attach at the hips (Z = left/right), shoulder-width apart.
+    var lLeg = makeLimb(THREE, { w: 0.23, d: 0.23, upLen: 0.5, loLen: 0.46, upColor: pants, loColor: pants, foot: true });
+    var rLeg = makeLimb(THREE, { w: 0.23, d: 0.23, upLen: 0.5, loLen: 0.46, upColor: pants, loColor: pants, foot: true });
+    lLeg.position.set(0, 1.0, -0.2);
+    rLeg.position.set(0, 1.0, 0.2);
     p.add(lLeg); p.add(rLeg);
 
-    var lFlag = makeFlagRibbon(THREE, 0xffd23f); lFlag.position.set(-0.4, 0.9, 0.18); lFlag.scale.setScalar(0.85);
-    var rFlag = makeFlagRibbon(THREE, 0xffd23f); rFlag.position.set(0.4, 0.9, 0.18); rFlag.scale.setScalar(0.85);
+    // Flag ribbons at the hips, hanging on each side.
+    var lFlag = makeFlagRibbon(THREE, 0xffd23f); lFlag.position.set(-0.02, 0.98, -0.3); lFlag.scale.setScalar(0.85);
+    var rFlag = makeFlagRibbon(THREE, 0xffd23f); rFlag.position.set(-0.02, 0.98, 0.3); rFlag.scale.setScalar(0.85);
     p.add(lFlag); p.add(rFlag);
 
     if (name) p.add(makeNameplate(THREE, name));
 
-    // Nudge the whole player up so feet sit on the ground.
     p.scale.setScalar(1.05);
 
     p.userData = {
-      torso: torso, head: head, lArm: lArm, rArm: rArm, lLeg: lLeg, rLeg: rLeg,
+      upper: upper, torso: torso, head: head, lArm: lArm, rArm: rArm, lLeg: lLeg, rLeg: rLeg,
       lFlag: lFlag, rFlag: rFlag, ring: ring, phase: Math.random() * 6,
-      throwT: 0, _wasPulled: false
+      yaw: 0, throwT: 0, celebT: 0, _wasPulled: false
     };
     return p;
   }
