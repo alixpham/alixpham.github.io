@@ -102,6 +102,7 @@
 
     var camFx = MID;           // smoothed camera focus (field X)
     var camFz = null;          // smoothed camera lateral follow (world Z)
+    var viewAspect = 16 / 9;   // current canvas aspect (w/h); drives FOV + framing
     var prevInAir = false;
 
     function makeRing() {
@@ -266,10 +267,14 @@
       else if (state.ball) focusFy = state.ball.y;
       camFz = (camFz == null) ? wz(focusFy) : lerp(camFz, wz(focusFy), clamp(dt * 2.0, 0, 1));
 
+      // On narrow/portrait screens, raise the camera and tilt it down so the
+      // field fills the tall frame (less empty sky) while its full width stays
+      // in view. `port` is 0 in landscape → ~0.95 in tall portrait.
+      var port = clamp(1.2 - viewAspect, 0, 0.95);
       var fxw = wx(camFx);
-      var BEHIND = 17, HEIGHT = 10.5, AHEAD = 16;
+      var BEHIND = 17 + port * 6, HEIGHT = 10.5 + port * 12, AHEAD = 16 - port * 4;
       camera.position.set(fxw - dir * BEHIND, HEIGHT, camFz * 0.55);
-      camera.lookAt(fxw + dir * AHEAD, 1.6, camFz * 0.3);
+      camera.lookAt(fxw + dir * AHEAD, 1.6 - port * 1.2, camFz * 0.3);
     }
 
     // ---------------------------- RESIZE -----------------------------------
@@ -278,7 +283,12 @@
       var h = canvas.clientHeight || (canvas.parentElement && canvas.parentElement.clientHeight) || 480;
       if (w < 2 || h < 2) return;
       renderer.setSize(w, h, false);
-      camera.aspect = w / h;
+      camera.aspect = w / h; viewAspect = w / h;
+      // Horizontal-FOV lock: widen the vertical FOV as the viewport narrows so
+      // the field's width stays in frame on portrait phones (not just a sliver).
+      var targetH = 1.16;                                    // ~66° target horizontal FOV (radians)
+      var vfov = 2 * Math.atan(Math.tan(targetH / 2) / Math.max(0.4, viewAspect));
+      camera.fov = clamp(vfov * 180 / Math.PI, 40, 80);
       camera.updateProjectionMatrix();
     }
     var ro = ('ResizeObserver' in global) ? new ResizeObserver(resize) : null;
