@@ -6,6 +6,7 @@ notable live deploy (newest first).
 
 | Date (UTC) | Commit | What shipped |
 | --- | --- | --- |
+| 2026-07-21 | `984ad93121f84de4b01d120b37eccc29e21888ce` | Football-like player stance & direction — jointed limbs, athletic poses, action-based facing (menu + in-game) (#8) |
 | 2026-07-21 | `8be4df35bc3136c7206c5dc246400629dadc8479` | 3D in-game field (Three.js) + richer menu hero animations (#6) |
 | 2026-07-21 | `c7204a8fb6f7074e18a0a976ab19ea7b4ec67626` | Three.js top-down 3D player animations on the menu + this deploy doc (#4) |
 | 2026-07-21 | `d4cf30a30b46e2dd7d0249efb5a1cd2dda09ad87` | Replace Israel with Spain in the nations roster (#3) |
