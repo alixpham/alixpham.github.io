@@ -344,9 +344,101 @@
     return C;
   }
 
+  /* ==================================================================== */
+  /*  LOADED glTF MODEL PATH (real rigged character via GLTFLoader)         */
+  /*  Loads a rigged humanoid once, then clones it per player (SkeletonUtils)*/
+  /*  and drives its baked skeletal clips (idle/walk/run) with an           */
+  /*  AnimationMixer — the "load a real model" realism path. Falls back to  */
+  /*  the procedural rig above if the model/loader is unavailable.          */
+  /* ==================================================================== */
+  var MODEL = { ready: false, failed: false, scene: null, clips: null };
+  // Resolve the .glb path relative to THIS script so it works from / and /flagster/.
+  var MODEL_URL = (function () {
+    try {
+      var s = document.currentScript && document.currentScript.src;
+      if (!s) { var ss = document.getElementsByTagName('script'); for (var i = ss.length - 1; i >= 0; i--) { if (/player3d\.js/.test(ss[i].src)) { s = ss[i].src; break; } } }
+      return s ? s.replace(/js\/player3d\.js.*$/, 'lib/player.glb') : null;
+    } catch (e) { return null; }
+  })();
+
+  function preloadModel(THREE) {
+    if (!THREE || !THREE.GLTFLoader || !THREE.SkeletonUtils || !MODEL_URL) { MODEL.failed = true; return; }
+    try {
+      new THREE.GLTFLoader().load(MODEL_URL,
+        function (gltf) { MODEL.scene = gltf.scene; MODEL.clips = gltf.animations || []; MODEL.ready = true; },
+        undefined,
+        function () { MODEL.failed = true; });
+    } catch (e) { MODEL.failed = true; }
+  }
+
+  function buildModelInstance(THREE, opts) {
+    var clone = THREE.SkeletonUtils.clone(MODEL.scene);
+    var jersey = new THREE.Color(opts.jersey || '#2b5cff');
+    clone.traverse(function (o) {
+      if (o.isMesh || o.isSkinnedMesh) {
+        o.frustumCulled = false;
+        if (o.material) {
+          o.material = o.material.clone();               // per-instance so tint is unique
+          if (o.material.color) o.material.color.copy(jersey);
+          o.material.metalness = 0.0;
+          if (o.material.roughness != null) o.material.roughness = 0.8;
+        }
+      }
+    });
+    // Orient forward = +X and scale to ~2.1u tall. NOTE: this Mixamo rig has an
+    // Armature scale of 0.01, origin at the feet, ~1.8u tall, facing +Z. Skinned-
+    // mesh bounding boxes are unreliable here, so use a fixed scale (not bbox).
+    var facer = new THREE.Group();
+    facer.add(clone);
+    facer.scale.setScalar(1.15);                          // ~1.8u * 1.15 ≈ 2.1u
+    facer.rotation.y = Math.PI / 2;                       // model faces +Z -> +X
+    var root = new THREE.Group(); root.name = 'root';
+    root.add(facer);
+    var plate = nameplate(THREE, opts.name); plate.position.y = 2.55; root.add(plate);
+
+    var mixer = new THREE.AnimationMixer(clone);
+    var byName = {};
+    (MODEL.clips || []).forEach(function (cl) { byName[cl.name.toLowerCase()] = cl; });
+    function find() { for (var i = 0; i < arguments.length; i++) { var k = arguments[i]; for (var n in byName) { if (n.indexOf(k) >= 0) return byName[n]; } } return null; }
+    var idleC = find('idle', 'stand', 'survey') || (MODEL.clips && MODEL.clips[0]);
+    var runC = find('run') || idleC;
+    var walkC = find('walk') || runC;
+    function act(cl) { if (!cl) return null; var a = mixer.clipAction(cl); a.loop = THREE.LoopRepeat; return a; }
+    var A = { idle: act(idleC), run: act(runC), walk: act(walkC) };
+    var current = null;
+    function crossto(a, fade) { if (!a) return; if (a === current) { if (!a.isRunning()) a.play(); return; } a.reset(); a.enabled = true; a.setEffectiveWeight(1); a.play(); if (current) current.crossFadeTo(a, fade == null ? 0.25 : fade, false); current = a; }
+
+    var api = { root: root, mixer: mixer, _yaw: 0, _speed: 1, _oneShot: null, isModel: true };
+    api.play = function (name) {
+      var a = (name === 'run') ? A.run
+        : (name === 'walk' || name === 'backpedal') ? A.walk
+        : A.idle;                                          // idle/celebrate/etc.
+      crossto(a);
+    };
+    api.oneShot = function (name, returnTo) { if (returnTo) api.play(returnTo); };  // model has no football one-shots
+    api.setSpeed = function (m) { api._speed = m; if (A.run) A.run.timeScale = m; if (A.walk) A.walk.timeScale = m; };
+    api.face = function (yaw, dt) { var d = yaw - api._yaw; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; api._yaw += d * Math.min(1, (dt || 0.016) * 9); root.rotation.y = -api._yaw; };
+    api.setYaw = function (yaw) { api._yaw = yaw; root.rotation.y = -yaw; };
+    api.update = function (dt) { mixer.update(dt); };
+    api.dispose = function () {
+      mixer.stopAllAction();
+      // NOTE: geometry is shared across SkeletonUtils clones — dispose only the
+      // per-instance materials/textures we created, never the shared geometry.
+      root.traverse(function (o) {
+        if (o.material) { (Array.isArray(o.material) ? o.material : [o.material]).forEach(function (m) { if (m.map) m.map.dispose(); m.dispose(); }); }
+      });
+    };
+    if (A.idle) { A.idle.play(); current = A.idle; }
+    return api;
+  }
+
   /* --------------------------------------------------------------- builder */
   function build(THREE, opts) {
     opts = opts || {};
+    // Prefer a real loaded model once it's ready; else the procedural rig.
+    if (MODEL.ready && THREE.SkeletonUtils && MODEL.scene) {
+      try { return buildModelInstance(THREE, opts); } catch (e) { /* fall back below */ }
+    }
     var rig = buildRig(THREE, opts);
     var root = rig.root;
 
@@ -439,6 +531,10 @@
     return api;
   }
 
+  // Start loading the real rigged model immediately (async; build() uses it
+  // once ready, otherwise returns the procedural rig).
+  preloadModel(global.THREE);
+
   global.FLAGSTER = global.FLAGSTER || {};
-  global.FLAGSTER.Player3D = { build: build, buildRig: buildRig, clips: clips };
+  global.FLAGSTER.Player3D = { build: build, buildRig: buildRig, clips: clips, model: MODEL };
 })(window);
