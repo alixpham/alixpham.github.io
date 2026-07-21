@@ -114,9 +114,11 @@
     var abdomenMesh = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.36, 0.52), jerseyMat);
     abdomenMesh.position.y = -0.02; spine.add(abdomenMesh);
     var chest = node('chest', spine, 0, 0.16, 0);
-    var chestMesh = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.5, 0.58), jerseyMat); chestMesh.position.y = 0.2; chest.add(chestMesh);
-    // subtle shoulder trim
-    var yoke = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.12, 0.6), trimMat); yoke.position.y = 0.42; chest.add(yoke);
+    // broader, athletic chest for a men's build
+    var chestMesh = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.5, 0.62), jerseyMat); chestMesh.position.y = 0.2; chest.add(chestMesh);
+    var pecs = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.16, 0.6), jerseyMat); pecs.position.y = 0.3; chest.add(pecs);
+    // shoulder trim / collar
+    var yoke = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.12, 0.66), trimMat); yoke.position.y = 0.42; chest.add(yoke);
     // number on the chest
     chest.add(numberPlate(THREE, opts.number, opts.trim || '#fff', 0.3));
 
@@ -126,13 +128,18 @@
     var skull = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 14), skinMat); skull.position.y = 0.1; head.add(skull);
     var hair = new THREE.Mesh(new THREE.SphereGeometry(0.205, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.6), hairMat); hair.position.y = 0.12; head.add(hair);
     var faceNub = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 8), skinMat); faceNub.position.set(0.18, 0.08, 0); head.add(faceNub); // nose = forward marker (+X)
+    // team headband
+    var band = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.028, 8, 18), mkMat(THREE, opts.trim || '#ffffff', { rough: 0.7 }));
+    band.rotation.x = Math.PI / 2; band.position.y = 0.05; head.add(band);
 
     // --- arms (shoulder → upperArm → forearm → hand) ---
     function arm(side) {
       var s = side === 'L' ? 1 : -1;                        // shoulders span Z
       var sh = node('shoulder' + side, chest, 0.02, 0.38, s * 0.3);
+      var delt = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 10), jerseyMat); sh.add(delt);  // deltoid cap → broad shoulders
       var up = node('upperArm' + side, sh, 0, 0, 0);
       up.add(segment(THREE, skinMat, 0.4, 0.09, 0.07));
+      var sleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.105, 0.2, 12), jerseyMat); sleeve.position.y = -0.09; up.add(sleeve); // short jersey sleeve
       var fore = node('forearm' + side, up, 0, -0.4, 0);
       fore.add(segment(THREE, skinMat, 0.38, 0.07, 0.055));
       var hand = new THREE.Mesh(new THREE.SphereGeometry(0.075, 10, 8), skinMat); hand.position.y = -0.4; fore.add(hand);
@@ -154,14 +161,17 @@
     }
     leg('L'); leg('R');
 
-    // --- hip flag ribbons (gold), left & right ---
+    // --- flag belt + hanging flags (the flag-football signature) ---
+    var beltMat = mkMat(THREE, '#17171d', { rough: 0.7 });
+    var belt = new THREE.Mesh(new THREE.TorusGeometry(0.27, 0.055, 8, 22), beltMat);
+    belt.rotation.x = Math.PI / 2; belt.position.y = 0.03; pelvis.add(belt);
     function ribbon(side) {
       var s = side === 'L' ? 1 : -1;
       var g = new THREE.Group(); g.name = 'flag' + side;
-      var m = new THREE.Mesh(new THREE.PlaneGeometry(0.09, 0.34),
+      var m = new THREE.Mesh(new THREE.PlaneGeometry(0.1, 0.42),
         new THREE.MeshStandardMaterial({ color: 0xffd23f, side: THREE.DoubleSide, roughness: 0.8 }));
-      m.position.y = -0.17; g.add(m);
-      g.position.set(-0.02, -0.05, s * 0.26); pelvis.add(g); nodes['flag' + side] = g;
+      m.position.y = -0.21; g.add(m);
+      g.position.set(-0.02, 0.03, s * 0.27); pelvis.add(g); nodes['flag' + side] = g;   // hang from the belt line
     }
     ribbon('L'); ribbon('R');
 
@@ -352,6 +362,10 @@
   /*  the procedural rig above if the model/loader is unavailable.          */
   /* ==================================================================== */
   var MODEL = { ready: false, failed: false, scene: null, clips: null };
+  // The plain loaded mannequin reads as a solid-color figure, not a flag-football
+  // team, so it's OFF by default. The GLTFLoader pipeline stays ready for a proper
+  // rigged football-player .glb — enable with FLAGSTER.Player3D.setUseModel(true).
+  var USE_MODEL = false;
   // Resolve the .glb path relative to THIS script so it works from / and /flagster/.
   var MODEL_URL = (function () {
     try {
@@ -435,8 +449,8 @@
   /* --------------------------------------------------------------- builder */
   function build(THREE, opts) {
     opts = opts || {};
-    // Prefer a real loaded model once it's ready; else the procedural rig.
-    if (MODEL.ready && THREE.SkeletonUtils && MODEL.scene) {
+    // Prefer a real loaded model only when explicitly enabled AND ready.
+    if (USE_MODEL && MODEL.ready && THREE.SkeletonUtils && MODEL.scene) {
       try { return buildModelInstance(THREE, opts); } catch (e) { /* fall back below */ }
     }
     var rig = buildRig(THREE, opts);
@@ -531,10 +545,12 @@
     return api;
   }
 
-  // Start loading the real rigged model immediately (async; build() uses it
-  // once ready, otherwise returns the procedural rig).
-  preloadModel(global.THREE);
+  // Only fetch the ~2.8 MB model if the loaded-model path is enabled.
+  if (USE_MODEL) preloadModel(global.THREE);
 
   global.FLAGSTER = global.FLAGSTER || {};
-  global.FLAGSTER.Player3D = { build: build, buildRig: buildRig, clips: clips, model: MODEL };
+  global.FLAGSTER.Player3D = {
+    build: build, buildRig: buildRig, clips: clips, model: MODEL,
+    setUseModel: function (on) { USE_MODEL = !!on; if (USE_MODEL && !MODEL.ready && !MODEL.failed) preloadModel(global.THREE); }
+  };
 })(window);
