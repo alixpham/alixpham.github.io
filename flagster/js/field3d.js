@@ -267,14 +267,21 @@
       else if (state.ball) focusFy = state.ball.y;
       camFz = (camFz == null) ? wz(focusFy) : lerp(camFz, wz(focusFy), clamp(dt * 2.0, 0, 1));
 
-      // On narrow/portrait screens, raise the camera and tilt it down so the
-      // field fills the tall frame (less empty sky) while its full width stays
-      // in view. `port` is 0 in landscape → ~0.95 in tall portrait.
-      var port = clamp(1.2 - viewAspect, 0, 0.95);
       var fxw = wx(camFx);
-      var BEHIND = 17 + port * 6, HEIGHT = 10.5 + port * 12, AHEAD = 16 - port * 4;
-      camera.position.set(fxw - dir * BEHIND, HEIGHT, camFz * 0.55);
-      camera.lookAt(fxw + dir * AHEAD, 1.6 - port * 1.2, camFz * 0.3);
+      if (viewAspect < 1.05) {
+        // MOBILE / PORTRAIT: keep the camera CENTERED on the field's width
+        // (z = 0) so the perspective is symmetric — not skewed toward one
+        // sideline — and bias the focus toward midfield, raised and pulled back
+        // so the whole field frames around its middle.
+        var t = clamp(1.1 - viewAspect, 0, 0.9);          // 0 → ~0.9 as it gets taller
+        var mfx = wx(lerp(camFx, MID, 0.5));              // hold near the field middle
+        camera.position.set(mfx - dir * (15 + t * 3), 18 + t * 9, 0);
+        camera.lookAt(mfx + dir * (11 - t * 3), 0.8, 0);
+      } else {
+        // DESKTOP / LANDSCAPE: Madden behind-our-side view with lateral follow.
+        camera.position.set(fxw - dir * 17, 10.5, camFz * 0.55);
+        camera.lookAt(fxw + dir * 16, 1.6, camFz * 0.3);
+      }
     }
 
     // ---------------------------- RESIZE -----------------------------------

@@ -139,11 +139,14 @@ h1,h2,h3,h4{margin:.2em 0}
 
 /* touch controls */
 .touch-controls{position:absolute;inset:0;z-index:15;pointer-events:none}
-.joystick{position:absolute;left:22px;bottom:26px;width:118px;height:118px;border-radius:50%;
-  background:rgba(255,255,255,.08);border:2px solid rgba(255,255,255,.18);pointer-events:auto;touch-action:none}
-.joy-knob{position:absolute;left:50%;top:50%;width:52px;height:52px;margin:-26px 0 0 -26px;border-radius:50%;
-  background:rgba(46,199,122,.85);box-shadow:0 4px 12px rgba(0,0,0,.4)}
-.right-cluster{position:absolute;right:18px;bottom:20px;display:flex;flex-direction:column;align-items:flex-end;gap:10px;pointer-events:auto}
+/* full-field swipe layer (below the action buttons) */
+.swipe-pad{position:absolute;inset:0;pointer-events:auto;touch-action:none;z-index:1}
+.float-base{position:absolute;width:120px;height:120px;border-radius:50%;
+  background:rgba(255,255,255,.07);border:2px solid rgba(255,255,255,.16);
+  transform:translate(-50%,-50%);pointer-events:none}
+.float-knob{position:absolute;left:50%;top:50%;width:54px;height:54px;border-radius:50%;
+  background:rgba(46,199,122,.85);box-shadow:0 4px 12px rgba(0,0,0,.4);transform:translate(-50%,-50%)}
+.right-cluster{position:absolute;right:18px;bottom:20px;display:flex;flex-direction:column;align-items:flex-end;gap:10px;pointer-events:auto;z-index:3}
 .btn-cluster{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;max-width:230px}
 .act-btn{min-width:60px;height:56px;border-radius:14px;border:1px solid var(--line);
   background:rgba(15,47,28,.92);color:var(--ink);font-weight:800;font-size:.9rem;padding:0 12px}

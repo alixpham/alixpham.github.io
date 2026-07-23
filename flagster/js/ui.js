@@ -48,7 +48,7 @@
       ['Pull the flag (on D)', 'E']
     ];
     var mobile = [
-      ['Move', 'Left thumb joystick'],
+      ['Move', 'Swipe / drag anywhere on the field'],
       ['Snap the ball', 'SNAP button'],
       ['Throw', 'Tap the receiver button (WR1/WR2/RB/C)'],
       ['Sprint', 'Hold the ⚡ button'],
@@ -293,26 +293,38 @@
 
   GameShell.prototype._buildTouch = function () {
     var self = this, eng = this.engine;
-    // Joystick
-    var stick = h('div', { class: 'joystick' }, [h('div', { class: 'joy-knob' })]);
-    var knob = stick.querySelector('.joy-knob');
-    var active = false, cx = 0, cy = 0;
-    function startJ(x, y) { active = true; var r = stick.getBoundingClientRect(); cx = r.left + r.width / 2; cy = r.top + r.height / 2; moveJ(x, y); }
-    function moveJ(x, y) {
-      if (!active) return;
-      var dx = x - cx, dy = y - cy, m = Math.hypot(dx, dy), max = 42;
-      var cl = Math.min(m, max);
-      var nx = m ? dx / m : 0, ny = m ? dy / m : 0;
-      knob.style.transform = 'translate(' + (nx * cl) + 'px,' + (ny * cl) + 'px)';
-      eng.setStick(nx, ny, m > 6);
+
+    // --- Swipe-to-move: a full-field floating joystick. Touch/drag ANYWHERE on
+    // the field (not on a button) to steer your player; a base+knob appears at
+    // the touch point. Action buttons sit on top and capture their own touches,
+    // so you can move with one thumb and press buttons with the other. ---
+    var base = h('div', { class: 'float-base' }, [h('div', { class: 'float-knob' })]);
+    base.style.display = 'none';
+    var fknob = base.firstChild;
+    var swipe = h('div', { class: 'swipe-pad' }, [base]);
+    var moveId = null, ox = 0, oy = 0;
+    function sStart(x, y, id) { moveId = id; ox = x; oy = y; base.style.display = 'block'; base.style.left = x + 'px'; base.style.top = y + 'px'; fknob.style.transform = 'translate(-50%,-50%)'; }
+    function sMove(x, y) {
+      var dx = x - ox, dy = y - oy, m = Math.hypot(dx, dy), max = 52;
+      var nx = m ? dx / m : 0, ny = m ? dy / m : 0, cl = Math.min(m, max);
+      fknob.style.transform = 'translate(-50%,-50%) translate(' + (nx * cl) + 'px,' + (ny * cl) + 'px)';
+      eng.setStick(nx, ny, m > 7);
     }
-    function endJ() { active = false; knob.style.transform = 'translate(0,0)'; eng.setStick(0, 0, false); }
-    stick.addEventListener('touchstart', function (e) { e.preventDefault(); var t = e.touches[0]; startJ(t.clientX, t.clientY); });
-    stick.addEventListener('touchmove', function (e) { e.preventDefault(); var t = e.touches[0]; moveJ(t.clientX, t.clientY); });
-    stick.addEventListener('touchend', function (e) { e.preventDefault(); endJ(); });
-    stick.addEventListener('mousedown', function (e) { startJ(e.clientX, e.clientY); });
-    global.addEventListener('mousemove', function (e) { moveJ(e.clientX, e.clientY); });
-    global.addEventListener('mouseup', endJ);
+    function sEnd() { moveId = null; base.style.display = 'none'; eng.setStick(0, 0, false); }
+    swipe.addEventListener('touchstart', function (e) {
+      if (moveId !== null) return;
+      var t = e.changedTouches[0]; sStart(t.clientX, t.clientY, t.identifier); e.preventDefault();
+    });
+    swipe.addEventListener('touchmove', function (e) {
+      for (var i = 0; i < e.changedTouches.length; i++) { var t = e.changedTouches[i]; if (t.identifier === moveId) { sMove(t.clientX, t.clientY); e.preventDefault(); } }
+    });
+    function touchEnd(e) { for (var i = 0; i < e.changedTouches.length; i++) { if (e.changedTouches[i].identifier === moveId) sEnd(); } }
+    swipe.addEventListener('touchend', touchEnd);
+    swipe.addEventListener('touchcancel', touchEnd);
+    // mouse fallback (desktop testing)
+    swipe.addEventListener('mousedown', function (e) { sStart(e.clientX, e.clientY, 'mouse'); });
+    global.addEventListener('mousemove', function (e) { if (moveId === 'mouse') sMove(e.clientX, e.clientY); });
+    global.addEventListener('mouseup', function () { if (moveId === 'mouse') sEnd(); });
 
     function actBtn(label, cls, act) {
       var b = h('button', { class: 'act-btn ' + cls, html: label });
@@ -339,7 +351,7 @@
     ]);
 
     clear(this.touch);
-    this.touch.appendChild(stick);
+    this.touch.appendChild(swipe);   // full-field swipe layer (below the buttons)
     this.touch.appendChild(h('div', { class: 'right-cluster' }, [this._snapBtn, this._offBtns, this._defBtns]));
   };
 
