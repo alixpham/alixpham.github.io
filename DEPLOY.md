@@ -4,7 +4,8 @@ Flagster is served by GitHub Pages from the `master` branch at
 **https://alixpham.github.io/**. This file records the commit id behind each
 notable live deploy (newest first).
 
-Version tags (see `VERSION`): **v1.4.1** = `bf76d1ab6c6b239709ca936323a2acd854d0e0c9`,
+Version tags (see `VERSION`): **v1.5.0** = `d11b13ecd1ce6782b0200c8be38764b2a5b5e429`,
+**v1.4.1** = `bf76d1ab6c6b239709ca936323a2acd854d0e0c9`,
 **v1.4.0** = `6447c6a990f53d0e95ae17b75949cfa2ce17b4cf`,
 **v1.3.0** = `037017902a4b22e829fa7d2e862196258e8f8d6e`,
 **v1.2.0** = `c72c2d1aa16bf43f0dfb85e76bfddc2458899fe8`,
@@ -14,6 +15,7 @@ git proxy blocks tag pushes, so these are the authoritative version→commit rec
 
 | Date (UTC) | Commit | What shipped |
 | --- | --- | --- |
+| 2026-08-07 | `d11b13ecd1ce6782b0200c8be38764b2a5b5e429` | **v1.5.0** — professional broadcast presentation: procedural stadium (sky, crowd, floodlights), broadcast turf (yard numbers, hashes, lettered end zones), whole-field camera on any aspect, soft shadows + ACES tone mapping (#20) |
 | 2026-07-21 | `bf76d1ab6c6b239709ca936323a2acd854d0e0c9` | **v1.4.1** — mobile swipe-to-move controls + centered (un-skewed) mobile camera (#18) |
 | 2026-07-21 | `6447c6a990f53d0e95ae17b75949cfa2ce17b4cf` | **v1.4.0** — portrait field framing (fits horizontal field on tall screens) + men's flag-football player look (headband, broad shoulders, flag belt) (#16) |
 | 2026-07-21 | `037017902a4b22e829fa7d2e862196258e8f8d6e` | **v1.3.0** — load a real rigged glTF character (GLTFLoader + Xbot), tinted per team, skeletal idle/walk/run in-game (#14) |
