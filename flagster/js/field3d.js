@@ -48,29 +48,67 @@
       return null;
     }
     renderer.setPixelRatio(Math.min(global.devicePixelRatio || 1, 2));
-    renderer.setClearColor(0x06180c, 1);
+    renderer.setClearColor(0x86b6de, 1);          // sky, never a black void
+    // Broadcast-quality output: soft shadows, filmic tone mapping, sRGB.
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    if (THREE.sRGBEncoding !== undefined) renderer.outputEncoding = THREE.sRGBEncoding;
+    if (THREE.ACESFilmicToneMapping !== undefined) {
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.05;
+    }
 
     var scene = new THREE.Scene();
-    scene.fog = new THREE.Fog(0x0a2013, 55, 105);
+    scene.fog = new THREE.Fog(0x9fc4e4, 150, 420);   // haze toward the sky, not black
 
-    var camera = new THREE.PerspectiveCamera(42, 16 / 9, 0.1, 300);
+    var camera = new THREE.PerspectiveCamera(38, 16 / 9, 0.1, 1200);
 
-    // Lights
-    scene.add(new THREE.HemisphereLight(0xdfffe8, 0x1b4a2a, 0.72));
-    var sun = new THREE.DirectionalLight(0xffffff, 0.9);
-    sun.position.set(-18, 40, 18);
+    // ---- Lights (stadium daylight) ----
+    scene.add(new THREE.HemisphereLight(0xdff0ff, 0x4a7a4a, 0.85));
+    var sun = new THREE.DirectionalLight(0xfff4e0, 1.15);
+    sun.position.set(-40, 70, 40);
+    sun.castShadow = true;
+    sun.shadow.mapSize.width = 2048;
+    sun.shadow.mapSize.height = 2048;
+    sun.shadow.camera.left = -46; sun.shadow.camera.right = 46;
+    sun.shadow.camera.top = 46; sun.shadow.camera.bottom = -46;
+    sun.shadow.camera.near = 1; sun.shadow.camera.far = 200;
+    sun.shadow.bias = -0.0005;
     scene.add(sun);
+    scene.add(sun.target);
+    var fill = new THREE.DirectionalLight(0xbfd8ff, 0.28);
+    fill.position.set(30, 40, -30);
+    scene.add(fill);
 
     // Jersey colors from the current game.
     var st0 = engine && engine.state ? engine.state : {};
     var homeCols = (st0.homeJersey && st0.homeJersey.colors) || ['#2b5cff', '#ffffff'];
     var awayCols = (st0.awayJersey && st0.awayJersey.colors) || ['#d80621', '#ffffff'];
 
-    // ---- Field --------------------------------------------------------------
-    scene.add(makeGrass(THREE));
-    // End zones tinted by each team's primary. In 2D: left zone = away, right = home.
-    scene.add(makeEndZone(THREE, awayCols[0], -30));   // fieldX 0..10 -> center -30
-    scene.add(makeEndZone(THREE, homeCols[0], 30));    // fieldX 60..70 -> center +30
+    // ---- Stadium + field ----------------------------------------------------
+    // A full stadium (sky, stands, crowd, lights) plus a broadcast-quality turf
+    // with yard numbers, hash marks and lettered end zones. Falls back to the
+    // simple grass/end-zone primitives if the stadium module isn't present.
+    var STADIUM = global.FLAGSTER && global.FLAGSTER.Stadium3D;
+    var stadiumGroup = null;
+    var turfOpts = {
+      awayColor: awayCols[0], homeColor: homeCols[0],
+      awayName: (st0.away && (st0.away.name || st0.away.id)) || '',
+      homeName: (st0.home && (st0.home.name || st0.home.id)) || ''
+    };
+    if (STADIUM) {
+      try {
+        stadiumGroup = STADIUM.build(THREE, turfOpts);
+        if (stadiumGroup) scene.add(stadiumGroup);
+        var turf = STADIUM.makeTurf(THREE, turfOpts);
+        if (turf) { turf.receiveShadow = true; scene.add(turf); }
+      } catch (e) { stadiumGroup = null; }
+    }
+    if (!stadiumGroup) {
+      scene.add(makeGrass(THREE));
+      scene.add(makeEndZone(THREE, awayCols[0], -30));
+      scene.add(makeEndZone(THREE, homeCols[0], 30));
+    }
 
     // Dynamic markers: line of scrimmage (blue), line-to-gain (yellow)
     var losLine = makeYardMarker(THREE, 0x3c82ff);
@@ -93,7 +131,9 @@
     // Realistic rigged players (FLAGSTER.Player3D) are (re)built whenever the
     // roster array changes. Each entry: { P, ring, ud }.
     var PLAYER3D = global.FLAGSTER && global.FLAGSTER.Player3D;
-    var PLAYER_SCALE = 1.08;   // tune so the ~2.1u-tall model reads on the field
+    // Slightly larger than life so players still read clearly in the
+    // whole-field broadcast view (standard practice in sports games).
+    var PLAYER_SCALE = 1.45;
     // A few skin tones rotated through by roster index for visual variety.
     var SKINS = ['#f2c9a0', '#e8b98f', '#d59a6a', '#a9714a', '#8a5a38', '#6f4526'];
 
@@ -107,8 +147,8 @@
 
     function makeRing() {
       var ring = new THREE.Mesh(
-        new THREE.RingGeometry(0.75, 1.0, 28),
-        new THREE.MeshBasicMaterial({ color: 0xffe14d, transparent: true, opacity: 0.9, side: THREE.DoubleSide })
+        new THREE.RingGeometry(1.0, 1.45, 32),
+        new THREE.MeshBasicMaterial({ color: 0xffe14d, transparent: true, opacity: 0.95, side: THREE.DoubleSide })
       );
       ring.rotation.x = -Math.PI / 2; ring.position.y = 0.05; ring.visible = false;
       return ring;
@@ -132,6 +172,9 @@
           name: (gp.last || '')
         });
         P.root.scale.setScalar(PLAYER_SCALE);
+        // Players cast shadows onto the turf so they sit ON the field.
+        P.root.traverse(function (o) { if (o.isMesh) { o.castShadow = true; o.receiveShadow = false; } });
+        if (P.setPlateScale) P.setPlateScale(0.55);   // small, broadcast-style tag
         // The rig's clips animate root.position (bob), so the mixer clobbers any
         // world position we set on root. Place the model on the field via an
         // outer holder Group; the mixer bobs root locally inside it.
@@ -240,48 +283,67 @@
 
       P.update(dt);
 
+      // Nameplates only on the players that matter — the one you control and
+      // whoever has the ball — so the full-field view stays clean.
+      if (P.setPlateVisible) P.setPlateVisible(state.userControlled === gp || carrier === gp);
+
       // Highlight ring under the user-controlled player.
       entry.ring.visible = (state.userControlled === gp);
       if (entry.ring.visible) { entry.ring.position.set(holder.position.x, 0.05, holder.position.z); }
     }
     function cols0(gp) { return gp.team === 'home' ? homeCols[0] : awayCols[0]; }
 
-    function updateCamera(state, dt) {
-      // Madden-style: sit BEHIND the user's side and look downfield toward the
-      // opponent. Offense always attacks +x, so when the user is on offense the
-      // camera is behind -x looking +x; on defense it's behind +x looking -x.
-      var focusFx = MID;
-      if (state.carrier) focusFx = state.carrier.x;
-      else if (state.ball && state.ball.inAir) focusFx = state.ball.x;
-      else if (state.losX != null) focusFx = state.losX;
-      focusFx = clamp(focusFx, GOAL_L, GOAL_R);
-      camFx = lerp(camFx, focusFx, clamp(dt * 2.4, 0, 1));
+    /* ---- BROADCAST CAMERA -------------------------------------------------
+       Always frames the ENTIRE field. We solve for the camera distance at
+       which every corner of the field's bounding box sits inside the frustum
+       (both horizontally and vertically), so the whole pitch stays visible on
+       any screen shape — portrait phone or wide desktop. The view sits behind
+       the user's end zone looking downfield, so "our" side is nearest.       */
+    var _fitPts = [];
+    (function () {
+      var xs = [-35.5, 35.5], ys = [0, 2.5], zs = [-13, 13];
+      for (var i = 0; i < 2; i++) for (var j = 0; j < 2; j++) for (var k = 0; k < 2; k++)
+        _fitPts.push(new THREE.Vector3(xs[i], ys[j], zs[k]));
+    })();
+    var _target = new THREE.Vector3(0, 1.2, 0);
+    var _dir = new THREE.Vector3(), _fwd = new THREE.Vector3(),
+        _rgt = new THREE.Vector3(), _upv = new THREE.Vector3(),
+        _v = new THREE.Vector3(), _UPY = new THREE.Vector3(0, 1, 0);
+    var camDist = 95;
 
+    function updateCamera(state, dt) {
       var userSide = (engine && engine.userSide) || 'home';
       var userOff = (state.possession === userSide);
-      var dir = userOff ? 1 : -1;               // +1: look toward +x ; -1: toward -x
+      var s = userOff ? 1 : -1;                    // look toward +x on offense
 
-      // gentle lateral follow toward the ball for life
-      var focusFy = 0;
-      if (state.carrier) focusFy = state.carrier.y;
-      else if (state.ball) focusFy = state.ball.y;
-      camFz = (camFz == null) ? wz(focusFy) : lerp(camFz, wz(focusFy), clamp(dt * 2.0, 0, 1));
+      // View direction is chosen to use the screen shape efficiently:
+      //  • WIDE screens → broadcast SIDELINE angle, so the field's 70-yard
+      //    length runs across the screen's long (horizontal) axis.
+      //  • TALL screens → END-ZONE angle behind the user's side, so the length
+      //    runs down the screen's long (vertical) axis.
+      // Both are canted toward the user's end so "our" side reads as nearest.
+      if (viewAspect >= 1.0) _dir.set(-s * 0.30, 0.74, 0.62);
+      else                   _dir.set(-s * 0.62, 1.05, 0.20);
+      _dir.normalize();
 
-      var fxw = wx(camFx);
-      if (viewAspect < 1.05) {
-        // MOBILE / PORTRAIT: keep the camera CENTERED on the field's width
-        // (z = 0) so the perspective is symmetric — not skewed toward one
-        // sideline — and bias the focus toward midfield, raised and pulled back
-        // so the whole field frames around its middle.
-        var t = clamp(1.1 - viewAspect, 0, 0.9);          // 0 → ~0.9 as it gets taller
-        var mfx = wx(lerp(camFx, MID, 0.5));              // hold near the field middle
-        camera.position.set(mfx - dir * (15 + t * 3), 18 + t * 9, 0);
-        camera.lookAt(mfx + dir * (11 - t * 3), 0.8, 0);
-      } else {
-        // DESKTOP / LANDSCAPE: Madden behind-our-side view with lateral follow.
-        camera.position.set(fxw - dir * 17, 10.5, camFz * 0.55);
-        camera.lookAt(fxw + dir * 16, 1.6, camFz * 0.3);
+      // Distance that keeps every corner inside the frustum.
+      _fwd.copy(_dir).multiplyScalar(-1).normalize();
+      _rgt.crossVectors(_fwd, _UPY).normalize();
+      _upv.crossVectors(_rgt, _fwd).normalize();
+      var vt = Math.tan(camera.fov * Math.PI / 360);
+      var ht = vt * Math.max(0.3, viewAspect);
+      var need = 0;
+      for (var i = 0; i < _fitPts.length; i++) {
+        _v.copy(_fitPts[i]).sub(_target);
+        var fz = _v.dot(_fwd), fx = _v.dot(_rgt), fy = _v.dot(_upv);
+        need = Math.max(need, Math.abs(fx) / ht - fz, Math.abs(fy) / vt - fz);
       }
+      need *= 1.005;                              // hug the field edges
+      camDist = lerp(camDist, need, clamp(dt * 3, 0, 1));
+
+      camera.position.copy(_dir).multiplyScalar(camDist).add(_target);
+      camera.lookAt(_target);
+      if (sun.target) sun.target.position.set(0, 0, 0);
     }
 
     // ---------------------------- RESIZE -----------------------------------
@@ -291,11 +353,8 @@
       if (w < 2 || h < 2) return;
       renderer.setSize(w, h, false);
       camera.aspect = w / h; viewAspect = w / h;
-      // Horizontal-FOV lock: widen the vertical FOV as the viewport narrows so
-      // the field's width stays in frame on portrait phones (not just a sliver).
-      var targetH = 1.16;                                    // ~66° target horizontal FOV (radians)
-      var vfov = 2 * Math.atan(Math.tan(targetH / 2) / Math.max(0.4, viewAspect));
-      camera.fov = clamp(vfov * 180 / Math.PI, 40, 80);
+      // FOV stays fixed — updateCamera() solves the distance that fits the
+      // whole field for this aspect, so nothing is ever cropped.
       camera.updateProjectionMatrix();
     }
     var ro = ('ResizeObserver' in global) ? new ResizeObserver(resize) : null;

@@ -433,6 +433,9 @@
     api.setSpeed = function (m) { api._speed = m; if (A.run) A.run.timeScale = m; if (A.walk) A.walk.timeScale = m; };
     api.face = function (yaw, dt) { var d = yaw - api._yaw; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; api._yaw += d * Math.min(1, (dt || 0.016) * 9); root.rotation.y = -api._yaw; };
     api.setYaw = function (yaw) { api._yaw = yaw; root.rotation.y = -yaw; };
+    api.plate = plate;
+    api.setPlateScale = function (k) { if (plate) plate.scale.set(1.9 * k, 0.48 * k, 1); };
+    api.setPlateVisible = function (v) { if (plate) plate.visible = !!v; };
     api.update = function (dt) { mixer.update(dt); };
     api.dispose = function () {
       mixer.stopAllAction();
@@ -455,6 +458,11 @@
     }
     var rig = buildRig(THREE, opts);
     var root = rig.root;
+    // The nameplate sprite (added by buildRig) — kept so scenes can size/hide it.
+    var plateSprite = null;
+    for (var pi = 0; pi < root.children.length; pi++) {
+      if (root.children[pi].isSprite) { plateSprite = root.children[pi]; break; }
+    }
 
     var mixer = new THREE.AnimationMixer(root);
     var clipList = clips(THREE);
@@ -521,6 +529,11 @@
       root.rotation.y = -api._yaw;             // scenes use -yaw (see rig forward = +X)
     };
     api.setYaw = function (yaw) { api._yaw = yaw; root.rotation.y = -yaw; };
+
+    // Nameplate controls — broadcast views want small tags on key players only.
+    api.plate = plateSprite;
+    api.setPlateScale = function (k) { if (plateSprite) plateSprite.scale.set(1.9 * k, 0.48 * k, 1); };
+    api.setPlateVisible = function (v) { if (plateSprite) plateSprite.visible = !!v; };
 
     api.update = function (dt) {
       mixer.update(dt);
