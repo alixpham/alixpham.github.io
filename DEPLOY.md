@@ -4,7 +4,8 @@ Flagster is served by GitHub Pages from the `master` branch at
 **https://alixpham.github.io/**. This file records the commit id behind each
 notable live deploy (newest first).
 
-Version tags (see `VERSION`): **v1.7.0** = `bddb3464388181f4aa13aaa8f97d5985f0da30c3`,
+Version tags (see `VERSION`): **v1.8.0** = `ee9ff9211e7eda1a8571ec634e1affc570cc560f`,
+**v1.7.0** = `bddb3464388181f4aa13aaa8f97d5985f0da30c3`,
 **v1.6.0** = `2dcd368a81cfa1c4490f6fd655085a36fd890a24`,
 **v1.5.1** = `6df11a364453db54a6255a4ad9addeaa2062978f`,
 **v1.5.0** = `d11b13ecd1ce6782b0200c8be38764b2a5b5e429`,
@@ -18,6 +19,7 @@ git proxy blocks tag pushes, so these are the authoritative version→commit rec
 
 | Date (UTC) | Commit | What shipped |
 | --- | --- | --- |
+| 2026-08-07 | `ee9ff9211e7eda1a8571ec634e1affc570cc560f` | **v1.8.0** — human-scale players (~6'2" instead of ~15ft), rig reoriented so limbs swing fore/aft (natural arms + stride), refreshed landing screen on the real stadium (#28) |
 | 2026-08-07 | `bddb3464388181f4aa13aaa8f97d5985f0da30c3` | **v1.7.0** — Three.js r128→r185 via import map + guarded ESM bootstrap (2D fallback preserved), bloom/SMAA post-processing, colorSpace migration, lighting re-tuned for physically-correct units (#26) |
 | 2026-08-07 | `2dcd368a81cfa1c4490f6fd655085a36fd890a24` | **v1.6.0** — Madden-style camera: always behind the team you play as, anchored behind the action, field width fills the frame (#24) |
 | 2026-08-07 | `6df11a364453db54a6255a4ad9addeaa2062978f` | **v1.5.1** — crisper turf markings (mipmapped textures) (#22) |
