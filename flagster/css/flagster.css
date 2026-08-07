@@ -304,6 +304,18 @@ h1,h2,h3,h4{margin:.2em 0}
   body:not(.is-touch) .joystick{opacity:.35}
   body:not(.is-touch) .act-btn{opacity:.85}
 }
+/* Narrow screens: drop the scoreboard BELOW the pause/controls buttons so they
+   never overlap, and tighten it so nothing is clipped. */
+@media (max-width:620px){
+  .game-top-btns{transform:scale(.86);transform-origin:top left}
+  .hud{top:44px;background:linear-gradient(180deg,rgba(0,0,0,.55),transparent);gap:8px;padding:4px 8px 10px}
+  .hud-team{padding:3px 7px;gap:4px}
+  .hud-score{font-size:1.15rem}
+  .hud-abbr{font-size:.8rem}
+  .hud-flag{font-size:1rem}
+  .hud-clock{font-size:.92rem}
+  .hud-down{font-size:.62rem}
+}
 @media (max-width:420px){
   .play-grid{grid-template-columns:repeat(2,1fr)}
   .team-grid{grid-template-columns:repeat(auto-fill,minmax(110px,1fr))}
