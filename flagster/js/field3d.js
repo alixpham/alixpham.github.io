@@ -52,10 +52,15 @@
     // Broadcast-quality output: soft shadows, filmic tone mapping, sRGB.
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    if (THREE.sRGBEncoding !== undefined) renderer.outputEncoding = THREE.sRGBEncoding;
+    // Colour space: modern Three uses `outputColorSpace`; r1xx used `outputEncoding`.
+    if (THREE.SRGBColorSpace !== undefined && 'outputColorSpace' in renderer) {
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+    } else if (THREE.sRGBEncoding !== undefined) {
+      renderer.outputEncoding = THREE.sRGBEncoding;
+    }
     if (THREE.ACESFilmicToneMapping !== undefined) {
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      renderer.toneMappingExposure = 1.05;
+      renderer.toneMappingExposure = 0.86;
     }
 
     var scene = new THREE.Scene();
@@ -67,8 +72,10 @@
     var camera = new THREE.PerspectiveCamera(60, 16 / 9, 0.1, 1200);
 
     // ---- Lights (stadium daylight) ----
-    scene.add(new THREE.HemisphereLight(0xdff0ff, 0x4a7a4a, 0.85));
-    var sun = new THREE.DirectionalLight(0xfff4e0, 1.15);
+    // NOTE: r155+ uses physically-correct light units — intensities that looked
+    // right on r128 render ~PI times too dark, so these are scaled accordingly.
+    scene.add(new THREE.HemisphereLight(0xdff0ff, 0x4a7a4a, 1.55));
+    var sun = new THREE.DirectionalLight(0xfff4e0, 1.95);
     sun.position.set(-40, 70, 40);
     sun.castShadow = true;
     sun.shadow.mapSize.width = 2048;
@@ -79,7 +86,7 @@
     sun.shadow.bias = -0.0005;
     scene.add(sun);
     scene.add(sun.target);
-    var fill = new THREE.DirectionalLight(0xbfd8ff, 0.28);
+    var fill = new THREE.DirectionalLight(0xbfd8ff, 0.55);
     fill.position.set(30, 40, -30);
     scene.add(fill);
 
@@ -372,18 +379,24 @@
       var h = canvas.clientHeight || (canvas.parentElement && canvas.parentElement.clientHeight) || 480;
       if (w < 2 || h < 2) return;
       renderer.setSize(w, h, false);
+      if (fx) fx.setSize(w, h);
       camera.aspect = w / h; viewAspect = w / h;
       // FOV stays fixed — updateCamera() solves the distance that fits the
       // whole field for this aspect, so nothing is ever cropped.
       camera.updateProjectionMatrix();
     }
+    // Optional post-processing (subtle bloom + SMAA). null => render direct.
+    var fx = (global.FLAGSTER && global.FLAGSTER.FX)
+      ? global.FLAGSTER.FX.create(THREE, renderer, scene, camera, {})
+      : null;
+
     var ro = ('ResizeObserver' in global) ? new ResizeObserver(resize) : null;
     if (ro) ro.observe(canvas); else global.addEventListener('resize', resize);
     resize();
 
     // ---------------------------- RENDER -----------------------------------
     function render(state) {
-      if (!state) { renderer.render(scene, camera); return; }
+      if (!state) { if (fx) fx.render(); else renderer.render(scene, camera); return; }
       var dt = (engine && engine._dt) || 0.016;
       if (dt > 0.05) dt = 0.05;
 
@@ -434,7 +447,7 @@
       if (tdFx.dur > 0) { tdFx.t += dt; if (tdFx.t >= tdFx.dur) tdFx.dur = 0; }
 
       updateCamera(state, dt);
-      renderer.render(scene, camera);
+      if (fx) fx.render(); else renderer.render(scene, camera);
     }
 
     function stop() {
@@ -452,6 +465,7 @@
           if (m.map) m.map.dispose(); m.dispose();
         });
       });
+      if (fx) { try { fx.dispose(); } catch (e) {} }
       renderer.dispose();
     }
 

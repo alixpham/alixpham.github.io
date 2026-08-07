@@ -250,7 +250,8 @@
     tex.minFilter = THREE.LinearMipmapLinearFilter;
     tex.generateMipmaps = true;
     tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
-    if ('encoding' in tex) tex.encoding = THREE.sRGBEncoding;
+    if (THREE.SRGBColorSpace !== undefined && 'colorSpace' in tex) tex.colorSpace = THREE.SRGBColorSpace;
+    else if (THREE.sRGBEncoding !== undefined && 'encoding' in tex) tex.encoding = THREE.sRGBEncoding;
     tex.needsUpdate = true;
 
     var mesh = new THREE.Mesh(
@@ -314,15 +315,15 @@
     var innerX = aW / 2, innerZ = aD / 2;        // = 46, 23.5
 
     var wallH = 2.4;
-    root.add(ring(THREE, innerX, innerZ, 1.2, 0, wallH, 0x16212a, true));       // front wall
+    root.add(ring(THREE, innerX, innerZ, 1.2, 0, wallH, 0x33414d, true));       // front wall
     // Team-colored padding along the two end walls.
     root.add(padWall(THREE, -(innerX + 0.6), awayColor, aD));
     root.add(padWall(THREE, (innerX + 0.6), homeColor, aD));
 
     var decks = [
-      { n: 13, sw: 0.95, rise: 0.60, c: 0x3c444b },
-      { n: 13, sw: 1.00, rise: 0.70, c: 0x353c43 },
-      { n: 11, sw: 1.05, rise: 0.78, c: 0x2e353c }
+      { n: 13, sw: 0.95, rise: 0.60, c: 0x99a4ad },
+      { n: 13, sw: 1.00, rise: 0.70, c: 0x8c97a0 },
+      { n: 11, sw: 1.05, rise: 0.78, c: 0x7f8a93 }
     ];
     var inX = innerX + 1.2, inZ = innerZ + 1.2;
     var y = wallH;
@@ -388,7 +389,8 @@
     tex.generateMipmaps = false;
     tex.wrapS = THREE.ClampToEdgeWrapping;
     tex.wrapT = THREE.ClampToEdgeWrapping;
-    if ('encoding' in tex) tex.encoding = THREE.sRGBEncoding;
+    if (THREE.SRGBColorSpace !== undefined && 'colorSpace' in tex) tex.colorSpace = THREE.SRGBColorSpace;
+    else if (THREE.sRGBEncoding !== undefined && 'encoding' in tex) tex.encoding = THREE.sRGBEncoding;
 
     var sky = new THREE.Mesh(
       new THREE.SphereGeometry(radius || 250, 32, 20),
@@ -448,7 +450,8 @@
     tex.magFilter = THREE.LinearFilter;
     tex.minFilter = THREE.LinearMipmapLinearFilter;
     tex.generateMipmaps = true;
-    if ('encoding' in tex) tex.encoding = THREE.sRGBEncoding;
+    if (THREE.SRGBColorSpace !== undefined && 'colorSpace' in tex) tex.colorSpace = THREE.SRGBColorSpace;
+    else if (THREE.sRGBEncoding !== undefined && 'encoding' in tex) tex.encoding = THREE.sRGBEncoding;
     return tex;
   }
 
@@ -668,7 +671,8 @@
     var tex = new THREE.CanvasTexture(cv);
     tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
     tex.generateMipmaps = false;
-    if ('encoding' in tex) tex.encoding = THREE.sRGBEncoding;
+    if (THREE.SRGBColorSpace !== undefined && 'colorSpace' in tex) tex.colorSpace = THREE.SRGBColorSpace;
+    else if (THREE.sRGBEncoding !== undefined && 'encoding' in tex) tex.encoding = THREE.sRGBEncoding;
 
     var screen = new THREE.Mesh(
       new THREE.BoxGeometry(20, 10, 1.4),

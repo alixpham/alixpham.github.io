@@ -14,20 +14,16 @@
 <body>
   <div id="app"><div class="boot">Loading Flagster…</div></div>
 
-  <script src="lib/three.min.js"></script>
-  <script src="lib/GLTFLoader.js"></script>
-  <script src="lib/SkeletonUtils.js"></script>
-  <script src="js/data.js"></script>
-  <script src="js/storage.js"></script>
-  <script src="js/engine.js"></script>
-  <script src="js/player3d.js"></script>
-  <script src="js/stadium3d.js"></script>
-  <script src="js/hero3d.js"></script>
-  <script src="js/field3d.js"></script>
-  <script src="js/ui.js"></script>
-  <script src="js/world.js"></script>
-  <script src="js/teambuilder.js"></script>
-  <script src="js/roadtoglory.js"></script>
-  <script src="js/main.js"></script>
+  <!-- Modern Three.js is ESM-only. The import map + boot3d.js bridge it to the
+       global `THREE` the game's classic scripts expect, then load them in order. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./lib/three/three.module.js",
+      "three/addons/": "./lib/three/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="js/boot3d.js"></script>
 </body>
 </html>
