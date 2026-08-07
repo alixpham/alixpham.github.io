@@ -23,6 +23,15 @@
     var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(global.devicePixelRatio || 1, 2));
     renderer.setClearColor(0x000000, 0);
+    if (THREE.SRGBColorSpace !== undefined && 'outputColorSpace' in renderer) {
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+    } else if (THREE.sRGBEncoding !== undefined) { renderer.outputEncoding = THREE.sRGBEncoding; }
+    if (THREE.ACESFilmicToneMapping !== undefined) {
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 0.95;
+    }
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     var scene = new THREE.Scene();
     scene.fog = new THREE.Fog(0x0b3d1e, 16, 34);
@@ -38,23 +47,45 @@
     //   (-Z), +PI = toward camera (+Z), +PI/2 = screen-left (-X), -PI/2 =
     //   screen-right (+X).  (Local +X rotated by -yaw about Y: yaw 0 -> +X? no —
     //   we adopt the scene convention below via YAW_* and it's tuned by eye.)
-    var camera = new THREE.PerspectiveCamera(38, 2, 0.1, 100);
-    camera.position.set(0, 13.5, 6.2);
-    camera.lookAt(0, 0.7, -0.2);
+    var camera = new THREE.PerspectiveCamera(34, 2, 0.1, 1200);
+    camera.position.set(0, 2.9, 8.4);
+    camera.lookAt(0, 1.35, 0.6);
 
     // Lights
-    scene.add(new THREE.HemisphereLight(0xdfffe8, 0x1b4a2a, 0.95));
-    var sun = new THREE.DirectionalLight(0xffffff, 0.75);
-    sun.position.set(-4, 12, 6);
+    // NOTE: r155+ uses physically-correct light units, so the r128-era values
+    // rendered far too dark. Scaled to match the in-game stadium lighting.
+    scene.add(new THREE.HemisphereLight(0xdff0ff, 0x4a7a4a, 2.0));
+    var sun = new THREE.DirectionalLight(0xfff4e0, 2.4);
+    sun.position.set(-14, 26, 16);
+    sun.castShadow = true;
+    sun.shadow.mapSize.width = 1024; sun.shadow.mapSize.height = 1024;
+    sun.shadow.camera.left = -18; sun.shadow.camera.right = 18;
+    sun.shadow.camera.top = 18; sun.shadow.camera.bottom = -18;
+    sun.shadow.bias = -0.0006;
     scene.add(sun);
+    var heroFill = new THREE.DirectionalLight(0xbfd8ff, 0.5);
+    heroFill.position.set(12, 16, -10); scene.add(heroFill);
 
-    // ---- Field patch -------------------------------------------------------
-    scene.add(makeField(THREE));
+    // ---- Stadium backdrop --------------------------------------------------
+    // Reuse the in-game stadium + broadcast turf so the landing screen shows
+    // the same world you actually play in. Falls back to the simple patch.
+    var heroStadium = null;
+    var ST = global.FLAGSTER && global.FLAGSTER.Stadium3D;
+    if (ST) {
+      try {
+        var opt = { awayColor: '#0b5d3b', homeColor: '#1b2a6b', awayName: 'FLAGSTER', homeName: 'LA 2028' };
+        heroStadium = ST.build(THREE, opt);
+        if (heroStadium) scene.add(heroStadium);
+        var heroTurf = ST.makeTurf(THREE, opt);
+        if (heroTurf) { heroTurf.receiveShadow = true; scene.add(heroTurf); }
+      } catch (e) { heroStadium = null; }
+    }
+    if (!heroStadium) scene.add(makeField(THREE));
 
     // ---- Three realistic players ------------------------------------------
     // Player3D model is ~2.1 units tall; the field patch is ~26x12. Scale so a
     // player reads at a good size for the tilted top-down cam (tuned by eye).
-    var PSCALE = 1.6;
+    var PSCALE = 0.87;      // ~6'2" at 1 unit = 1 yard (was a 3.8yd giant)
 
     // IMPORTANT: several Player3D clips animate root.position (an authored
     // vertical bounce), so the mixer overwrites P.root.position every frame.
@@ -69,6 +100,8 @@
       var carrier = new THREE.Group();
       carrier.scale.setScalar(PSCALE);
       carrier.position.set(x, 0, z);   // feet on the turf (rig origin is at the feet)
+      P.root.traverse(function (o) { if (o.isMesh) o.castShadow = true; });
+      if (P.setPlateScale) P.setPlateScale(0.6);
       carrier.add(P.root);
       scene.add(carrier);
       return { P: P, carrier: carrier };
@@ -126,7 +159,7 @@
     var ctx = { ball: ballCtrl, looseFlag: looseFlag, confetti: confetti, THREE: THREE };
 
     var players = [
-      setupRotation(runner,   ['run', 'juke', 'highstep', 'run'],          { x: -5.0, z: 1.8 }, 0.0),
+      setupRotation(runner,   ['run', 'juke', 'highstep', 'run'],          { x: -3.1, z: 1.8 }, 0.0),
       setupRotation(star,     ['celebrate', 'throw', 'celebrate', 'dive'], { x: 0.0,  z: 1.8 }, 1.5),
       setupRotation(defender, ['flagpull', 'run', 'highstep', 'flagpull'], { x: 5.0,  z: 1.8 }, 3.0)
     ];   // each takes a {P, carrier} from makeP3D
