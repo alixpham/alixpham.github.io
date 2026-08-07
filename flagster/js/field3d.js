@@ -61,7 +61,10 @@
     var scene = new THREE.Scene();
     scene.fog = new THREE.Fog(0x9fc4e4, 150, 420);   // haze toward the sky, not black
 
-    var camera = new THREE.PerspectiveCamera(38, 16 / 9, 0.1, 1200);
+    // Wide-ish lens: looking down the field end-on, a wide FOV spreads the near
+    // yardage across the screen and lets the far end zone converge — the
+    // dramatic Madden perspective, instead of a flat telephoto strip.
+    var camera = new THREE.PerspectiveCamera(60, 16 / 9, 0.1, 1200);
 
     // ---- Lights (stadium daylight) ----
     scene.add(new THREE.HemisphereLight(0xdff0ff, 0x4a7a4a, 0.85));
@@ -314,34 +317,51 @@
     function updateCamera(state, dt) {
       var userSide = (engine && engine.userSide) || 'home';
       var userOff = (state.possession === userSide);
-      var s = userOff ? 1 : -1;                    // look toward +x on offense
+      var s = userOff ? 1 : -1;                    // we attack toward +x on offense
 
-      // View direction is chosen to use the screen shape efficiently:
-      //  • WIDE screens → broadcast SIDELINE angle, so the field's 70-yard
-      //    length runs across the screen's long (horizontal) axis.
-      //  • TALL screens → END-ZONE angle behind the user's side, so the length
-      //    runs down the screen's long (vertical) axis.
-      // Both are canted toward the user's end so "our" side reads as nearest.
-      if (viewAspect >= 1.0) _dir.set(-s * 0.30, 0.74, 0.62);
-      else                   _dir.set(-s * 0.62, 1.05, 0.20);
-      _dir.normalize();
+      /* MADDEN-STYLE FRAMING — always behind the team we're playing as.
+         `s` flips with possession, so our players are always in the foreground
+         and we look downfield at the opponent's end zone.
 
-      // Distance that keeps every corner inside the frustum.
-      _fwd.copy(_dir).multiplyScalar(-1).normalize();
-      _rgt.crossVectors(_fwd, _UPY).normalize();
-      _upv.crossVectors(_rgt, _fwd).normalize();
+         Rather than forcing our own back line into frame (which shoves the
+         camera miles back and shrinks the field to a strip), we anchor on OUR
+         GOAL LINE and pull back exactly far enough that the field's full WIDTH
+         spans the screen. Because we're looking straight down the field, the
+         entire length — all the way to the opposite end zone — stays in view
+         as it converges toward the horizon. */
+      var halfW = 13.2;                            // field half-width + margin
       var vt = Math.tan(camera.fov * Math.PI / 360);
-      var ht = vt * Math.max(0.3, viewAspect);
-      var need = 0;
-      for (var i = 0; i < _fitPts.length; i++) {
-        _v.copy(_fitPts[i]).sub(_target);
-        var fz = _v.dot(_fwd), fx = _v.dot(_rgt), fy = _v.dot(_upv);
-        need = Math.max(need, Math.abs(fx) / ht - fz, Math.abs(fy) / vt - fz);
-      }
-      need *= 1.005;                              // hug the field edges
-      camDist = lerp(camDist, need, clamp(dt * 3, 0, 1));
+      var ht = vt * Math.max(0.22, viewAspect);
 
-      camera.position.copy(_dir).multiplyScalar(camDist).add(_target);
+      // Horizontal pull-back so the width just fills the frame.
+      var back = clamp(halfW / ht * 1.06, 15, 78);
+      // Tall screens sit higher and aim shorter, so the frame is filled with
+      // FIELD rather than sky; wide screens keep the low, dramatic sightline.
+      var tall = (viewAspect < 1.0);
+      var height = clamp(back * (tall ? 0.95 : 0.60), 9, 52);
+      var ahead = clamp(back * (tall ? 0.80 : 1.50), 22, 62);
+
+      // Anchor a few yards behind the ACTION (like a broadcast/Madden cam) so
+      // players stay readable, clamped so we never drift past our own end line.
+      var focusFx = (state.losX != null) ? state.losX : MID;
+      if (state.carrier) focusFx = state.carrier.x;
+      else if (state.ball && state.ball.inAir) focusFx = state.ball.x;
+      var anchorFx = focusFx - s * 7;
+      anchorFx = (s > 0) ? Math.max(anchorFx, GOAL_L - 3) : Math.min(anchorFx, GOAL_R + 3);
+      camFx = lerp(camFx, anchorFx, clamp(dt * 2.2, 0, 1));
+      var anchorX = wx(camFx);
+
+      var camX = anchorX - s * back;
+      var lookX = anchorX + s * ahead;
+
+      // Ease so possession changes swing smoothly instead of snapping.
+      var k = clamp(dt * 2.6, 0, 1);
+      camera.position.set(
+        lerp(camera.position.x, camX, k),
+        lerp(camera.position.y, height, k),
+        0
+      );
+      _target.set(lerp(_target.x, lookX, k), 1.6, 0);
       camera.lookAt(_target);
       if (sun.target) sun.target.position.set(0, 0, 0);
     }
