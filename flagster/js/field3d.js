@@ -141,9 +141,10 @@
     // Realistic rigged players (FLAGSTER.Player3D) are (re)built whenever the
     // roster array changes. Each entry: { P, ring, ud }.
     var PLAYER3D = global.FLAGSTER && global.FLAGSTER.Player3D;
-    // Slightly larger than life so players still read clearly in the
-    // whole-field broadcast view (standard practice in sports games).
-    var PLAYER_SCALE = 1.45;
+    // Human scale: the rig is ~2.39yd tall, so 0.87 puts players at ~6'2".
+    // (It was 1.45 — which rendered ~10ft-tall giants.)
+    var PLAYER_SCALE = 0.87;
+    var PLAYER_LIFT = 0.10;    // rig dips slightly below its origin; sit feet on turf
     // A few skin tones rotated through by roster index for visual variety.
     var SKINS = ['#f2c9a0', '#e8b98f', '#d59a6a', '#a9714a', '#8a5a38', '#6f4526'];
 
@@ -206,7 +207,7 @@
     // Advance one player's Player3D: position, facing, clip selection, one-shots.
     function syncPlayer(entry, gp, dt, state) {
       var P = entry.P, ud = entry.ud, holder = entry.holder;
-      holder.position.set(wx(gp.x), 0, wz(gp.y));
+      holder.position.set(wx(gp.x), PLAYER_LIFT, wz(gp.y));
 
       var vx = gp.vx || 0, vy = gp.vy || 0;
       var speed = Math.hypot(vx, vy);

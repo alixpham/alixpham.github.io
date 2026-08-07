@@ -104,21 +104,24 @@
       parent.add(g); nodes[name] = g; return g;
     }
 
-    // Forward convention: model faces local +X (chest depth on X, shoulders on Z),
-    // matching the scenes' `rotation.y = -yaw` usage.
+    // Forward convention: the model faces local +Z, with shoulders spanning X.
+    // This matters: limb segments hang along -Y, so their animated rotation.x
+    // swings them through the SAGITTAL plane — real fore/aft stride and arm
+    // swing. (Facing +X put that same rotation in the frontal plane, which made
+    // arms and legs splay sideways.) api.face()/setYaw() map heading -> rotation.
     // --- pelvis / spine / chest ---
     var pelvis = node('pelvis', root, 0, 1.02, 0);
-    var pelvisMesh = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.28, 0.5), jerseyMat); pelvis.add(pelvisMesh);
+    var pelvisMesh = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.28, 0.34), jerseyMat); pelvis.add(pelvisMesh);
     var spine = node('spine', pelvis, 0, 0.18, 0);
     // abdomen bridges pelvis→chest so the torso reads as one continuous body
-    var abdomenMesh = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.36, 0.52), jerseyMat);
+    var abdomenMesh = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.36, 0.36), jerseyMat);
     abdomenMesh.position.y = -0.02; spine.add(abdomenMesh);
     var chest = node('chest', spine, 0, 0.16, 0);
     // broader, athletic chest for a men's build
-    var chestMesh = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.5, 0.62), jerseyMat); chestMesh.position.y = 0.2; chest.add(chestMesh);
-    var pecs = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.16, 0.6), jerseyMat); pecs.position.y = 0.3; chest.add(pecs);
+    var chestMesh = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.5, 0.46), jerseyMat); chestMesh.position.y = 0.2; chest.add(chestMesh);
+    var pecs = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.16, 0.44), jerseyMat); pecs.position.y = 0.3; chest.add(pecs);
     // shoulder trim / collar
-    var yoke = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.12, 0.66), trimMat); yoke.position.y = 0.42; chest.add(yoke);
+    var yoke = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.12, 0.5), trimMat); yoke.position.y = 0.42; chest.add(yoke);
     // number on the chest
     chest.add(numberPlate(THREE, opts.number, opts.trim || '#fff', 0.3));
 
@@ -127,7 +130,7 @@
     var head = node('head', neck, 0, 0.12, 0);
     var skull = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 14), skinMat); skull.position.y = 0.1; head.add(skull);
     var hair = new THREE.Mesh(new THREE.SphereGeometry(0.205, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.6), hairMat); hair.position.y = 0.12; head.add(hair);
-    var faceNub = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 8), skinMat); faceNub.position.set(0.18, 0.08, 0); head.add(faceNub); // nose = forward marker (+X)
+    var faceNub = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 8), skinMat); faceNub.position.set(0, 0.08, 0.18); head.add(faceNub); // nose = forward marker (+X)
     // team headband
     var band = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.028, 8, 18), mkMat(THREE, opts.trim || '#ffffff', { rough: 0.7 }));
     band.rotation.x = Math.PI / 2; band.position.y = 0.05; head.add(band);
@@ -135,7 +138,7 @@
     // --- arms (shoulder → upperArm → forearm → hand) ---
     function arm(side) {
       var s = side === 'L' ? 1 : -1;                        // shoulders span Z
-      var sh = node('shoulder' + side, chest, 0.02, 0.38, s * 0.3);
+      var sh = node('shoulder' + side, chest, s * 0.3, 0.38, 0.02);
       var delt = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 10), jerseyMat); sh.add(delt);  // deltoid cap → broad shoulders
       var up = node('upperArm' + side, sh, 0, 0, 0);
       up.add(segment(THREE, skinMat, 0.4, 0.09, 0.07));
@@ -150,14 +153,14 @@
     // --- legs (hip → thigh → shin → foot) ---
     function leg(side) {
       var s = side === 'L' ? 1 : -1;
-      var hip = node('hip' + side, pelvis, 0, -0.14, s * 0.14);
+      var hip = node('hip' + side, pelvis, s * 0.14, -0.14, 0);
       var thigh = node('thigh' + side, hip, 0, 0, 0);
       thigh.add(segment(THREE, shortMat, 0.46, 0.13, 0.1));   // shorts over thigh
       var shin = node('shin' + side, thigh, 0, -0.46, 0);
       shin.add(segment(THREE, sockMat, 0.44, 0.09, 0.06));    // sock over shin
       var foot = node('foot' + side, shin, 0, -0.44, 0);
-      var shoe = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.1, 0.16), shoeMat);
-      shoe.position.set(0.08, -0.05, 0); foot.add(shoe);       // cleat points +X (forward)
+      var shoe = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.1, 0.28), shoeMat);
+      shoe.position.set(0, -0.05, 0.08); foot.add(shoe);       // cleat points +Z (forward)
     }
     leg('L'); leg('R');
 
@@ -171,7 +174,7 @@
       var m = new THREE.Mesh(new THREE.PlaneGeometry(0.1, 0.42),
         new THREE.MeshStandardMaterial({ color: 0xffd23f, side: THREE.DoubleSide, roughness: 0.8 }));
       m.position.y = -0.21; g.add(m);
-      g.position.set(-0.02, 0.03, s * 0.27); pelvis.add(g); nodes['flag' + side] = g;   // hang from the belt line
+      g.position.set(s * 0.27, 0.03, -0.02); pelvis.add(g); nodes['flag' + side] = g;   // hang from the belt line
     }
     ribbon('L'); ribbon('R');
 
@@ -187,7 +190,7 @@
     var tex = new THREE.CanvasTexture(c);
     var m = new THREE.Mesh(new THREE.PlaneGeometry(size, size),
       new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
-    m.position.set(0.3, 0.22, 0); m.rotation.y = Math.PI / 2;   // face +X (front)
+    m.position.set(0, 0.22, 0.3);                              // face +Z (front)
     return m;
   }
 
@@ -208,13 +211,15 @@
     // ---------- IDLE / READY (loop) ----------
     clip('idle', 2.4, [
       P('root', [0, 1.2, 2.4], [[0, 0, 0], [0, 0.03, 0], [0, 0, 0]]),
-      T('spine', [0, 1.2, 2.4], [[-0.12, 0, 0], [-0.15, 0.02, 0], [-0.12, 0, 0]]),
-      T('chest', [0, 1.2, 2.4], [[-0.06, 0, 0], [-0.03, -0.02, 0], [-0.06, 0, 0]]),
-      T('head', [0, 1.2, 2.4], [[0.06, 0, 0], [0.04, 0.05, 0], [0.06, 0, 0]]),
-      T('upperArmL', [0, 2.4], [[0.2, 0, 0.18], [0.2, 0, 0.18]]),
-      T('forearmL', [0, 2.4], [[1.1, 0, 0.2], [1.1, 0, 0.2]]),
-      T('upperArmR', [0, 2.4], [[0.2, 0, -0.18], [0.2, 0, -0.18]]),
-      T('forearmR', [0, 2.4], [[1.1, 0, -0.2], [1.1, 0, -0.2]]),
+      T('spine', [0, 1.2, 2.4], [[0.12, 0, 0], [0.15, 0.02, 0], [0.12, 0, 0]]),
+      T('chest', [0, 1.2, 2.4], [[0.06, 0, 0], [0.03, -0.02, 0], [0.06, 0, 0]]),
+      T('head', [0, 1.2, 2.4], [[-0.06, 0, 0], [-0.04, 0.05, 0], [-0.06, 0, 0]]),
+      // Relaxed: a light ~25 deg elbow bend and a little outward clearance,
+      // with a slow breathing sway — not the rigid 60 deg tuck it had before.
+      T('upperArmL', [0, 1.2, 2.4], [[0.1, 0, 0.16], [0.14, 0, 0.19], [0.1, 0, 0.16]]),
+      T('forearmL', [0, 1.2, 2.4], [[0.42, 0, 0.05], [0.46, 0, 0.05], [0.42, 0, 0.05]]),
+      T('upperArmR', [0, 1.2, 2.4], [[0.1, 0, -0.16], [0.14, 0, -0.19], [0.1, 0, -0.16]]),
+      T('forearmR', [0, 1.2, 2.4], [[0.42, 0, -0.05], [0.46, 0, -0.05], [0.42, 0, -0.05]]),
       T('thighL', [0, 2.4], [[0.12, 0, 0.02], [0.12, 0, 0.02]]),
       T('shinL', [0, 2.4], [[-0.2, 0, 0], [-0.2, 0, 0]]),
       T('thighR', [0, 2.4], [[0.12, 0, -0.02], [0.12, 0, -0.02]]),
@@ -224,9 +229,9 @@
     // ---------- RUN (loop) ---------- contralateral drive, forward lean
     clip('run', 0.62, [
       P('root', [0, 0.155, 0.31, 0.465, 0.62], [[0, 0.06, 0], [0, 0.16, 0], [0, 0.06, 0], [0, 0.16, 0], [0, 0.06, 0]]),
-      T('spine', [0, 0.62], [[-0.34, 0, 0], [-0.34, 0, 0]]),
-      T('chest', [0, 0.31, 0.62], [[-0.1, 0.12, 0], [-0.1, -0.12, 0], [-0.1, 0.12, 0]]),
-      T('head', [0, 0.62], [[0.28, 0, 0], [0.28, 0, 0]]),
+      T('spine', [0, 0.62], [[0.34, 0, 0], [0.34, 0, 0]]),
+      T('chest', [0, 0.31, 0.62], [[0.1, 0.12, 0], [0.1, -0.12, 0], [0.1, 0.12, 0]]),
+      T('head', [0, 0.62], [[-0.28, 0, 0], [-0.28, 0, 0]]),
       // legs
       T('thighL', [0, 0.31, 0.62], [[0.95, 0, 0], [-0.7, 0, 0], [0.95, 0, 0]]),
       T('shinL',  [0, 0.155, 0.31, 0.62], [[-0.5, 0, 0], [-1.5, 0, 0], [-0.2, 0, 0], [-0.5, 0, 0]]),
@@ -235,43 +240,45 @@
       T('footL', [0, 0.62], [[0.2, 0, 0], [0.2, 0, 0]]),
       T('footR', [0, 0.62], [[0.2, 0, 0], [0.2, 0, 0]]),
       // arms (bent ~90°, pump opposite the legs)
-      T('upperArmL', [0, 0.31, 0.62], [[-0.9, 0, 0.15], [0.7, 0, 0.15], [-0.9, 0, 0.15]]),
-      T('forearmL',  [0, 0.62], [[1.4, 0, 0], [1.4, 0, 0]]),
-      T('upperArmR', [0, 0.31, 0.62], [[0.7, 0, -0.15], [-0.9, 0, -0.15], [0.7, 0, -0.15]]),
-      T('forearmR',  [0, 0.62], [[1.4, 0, 0], [1.4, 0, 0]])
+      // Sprinter's carry: elbows locked near 90 deg, hands driving from hip to
+      // chest, shoulders slightly abducted so the forearms clear the ribs.
+      T('upperArmL', [0, 0.31, 0.62], [[-0.75, 0, 0.22], [0.62, 0, 0.22], [-0.75, 0, 0.22]]),
+      T('forearmL',  [0, 0.31, 0.62], [[1.32, 0, 0.08], [1.05, 0, 0.08], [1.32, 0, 0.08]]),
+      T('upperArmR', [0, 0.31, 0.62], [[0.62, 0, -0.22], [-0.75, 0, -0.22], [0.62, 0, -0.22]]),
+      T('forearmR',  [0, 0.31, 0.62], [[1.05, 0, -0.08], [1.32, 0, -0.08], [1.05, 0, -0.08]])
     ], true);
 
     // ---------- WALK (loop) ----------
     clip('walk', 1.0, [
       P('root', [0, 0.25, 0.5, 0.75, 1.0], [[0, 0.02, 0], [0, 0.06, 0], [0, 0.02, 0], [0, 0.06, 0], [0, 0.02, 0]]),
-      T('spine', [0, 1.0], [[-0.16, 0, 0], [-0.16, 0, 0]]),
+      T('spine', [0, 1.0], [[0.16, 0, 0], [0.16, 0, 0]]),
       T('thighL', [0, 0.5, 1.0], [[0.5, 0, 0], [-0.4, 0, 0], [0.5, 0, 0]]),
       T('shinL',  [0, 0.25, 0.5, 1.0], [[-0.3, 0, 0], [-0.8, 0, 0], [-0.15, 0, 0], [-0.3, 0, 0]]),
       T('thighR', [0, 0.5, 1.0], [[-0.4, 0, 0], [0.5, 0, 0], [-0.4, 0, 0]]),
       T('shinR',  [0, 0.25, 0.5, 1.0], [[-0.15, 0, 0], [-0.3, 0, 0], [-0.8, 0, 0], [-0.15, 0, 0]]),
-      T('upperArmL', [0, 0.5, 1.0], [[-0.4, 0, 0.16], [0.4, 0, 0.16], [-0.4, 0, 0.16]]),
-      T('forearmL',  [0, 1.0], [[0.9, 0, 0], [0.9, 0, 0]]),
-      T('upperArmR', [0, 0.5, 1.0], [[0.4, 0, -0.16], [-0.4, 0, -0.16], [0.4, 0, -0.16]]),
-      T('forearmR',  [0, 1.0], [[0.9, 0, 0], [0.9, 0, 0]])
+      T('upperArmL', [0, 0.5, 1.0], [[-0.34, 0, 0.17], [0.34, 0, 0.17], [-0.34, 0, 0.17]]),
+      T('forearmL',  [0, 0.5, 1.0], [[0.6, 0, 0.05], [0.42, 0, 0.05], [0.6, 0, 0.05]]),
+      T('upperArmR', [0, 0.5, 1.0], [[0.34, 0, -0.17], [-0.34, 0, -0.17], [0.34, 0, -0.17]]),
+      T('forearmR',  [0, 0.5, 1.0], [[0.42, 0, -0.05], [0.6, 0, -0.05], [0.42, 0, -0.05]])
     ], true);
 
     // ---------- BACKPEDAL (loop) ---------- hips low, weight back, quick steps
     clip('backpedal', 0.5, [
       P('root', [0, 0.25, 0.5], [[0, 0.02, 0], [0, 0.08, 0], [0, 0.02, 0]]),
-      T('spine', [0, 0.5], [[0.14, 0, 0], [0.14, 0, 0]]),          // slight backward lean
+      T('spine', [0, 0.5], [[-0.14, 0, 0], [-0.14, 0, 0]]),          // slight backward lean
       T('thighL', [0, 0.25, 0.5], [[0.5, 0, 0], [-0.15, 0, 0], [0.5, 0, 0]]),
       T('shinL',  [0, 0.25, 0.5], [[-0.9, 0, 0], [-0.4, 0, 0], [-0.9, 0, 0]]),
       T('thighR', [0, 0.25, 0.5], [[-0.15, 0, 0], [0.5, 0, 0], [-0.15, 0, 0]]),
       T('shinR',  [0, 0.25, 0.5], [[-0.4, 0, 0], [-0.9, 0, 0], [-0.4, 0, 0]]),
-      T('upperArmL', [0, 0.5], [[0.1, 0, 0.35], [0.1, 0, 0.35]]),
-      T('forearmL',  [0, 0.5], [[1.5, 0, 0], [1.5, 0, 0]]),
-      T('upperArmR', [0, 0.5], [[0.1, 0, -0.35], [0.1, 0, -0.35]]),
-      T('forearmR',  [0, 0.5], [[1.5, 0, 0], [1.5, 0, 0]])
+      T('upperArmL', [0, 0.25, 0.5], [[-0.2, 0, 0.34], [-0.05, 0, 0.34], [-0.2, 0, 0.34]]),
+      T('forearmL',  [0, 0.5], [[1.15, 0, 0.12], [1.15, 0, 0.12]]),
+      T('upperArmR', [0, 0.25, 0.5], [[-0.05, 0, -0.34], [-0.2, 0, -0.34], [-0.05, 0, -0.34]]),
+      T('forearmR',  [0, 0.5], [[1.15, 0, -0.12], [1.15, 0, -0.12]])
     ], true);
 
     // ---------- THROW (once) ---------- windup → over-the-top release → follow
     clip('throw', 1.1, [
-      T('spine', [0, 0.4, 0.62, 1.1], [[-0.1, -0.5, 0], [-0.1, -0.7, 0], [-0.15, 0.5, 0], [-0.1, 0.2, 0]]),
+      T('spine', [0, 0.4, 0.62, 1.1], [[0.1, -0.5, 0], [0.1, -0.7, 0], [0.15, 0.5, 0], [0.1, 0.2, 0]]),
       T('chest', [0, 0.4, 0.62, 1.1], [[0, -0.3, 0], [0, -0.5, 0], [0, 0.4, 0], [0, 0.1, 0]]),
       // right arm cocks back then whips over the top
       T('upperArmR', [0, 0.4, 0.6, 0.75, 1.1], [[0.2, 0, -0.2], [-2.4, -0.3, -0.6], [-2.6, -0.2, -0.4], [-0.4, 0.3, 0.2], [0.2, 0, -0.15]]),
@@ -288,7 +295,7 @@
 
     // ---------- CATCH (once) ---------- reach up/out then secure
     clip('catch', 0.9, [
-      T('spine', [0, 0.4, 0.9], [[-0.12, 0, 0], [-0.25, 0, 0], [-0.12, 0, 0]]),
+      T('spine', [0, 0.4, 0.9], [[0.12, 0, 0], [0.25, 0, 0], [0.12, 0, 0]]),
       T('upperArmL', [0, 0.35, 0.9], [[0.2, 0, 0.18], [-2.3, 0, 0.2], [-0.6, 0, 0.2]]),
       T('forearmL',  [0, 0.35, 0.9], [[1.1, 0, 0], [0.3, 0, 0], [1.3, 0, 0]]),
       T('upperArmR', [0, 0.35, 0.9], [[0.2, 0, -0.18], [-2.3, 0, -0.2], [-0.6, 0, -0.2]]),
@@ -314,7 +321,7 @@
     // ---------- FLAG PULL (once) ---------- lower hips, reach to hip, rip across
     clip('flagPull', 1.0, [
       P('root', [0, 0.4, 0.6, 1.0], [[0, 0, 0], [0, -0.12, 0], [0, -0.05, 0], [0, 0, 0]]),
-      T('spine', [0, 0.4, 0.6, 1.0], [[-0.15, 0, 0], [-0.55, 0.1, 0], [-0.4, -0.4, 0], [-0.15, 0, 0]]),
+      T('spine', [0, 0.4, 0.6, 1.0], [[0.15, 0, 0], [0.55, 0.1, 0], [0.4, -0.4, 0], [0.15, 0, 0]]),
       T('upperArmR', [0, 0.4, 0.6, 1.0], [[0.2, 0, -0.18], [1.5, 0, -0.5], [0.6, 0, 0.6], [-1.8, 0, -0.2]]), // reach down then rip up (celebrate)
       T('forearmR',  [0, 0.4, 0.6, 1.0], [[1.1, 0, 0], [0.4, 0, 0], [0.5, 0, 0], [1.2, 0, 0]]),
       T('upperArmL', [0, 1.0], [[0.3, 0, 0.2], [0.3, 0, 0.2]]),
@@ -328,7 +335,7 @@
     // ---------- CELEBRATE (loop) ---------- arms up, little hops
     clip('celebrate', 1.0, [
       P('root', [0, 0.25, 0.5, 0.75, 1.0], [[0, 0.05, 0], [0, 0.3, 0], [0, 0.05, 0], [0, 0.3, 0], [0, 0.05, 0]]),
-      T('spine', [0, 0.5, 1.0], [[-0.1, 0.15, 0], [-0.1, -0.15, 0], [-0.1, 0.15, 0]]),
+      T('spine', [0, 0.5, 1.0], [[0.1, 0.15, 0], [0.1, -0.15, 0], [0.1, 0.15, 0]]),
       T('upperArmL', [0, 0.5, 1.0], [[-2.7, 0, 0.3], [-2.5, 0, 0.5], [-2.7, 0, 0.3]]),
       T('forearmL',  [0, 1.0], [[0.4, 0, 0], [0.4, 0, 0]]),
       T('upperArmR', [0, 0.5, 1.0], [[-2.7, 0, -0.3], [-2.5, 0, -0.5], [-2.7, 0, -0.3]]),
@@ -340,7 +347,7 @@
     // ---------- JUKE (once) ---------- plant + spin lean
     clip('juke', 0.8, [
       P('root', [0, 0.4, 0.8], [[0, 0.05, 0], [0, 0.18, 0], [0, 0.05, 0]]),
-      T('spine', [0, 0.4, 0.8], [[-0.3, 0, 0.3], [-0.3, 0, -0.3], [-0.3, 0, 0]]),
+      T('spine', [0, 0.4, 0.8], [[0.3, 0, 0.3], [0.3, 0, -0.3], [0.3, 0, 0]]),
       T('thighL', [0, 0.4, 0.8], [[0.6, 0, 0], [-0.4, 0, 0], [0.6, 0, 0]]),
       T('thighR', [0, 0.4, 0.8], [[-0.4, 0, 0], [0.6, 0, 0], [-0.4, 0, 0]]),
       T('shinL', [0, 0.8], [[-0.6, 0, 0], [-0.6, 0, 0]]),
@@ -526,9 +533,9 @@
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
       api._yaw += diff * Math.min(1, (dt || 0.016) * 9);
-      root.rotation.y = -api._yaw;             // scenes use -yaw (see rig forward = +X)
+      root.rotation.y = Math.PI / 2 - api._yaw;   // rig forward = +Z
     };
-    api.setYaw = function (yaw) { api._yaw = yaw; root.rotation.y = -yaw; };
+    api.setYaw = function (yaw) { api._yaw = yaw; root.rotation.y = Math.PI / 2 - yaw; };
 
     // Nameplate controls — broadcast views want small tags on key players only.
     api.plate = plateSprite;
