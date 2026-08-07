@@ -34,8 +34,8 @@
   var DEF = {
     awayColor: '#d80621',
     homeColor: '#2b5cff',
-    awayName: 'BRAZIL',
-    homeName: 'CANADA'
+    awayName: 'AWAY',
+    homeName: 'HOME'
   };
 
   function opt(o, k) { return (o && o[k] != null && o[k] !== '') ? o[k] : DEF[k]; }
@@ -98,7 +98,7 @@
     /* --- mowed stripes: 5-yard bands running ACROSS the field ----------- */
     for (var sx = -HALF_L; sx < HALF_L; sx += 5) {
       var alt = (Math.round((sx + HALF_L) / 5) % 2) === 0;
-      g.fillStyle = alt ? '#33953f' : '#23702e';
+      g.fillStyle = alt ? '#35993f' : '#297f34';
       g.fillRect(px(sx) - 1, 0, 5 * UX + 2, H);
     }
     // subtle blotchy wear so the turf isn't flat vector-green
@@ -244,9 +244,11 @@
     /* --- texture + mesh -------------------------------------------------- */
     var tex = new THREE.CanvasTexture(cv);
     tex.anisotropy = 8;                          // renderer caps unknown here
-    tex.minFilter = THREE.LinearFilter;
     tex.magFilter = THREE.LinearFilter;
-    tex.generateMipmaps = false;
+    // Mipmaps matter: without them the yard lines/numbers alias into mush the
+    // moment the camera pulls back. Trilinear + anisotropy keeps them legible.
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.generateMipmaps = true;
     tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
     if ('encoding' in tex) tex.encoding = THREE.sRGBEncoding;
     tex.needsUpdate = true;
@@ -443,9 +445,9 @@
     }
     var tex = new THREE.CanvasTexture(cv);
     tex.anisotropy = 8;
-    tex.minFilter = THREE.LinearFilter;
     tex.magFilter = THREE.LinearFilter;
-    tex.generateMipmaps = false;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.generateMipmaps = true;
     if ('encoding' in tex) tex.encoding = THREE.sRGBEncoding;
     return tex;
   }
