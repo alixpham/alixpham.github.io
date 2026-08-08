@@ -459,6 +459,22 @@
   /* --------------------------------------------------------------- builder */
   function build(THREE, opts) {
     opts = opts || {};
+    /* Prefer the purpose-built RIGGED football player (real skinned mesh,
+       27-joint armature, per-region team tinting) once it has loaded. It
+       exposes the same API, so every call site is unchanged. We normalise its
+       height to the procedural rig's (2.385u) so the scales callers already
+       apply keep landing at ~6'2". Falls back silently if it isn't ready. */
+    var PM = global.FLAGSTER && global.FLAGSTER.PlayerModel;
+    if (PM && PM.isReady && PM.isReady()) {
+      try {
+        return PM.build(THREE, {
+          jersey: opts.jersey, trim: opts.trim, skin: opts.skin,
+          number: opts.number, name: opts.name,
+          scale: 2.385 / 1.850      // metres -> match the procedural rig's height
+        });
+      } catch (e) { /* fall through to the procedural rig */ }
+    }
+
     // Prefer a real loaded model only when explicitly enabled AND ready.
     if (USE_MODEL && MODEL.ready && THREE.SkeletonUtils && MODEL.scene) {
       try { return buildModelInstance(THREE, opts); } catch (e) { /* fall back below */ }
