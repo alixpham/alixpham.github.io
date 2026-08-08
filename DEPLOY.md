@@ -4,7 +4,8 @@ Flagster is served by GitHub Pages from the `master` branch at
 **https://alixpham.github.io/**. This file records the commit id behind each
 notable live deploy (newest first).
 
-Version tags (see `VERSION`): **v1.9.1** = `badcf47c09151d8f2d797b5f2971c819898d3dd5`,
+Version tags (see `VERSION`): **v2.0.0** = `323d1906391a50cdc257d1ed746f04994e6751df`,
+**v1.9.1** = `badcf47c09151d8f2d797b5f2971c819898d3dd5`,
 **v1.9.0** = `bedc17d4f761528f9f3a5c0b34684d925efed50d`,
 **v1.8.0** = `ee9ff9211e7eda1a8571ec634e1affc570cc560f`,
 **v1.7.0** = `bddb3464388181f4aa13aaa8f97d5985f0da30c3`,
@@ -21,6 +22,7 @@ git proxy blocks tag pushes, so these are the authoritative version→commit rec
 
 | Date (UTC) | Commit | What shipped |
 | --- | --- | --- |
+| 2026-08-08 | `323d1906391a50cdc257d1ed746f04994e6751df` | **v2.0.0** — real rigged/skinned/team-skinnable flag football player (glTF SkinnedMesh, 27 joints, 10 clips, 9 tintable regions) + reproducible generator; drops the 2.8MB Xbot (#34) |
 | 2026-08-07 | `badcf47c09151d8f2d797b5f2971c819898d3dd5` | **v1.9.1** — fixed rotated control axes (right no longer goes down), tap a player to switch / throw, swipe to move (#32) |
 | 2026-08-07 | `bedc17d4f761528f9f3a5c0b34684d925efed50d` | **v1.9.0** — Rookie/Pro/All-Pro difficulty (Rookie default), CPU-vs-CPU Watch Demo, contested flag pull with juke mechanic + grab meter (#30) |
 | 2026-08-07 | `ee9ff9211e7eda1a8571ec634e1affc570cc560f` | **v1.8.0** — human-scale players (~6'2" instead of ~15ft), rig reoriented so limbs swing fore/aft (natural arms + stride), refreshed landing screen on the real stadium (#28) |
