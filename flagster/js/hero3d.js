@@ -4,7 +4,7 @@
    flag-football players (see player3d.js — a real AnimationMixer driving
    authored clips). Each player cycles through a distinct list of moves,
    switching every few seconds, driven entirely through the Player3D API:
-     CARTER (blue)  — run / juke / highstep, weaving downfield
+     CARTER (blue)  — run / juke / highstep, weaving toward the camera
      RIVERA (red)   — celebrate / throw / dive (owns the ball prop)
      MÜLLER (green) — flagpull / run / highstep (owns the loose-flag prop)
    Self-cleans (and disposes the Player3D instances + their mixers) when its
@@ -39,8 +39,9 @@
     // Top-down-ish camera (tilted so the 3D forms read nicely).
     // WORLD AXES / DIRECTION CONVENTION for this scene:
     //   - The camera sits at +Z and looks toward -Z (and down).
-    //   - "DOWNFIELD" is -Z (into the screen, away from the camera). Passes are
-    //     thrown toward -Z and the diving catch pass arrives from -Z.
+    //   - The cast plays TOWARD the viewer: they run, cut and lay out along +Z
+    //     and the passes are thrown out at the camera, so you see faces and
+    //     jersey fronts rather than three backs jogging away.
     //   - +X is screen-right, -X is screen-left. +Y is up.
     //   The rig faces local +Z and P.setYaw(yaw) sets root.rotation.y =
     //   PI/2 - yaw, so yaw 0 points the player at world +X (screen-right).
@@ -317,11 +318,18 @@
   };
   function moveBaseYaw(name) {
     switch (name) {
-      case 'celebrate': return YAW.CAMERA;        // show off toward the crowd
-      case 'flagpull':  return YAW.DOWNFIELD + 0.5; // face down-and-toward carrier
-      case 'throw':     return YAW.DOWNFIELD - 0.25; // face the downfield target
-      default:          return YAW.DOWNFIELD;     // run/juke/highstep/dive downfield
+      case 'flagpull': return YAW.CAMERA - 0.5;   // turned out to rip a passing flag
+      case 'throw':    return YAW.CAMERA - 0.25;  // squared up on the target
+      default:         return YAW.CAMERA;         // everyone plays toward the viewer
     }
+  }
+
+  /* The cast plays TOWARD the camera, so a move ends at its base mark rather
+     than starting there: back the player up by the full travel and let them
+     arrive. Framing stays exactly where it was tuned, and facing still matches
+     the direction of travel — the whole point of turning them round. */
+  function approachZ(baseZ, travel, maxTravel) {
+    return baseZ - maxTravel + travel;
   }
 
   // Create per-player rotation state. Returns the state object (holds the
@@ -414,9 +422,9 @@
   // Sprint downfield with a gentle weave; bank the facing into the weave.
   function driveRun(st, t, dt, ctx) {
     var P = st.P, b = st.base, c = st.carrier;
-    var travel = Math.min(t * 1.1, 3.4);                 // ease downfield, capped
+    var travel = Math.min(t * 1.1, 3.4);                 // ease toward camera, capped
     c.position.x = b.x + Math.sin(t * 1.2) * 0.6;        // gentle weave
-    c.position.z = b.z - travel;
+    c.position.z = approachZ(b.z, travel, 3.4);
     P.face(moveBaseYaw('run') + Math.sin(t * 1.2) * 0.18, dt);
   }
 
@@ -425,7 +433,7 @@
     var P = st.P, b = st.base, c = st.carrier;
     var travel = Math.min(t * 0.9, 2.6);
     c.position.x = b.x + Math.sin(t * 1.6) * 0.8;        // cut side to side
-    c.position.z = b.z - travel;
+    c.position.z = approachZ(b.z, travel, 2.6);
     c.position.y = Math.max(0, Math.sin(t * 3.0)) * 0.12; // little lateral hop
     P.face(moveBaseYaw('juke'), dt);
   }
@@ -435,7 +443,7 @@
     var P = st.P, b = st.base, c = st.carrier;
     var travel = Math.min(t * 0.7, 2.6);
     c.position.x = b.x + Math.sin(t * 0.7) * 0.4;
-    c.position.z = b.z - travel;
+    c.position.z = approachZ(b.z, travel, 2.6);
     P.face(moveBaseYaw('highstep') + Math.sin(t * 0.7) * 0.2, dt);
   }
 
@@ -445,14 +453,14 @@
     P.face(moveBaseYaw('throw'), dt);
     st.carrier.position.set(b.x, 0, b.z);
     // 'throw' clip is 1.1s: windup ~0.4, release ~0.55. Hold ball by the ear,
-    // then launch downfield (-Z) at the release moment.
+    // then launch toward the viewer (+Z) at the release moment.
     if (t < 0.55) {
-      ball.hold(b.x - 0.1, 2.0, b.z + 0.2);   // cradled high
+      ball.hold(b.x - 0.1, 2.0, b.z - 0.2);   // cradled high, behind the ear
       st.flags.thrown = false;
     } else if (!st.flags.thrown) {
       st.flags.thrown = true;
       ball.launch(b.x, 2.15, b.z,
-        (Math.random() - 0.5) * 1.0, 4.7, -4.2);   // arc downfield
+        (Math.random() - 0.5) * 1.0, 4.7, 4.2);   // arc out toward the camera
     }
   }
 
@@ -460,15 +468,16 @@
   function driveDive(st, t, dt, ctx) {
     var P = st.P, b = st.base, c = st.carrier, ball = ctx.ball;
     P.face(moveBaseYaw('dive'), dt);
-    // 'dive' clip is 1.2s: launch ~0.35, peak ~0.7. Translate carrier downfield.
+    // 'dive' clip is 1.2s: launch ~0.35, peak ~0.7. The receiver lays out toward
+    // the camera, so the ball hangs just ahead of him at +Z.
     var travel = Math.min(t, 1.2) / 1.2;
     c.position.x = b.x;
-    c.position.z = b.z - travel * 1.6;
-    if (t < 0.5) { ball.hold(b.x, 1.5, b.z - 1.2 + travel); st.flags.caught = false; }
-    else if (t < 1.1) { ball.hold(c.position.x, 1.0, c.position.z - 0.4); }
+    c.position.z = approachZ(b.z, travel * 1.6, 1.6);
+    if (t < 0.5) { ball.hold(b.x, 1.5, c.position.z + 1.2); st.flags.caught = false; }
+    else if (t < 1.1) { ball.hold(c.position.x, 1.0, c.position.z + 0.4); }
     else { ball.hide(); }
     if (!st.flags.caught && t > 0.6) {
-      ctx.confetti.burst(c.position.x, 1.2, c.position.z - 0.4);
+      ctx.confetti.burst(c.position.x, 1.2, c.position.z + 0.4);
       st.flags.caught = true;
     }
   }
