@@ -14,6 +14,15 @@
   var MIDFIELD = (GOAL_L + GOAL_R) / 2;             // x=35
 
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
+
+  /* Difficulty presets. The game shipped at roughly "All-Pro" and was brutal:
+     defenders matched your speed and the flag came off the instant they
+     touched you. Rookie is now the default. */
+  var DIFFICULTY = {
+    rookie: { name: 'Rookie', defSpeed: 0.84, pullTime: 1.05, catchBonus: 0.20, intScale: 0.45, jukeCd: 1.1 },
+    pro:    { name: 'Pro',    defSpeed: 0.93, pullTime: 0.72, catchBonus: 0.10, intScale: 0.75, jukeCd: 1.5 },
+    allpro: { name: 'All-Pro',defSpeed: 1.00, pullTime: 0.50, catchBonus: 0.00, intScale: 1.00, jukeCd: 2.0 }
+  };
   function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
   function lerp(a, b, t) { return a + (b - a) * t; }
 
@@ -54,6 +63,8 @@
       overtime: false, gameOver: false,
       stats: { home: blankStats(), away: blankStats() }
     };
+    this.difficulty = DIFFICULTY[cfg.difficulty] || DIFFICULTY.rookie;
+    this.demo = !!cfg.demo;              // CPU vs CPU attract/demo mode
     this.userSide = cfg.userSide || 'home';
     this._resize();
   };
@@ -121,7 +132,9 @@
     this._assignDefense();
 
     // Who does the user control pre-snap?
-    if (this.userOnOffense()) {
+    if (this.demo) {
+      s.userControlled = null;           // demo mode: the CPU plays both sides
+    } else if (this.userOnOffense()) {
       s.userControlled = players.filter(function (p) { return p.slot === 'QB' && p.team === this.offenseTeam(); }, this)[0];
     } else {
       s.userControlled = this._nearestDefenderToBall();
@@ -286,7 +299,9 @@
 
     // Move carrier (user-controlled if on offense, else AI)
     if (s.carrier) {
-      if (this.userOnOffense() && (s.carrier.slot === 'QB' || s.carrier.isUser || this._isUserCarrier(s.carrier))) {
+      if (this.demo) {
+        this._aiCarrier(s.carrier, dt);
+      } else if (this.userOnOffense() && (s.carrier.slot === 'QB' || s.carrier.isUser || this._isUserCarrier(s.carrier))) {
         this._moveByInput(s.carrier, dt);
       } else if (this.userOnOffense()) {
         this._moveByInput(s.carrier, dt); // user always drives the ball carrier
@@ -302,7 +317,7 @@
     // Defense AI (and user-controlled defender)
     def.forEach(function (d) {
       if (d.flagPulled) return;
-      if (!this.userOnOffense() && d === s.userControlled) { this._moveByInput(d, dt); return; }
+      if (!this.demo && !this.userOnOffense() && d === s.userControlled) { this._moveByInput(d, dt); return; }
       this._aiDefender(d, dt);
     }, this);
 
@@ -322,7 +337,7 @@
 
   Engine.prototype._dropback = function (qb, dt) {
     var s = this.state;
-    if (this.userOnOffense() && qb === s.carrier) { this._moveByInput(qb, dt); return; }
+    if (!this.demo && this.userOnOffense() && qb === s.carrier) { this._moveByInput(qb, dt); return; }
     // AI QB: drop back slightly then throw to open man
     var target = { x: s.losX - 5, y: qb.y };
     this._seek(qb, target, dt, 0.7);
@@ -358,6 +373,11 @@
 
   Engine.prototype._seek = function (p, target, dt, spdMul) {
     var spd = this.speedYds(p.data.speed) * (spdMul || 1);
+    // Give a human ball carrier a fighting chance: CPU defenders run at a
+    // difficulty-scaled fraction of full speed.
+    if (!this.demo && this.difficulty && p.team !== this.userSide) {
+      spd *= this.difficulty.defSpeed;
+    }
     var dx = target.x - p.x, dy = target.y - p.y;
     var m = Math.hypot(dx, dy) || 1;
     p.vx = dx / m * spd; p.vy = dy / m * spd;
@@ -417,6 +437,7 @@
 
   Engine.prototype._aiDefender = function (d, dt) {
     var s = this.state;
+    if (d.stun > 0) { d.stun -= dt; return; }   // caught flat-footed by a juke
     if (d.blitz && (!s.carrier || s.carrier.slot === 'QB' || s.ball.inAir === false)) {
       // rush the passer / chase carrier
       var tgt = s.carrier || (s.thrownTo || { x: s.losX - 4, y: FIELD_WID / 2 });
@@ -472,7 +493,8 @@
     var base = receiver ? receiver.data.catch / 100 : 0;
     var sepPenalty = clamp((2.2 - nd) * 0.22, 0, 0.55);
     var reach = clamp(1 - recDist / 3.2, 0, 1);
-    var pCatch = clamp(base * reach - sepPenalty, 0.03, 0.97);
+    var bonus = (!this.demo && receiver && receiver.team === this.userSide) ? this.difficulty.catchBonus : 0;
+    var pCatch = clamp(base * reach - sepPenalty + bonus, 0.03, 0.98);
 
     var roll = Math.random();
     if (recDist > 3.5 || (receiver && receiver.slot === undefined)) {
@@ -485,7 +507,7 @@
       s.ball.x = receiver.x; s.ball.y = receiver.y;
       this._flash('Caught by ' + receiver.last + '!');
       this.onEvent({ type: 'catch', player: receiver });
-    } else if (nd < 1.4 && roll < pCatch + (nearDef ? nearDef.data.pull / 400 : 0)) {
+    } else if (nd < 1.4 && roll < pCatch + (nearDef ? nearDef.data.pull / 400 : 0) * (this.difficulty ? this.difficulty.intScale : 1)) {
       // interception
       this._turnover('INTERCEPTED by ' + nearDef.last + '!', nearDef);
     } else {
@@ -493,25 +515,77 @@
     }
   };
 
+  /* CONTESTED FLAG PULL.
+     Contact no longer rips the flag instantly. A defender in reach starts
+     GRABBING: they must sustain contact while a meter fills. The carrier can
+     break the engagement with a juke (manual on offense, automatic for the AI),
+     and a shifty runner drains the meter just by being hard to hold. How long
+     the defender needs is set by difficulty. */
   Engine.prototype._checkFlagPull = function (def) {
     var s = this.state;
     var c = s.carrier;
-    if (!c || c.slot === 'QB' && s.ball && s.ball.inAir) return;
+    var dt = this._dt || 0.016;
+    if (!c || (c.slot === 'QB' && s.ball && s.ball.inAir)) return;
+
+    // cool the juke down whether or not anyone is on us
+    if (c.jukeCd > 0) c.jukeCd = Math.max(0, c.jukeCd - dt);
+
+    // closest defender within reach
+    var grabber = null, best = 1e9;
     for (var i = 0; i < def.length; i++) {
       var d = def[i];
       if (d.flagPulled) continue;
+      var range = 1.15 + d.data.pull / 400;
       var dd = dist(d, c);
-      // pull range scales slightly with defender pull rating
-      var range = 1.05 + d.data.pull / 350;
-      if (dd < range) {
-        // pull success chance vs carrier agility (jukes)
-        var evade = c.data.agi / 260;
-        if (Math.random() > evade) {
-          this._flagPull(d, c);
-          return;
-        }
-      }
+      if (dd < range && dd < best) { best = dd; grabber = d; }
     }
+
+    // nobody in reach -> the engagement decays quickly (you shook them off)
+    if (!grabber) {
+      c.grabT = Math.max(0, (c.grabT || 0) - dt * 2.2);
+      if (s.grabbedBy) { s.grabbedBy.grabbing = false; s.grabbedBy = null; }
+      s.grabProgress = 0;
+      return;
+    }
+
+    s.grabbedBy = grabber; grabber.grabbing = true;
+    var need = this.difficulty.pullTime;
+
+    // Fill rate: the defender's pull vs the carrier's agility. A very shifty
+    // carrier can hold a defender off almost indefinitely.
+    var rate = (0.55 + grabber.data.pull / 150) * (1 - clamp(c.data.agi / 320, 0, 0.55));
+    c.grabT = (c.grabT || 0) + dt * rate;
+    s.grabProgress = clamp(c.grabT / need, 0, 1);
+
+    // AI ball carriers try to juke out when the meter gets dangerous.
+    if (!this.userOnOffense() || this.demo) {
+      if (s.grabProgress > 0.45 && (c.jukeCd || 0) <= 0 && Math.random() < 0.05) this.juke();
+    }
+
+    if (c.grabT >= need) this._flagPull(grabber, c);
+  };
+
+  /* Juke — break a defender's grip. Costs a cooldown so it can't be spammed. */
+  Engine.prototype.juke = function () {
+    var s = this.state;
+    var c = s && s.carrier;
+    if (!c || s.phase !== 'live') return false;
+    if ((c.jukeCd || 0) > 0) return false;
+    c.jukeCd = this.difficulty.jukeCd;
+    c.grabT = 0; s.grabProgress = 0;
+    if (s.grabbedBy) {
+      // shove the defender off-balance so the break actually creates space
+      var g = s.grabbedBy;
+      g.grabbing = false; g.stun = 0.32;
+      var dx = c.x - g.x, dy = c.y - g.y, m = Math.hypot(dx, dy) || 1;
+      c.x = clamp(c.x + (-dy / m) * 0.9, 0, FIELD_LEN);   // sidestep, perpendicular
+      c.y = clamp(c.y + (dx / m) * 0.9, 0, FIELD_WID);
+      s.grabbedBy = null;
+    }
+    c.jukeFx = 0.35;                       // renderer/UX cue
+    this._flash('Juke!');
+    this.onEvent({ type: 'juke', player: c });
+    return true;
   };
 
   Engine.prototype._flagPull = function (defender, carrier) {
@@ -693,6 +767,15 @@
     s.defPlay = play;
     // CPU picks offense
     s.offPlay = D.PLAYS[Math.floor(Math.random() * D.PLAYS.length)];
+    this.setupFormation();
+  };
+
+  /* Demo mode: the CPU calls a play for BOTH sides. */
+  Engine.prototype.autoCall = function () {
+    var s = this.state;
+    if (!s || s.phase !== 'playcall') return;
+    s.offPlay = D.PLAYS[Math.floor(Math.random() * D.PLAYS.length)];
+    s.defPlay = D.DEF_PLAYS[Math.floor(Math.random() * D.DEF_PLAYS.length)];
     this.setupFormation();
   };
 
@@ -1025,6 +1108,7 @@
       if (k === '1') self.action('r1'); if (k === '2') self.action('r2');
       if (k === '3') self.action('r3'); if (k === '4') self.action('r4');
       if (k === 'q') self.action('switch');
+      if (k === 'f') self.action('juke');
       if (k === 'e') self.action('pull');
     };
     this._ku = function (e) {
@@ -1053,6 +1137,7 @@
         if (a === 'r2') this.throwTo('WR2');
         if (a === 'r3') this.throwTo('RB');
         if (a === 'r4') this.throwTo('C');
+        if (a === 'juke') this.juke();
       } else {
         if (a === 'switch' || a === 'primary') this.switchDefender();
         if (a === 'pull' || a === 'r1') this.pullAction();

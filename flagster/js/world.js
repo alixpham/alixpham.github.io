@@ -20,7 +20,7 @@
   }
 
   function start(back) {
-    var state = { user: null, opp: null, userJersey: 0, oppJersey: 0, quarters: 4, quarterLen: 150 };
+    var state = { user: null, opp: null, userJersey: 0, oppJersey: 0, quarters: 4, quarterLen: 150, difficulty: 'rookie' };
 
     function screenTeamSelect() {
       var grid1 = h('div', { class: 'team-grid' });
@@ -73,6 +73,9 @@
       var lenSel = h('select', { class: 'fld', onChange: function (e) { state.quarterLen = parseInt(e.target.value, 10); } }, [
         optEl('90', '2 min quarters (quick)'), optEl('150', '2.5 min quarters', true), optEl('240', '4 min quarters')
       ]);
+      var diffSel = h('select', { class: 'fld', onChange: function (e) { state.difficulty = e.target.value; } }, [
+        optEl('rookie', 'Rookie — easiest', true), optEl('pro', 'Pro'), optEl('allpro', 'All-Pro — hardest')
+      ]);
 
       ui.show(h('div', { class: 'screen jersey-screen' }, [
         header('Choose Jerseys', screenTeamSelect),
@@ -83,6 +86,7 @@
             h('div', {}, [h('h4', { text: state.opp.name }), oRow])
           ]),
           h('div', { class: 'game-opts' }, [ h('label', { text: 'Game length: ' }), lenSel ]),
+          h('div', { class: 'game-opts' }, [ h('label', { text: 'Difficulty: ' }), diffSel ]),
           h('button', { class: 'btn primary big', html: '🏈 Kick Off!', onClick: kickoff })
         ]),
         ui.controlsButton()
@@ -98,6 +102,7 @@
         homeJersey: uJ, awayJersey: oJ,
         userSide: 'home', startPossession: 'away',
         quarters: state.quarters, quarterLen: state.quarterLen,
+        difficulty: state.difficulty,
         onQuit: function () { back(); },
         onGameOver: function (res) { showResult(res); }
       });
