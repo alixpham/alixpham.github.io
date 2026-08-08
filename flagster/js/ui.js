@@ -41,6 +41,7 @@
     var mac = [
       ['Move', 'W A S D  or  Arrow Keys'],
       ['Sprint', 'Hold Shift'],
+      ['Direct a player', 'Drag a line on the field — they run the whole route'],
       ['Snap the ball', 'Space / Enter'],
       ['Throw to WR1 / WR2', '1  /  2'],
       ['Throw to RB / Center', '3  /  4'],
@@ -50,6 +51,7 @@
     ];
     var mobile = [
       ['Move', 'Swipe / drag anywhere on the field'],
+      ['Direct a player', 'Slash a line — they run the whole route'],
       ['Snap the ball', 'SNAP button'],
       ['Throw', 'Tap a receiver on the field, or the WR1/WR2/RB/C button'],
       ['Juke (break a grab)', 'JUKE button'],
@@ -116,6 +118,9 @@
       ])
     ]);
     this.el = wrap;
+    // The running game, reachable from the console (and from the headless
+    // harness that drives it) without threading a handle through the router.
+    global.FLAGSTER.activeShell = this;
 
     var eng = new global.FLAGSTER.Engine(canvas, {
       onEvent: function (ev) { self._onEngineEvent(ev); }
@@ -167,6 +172,7 @@
   };
 
   GameShell.prototype.destroy = function () {
+    if (global.FLAGSTER.activeShell === this) global.FLAGSTER.activeShell = null;
     clearTimeout(this._demoT); clearTimeout(this._demoSnapT);
     if (this._tick) clearInterval(this._tick);
     if (this.engine) this.engine.stop();
@@ -343,22 +349,70 @@
       var idx = self.field3d.pick(x, y);
       if (idx >= 0) eng.selectPlayerIndex(idx);
     }
+
+    /* SLASH-TO-DIRECT. One gesture, two meanings, decided by how far it travels:
+
+         short drag  -> the floating joystick, exactly as before
+         long stroke -> a SLASH: the line you draw becomes a route the player
+                        runs on their own, so you can commit to a cut around a
+                        defender and take your thumb off the glass instead of
+                        hand-flying every yard.
+
+       The switch happens mid-gesture, the moment the stroke passes SLASH_MIN.
+       At that point the stick is released — leaving it live would steer the
+       player the whole time you were drawing, which is how you end up on the
+       sideline before the route even exists — and each new point is fed
+       straight to the engine, so they set off along the line while you're
+       still drawing the rest of it.
+
+       Touching the field again cancels the route and hands the stick back. */
+    var SLASH_MIN = 64;        // px of travel before a drag becomes a slash
+    var SLASH_STEP = 12;       // px between sampled points along the stroke
+    var trail = [], slashing = false;
+
+    function trailPush(x, y) {
+      var last = trail[trail.length - 1];
+      if (last && Math.hypot(x - last.x, y - last.y) < SLASH_STEP) return false;
+      trail.push({ x: x, y: y });
+      return true;
+    }
+    function canSlash() { return !!(self.field3d && self.field3d.pickGround); }
+    function inkPoint(x, y) {
+      var g = self.field3d.pickGround(x, y);
+      if (g) eng.appendSlash(g);
+    }
+    function beginSlash() {
+      slashing = true;
+      eng.setStick(0, 0, false);          // hands off — the line is in charge now
+      base.style.display = 'none';
+      eng.clearSlash();
+      for (var i = 0; i < trail.length; i++) inkPoint(trail[i].x, trail[i].y);
+    }
+
     function sStart(x, y, id) {
       moveId = id; ox = x; oy = y; moved = 0; tapT = Date.now();
+      trail = [{ x: x, y: y }]; slashing = false;
       base.style.display = 'block'; base.style.left = x + 'px'; base.style.top = y + 'px';
       fknob.style.transform = 'translate(-50%,-50%)';
     }
     function sMove(x, y) {
       var dx = x - ox, dy = y - oy, m = Math.hypot(dx, dy), max = 52;
       if (m > moved) moved = m;
+      var fresh = trailPush(x, y);
+      if (!slashing && moved >= SLASH_MIN && canSlash()) beginSlash();
+      else if (slashing && fresh) inkPoint(x, y);
+      if (slashing) return;
       var nx = m ? dx / m : 0, ny = m ? dy / m : 0, cl = Math.min(m, max);
       fknob.style.transform = 'translate(-50%,-50%) translate(' + (nx * cl) + 'px,' + (ny * cl) + 'px)';
       eng.setStick(nx, ny, m > 7);
     }
     function sEnd(x, y) {
-      var wasTap = (moved < 12) && (Date.now() - tapT < 320);
-      moveId = null; base.style.display = 'none'; eng.setStick(0, 0, false);
+      var wasTap = !slashing && (moved < 12) && (Date.now() - tapT < 320);
+      if (slashing && x != null && trailPush(x, y)) inkPoint(x, y);
+      moveId = null; base.style.display = 'none';
+      if (!slashing) eng.setStick(0, 0, false);   // a slash already released it
       if (wasTap && x != null) tryTap(x, y);
+      trail = []; slashing = false;
     }
     swipe.addEventListener('touchstart', function (e) {
       if (moveId !== null) return;
