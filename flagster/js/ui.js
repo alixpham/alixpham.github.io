@@ -44,6 +44,7 @@
       ['Snap the ball', 'Space / Enter'],
       ['Throw to WR1 / WR2', '1  /  2'],
       ['Throw to RB / Center', '3  /  4'],
+      ['Juke (break a grab)', 'F'],
       ['Switch defender', 'Q'],
       ['Pull the flag (on D)', 'E']
     ];
@@ -51,6 +52,7 @@
       ['Move', 'Swipe / drag anywhere on the field'],
       ['Snap the ball', 'SNAP button'],
       ['Throw', 'Tap the receiver button (WR1/WR2/RB/C)'],
+      ['Juke (break a grab)', 'JUKE button'],
       ['Sprint', 'Hold the ⚡ button'],
       ['Switch defender', 'SWITCH button'],
       ['Pull the flag (on D)', 'PULL button']
@@ -100,8 +102,14 @@
     this.touch = h('div', { class: 'touch-controls hidden' });
     this.banner = h('div', { class: 'game-banner hidden' });
 
+    this.grab = h('div', { class: 'grab-wrap hidden' }, [
+      h('div', { class: 'grab-label', text: 'HELD — JUKE!' }),
+      h('div', { class: 'grab-bar' }, [h('div', { class: 'grab-fill' })])
+    ]);
+    this.grabFill = this.grab.querySelector('.grab-fill');
+
     var wrap = h('div', { class: 'game-screen' }, [
-      canvas, this.hud, this.playcallEl, this.touch, this.banner,
+      canvas, this.hud, this.playcallEl, this.touch, this.banner, this.grab,
       h('div', { class: 'game-top-btns' }, [
         h('button', { class: 'mini-btn', html: '⏸', title: 'Menu', onClick: function () { self.pauseMenu(); } }),
         controlsButton()
@@ -117,7 +125,8 @@
       home: cfg.home, away: cfg.away,
       homeJersey: cfg.homeJersey, awayJersey: cfg.awayJersey,
       userSide: cfg.userSide, quarters: cfg.quarters, quarterLen: cfg.quarterLen,
-      startPossession: cfg.startPossession || 'away', rtg: cfg.rtg
+      startPossession: cfg.startPossession || 'away', rtg: cfg.rtg,
+      difficulty: cfg.difficulty, demo: cfg.demo
     });
 
     // --- Optional 3D field renderer (Three.js). Falls back to 2D canvas if
@@ -158,6 +167,7 @@
   };
 
   GameShell.prototype.destroy = function () {
+    clearTimeout(this._demoT); clearTimeout(this._demoSnapT);
     if (this._tick) clearInterval(this._tick);
     if (this.engine) this.engine.stop();
     if (this.field3d) { try { this.field3d.stop(); } catch (e) {} this.field3d = null; }
@@ -202,6 +212,16 @@
       h('span', { class: 'hud-flag', text: this.cfg.home.flag })
     ]));
 
+    // Contested flag-pull meter — shows a grab filling so you know to juke.
+    var gp = s.grabProgress || 0;
+    if (gp > 0.02 && s.phase === 'live') {
+      this.grab.classList.remove('hidden');
+      this.grabFill.style.width = Math.round(gp * 100) + '%';
+      this.grab.classList.toggle('danger', gp > 0.6);
+    } else {
+      this.grab.classList.add('hidden');
+    }
+
     // Phase-driven panels
     if (s.phase !== this._lastPhase) {
       this._lastPhase = s.phase;
@@ -231,6 +251,18 @@
 
   GameShell.prototype._showPlaycall = function () {
     var self = this, eng = this.engine, s = eng.state;
+    if (this.cfg.demo) {
+      // CPU vs CPU: pick a play, then snap it — no UI, no input.
+      this.playcallEl.classList.add('hidden');
+      this.touch.classList.add('hidden');
+      clearTimeout(this._demoT);
+      this._demoT = setTimeout(function () {
+        eng.autoCall();
+        clearTimeout(self._demoSnapT);
+        self._demoSnapT = setTimeout(function () { eng.snap(); }, 900);
+      }, 700);
+      return;
+    }
     this._hintShown = false;
     this.touch.classList.add('hidden');
     var userOff = (s.possession === this.cfg.userSide);
@@ -282,6 +314,7 @@
 
   GameShell.prototype._showTouch = function () {
     var s = this.engine.state;
+    if (this.cfg.demo) { this.touch.classList.add('hidden'); return; }
     this.touch.classList.remove('hidden');
     var userOff = (s.possession === this.cfg.userSide);
     // toggle button set
@@ -344,7 +377,8 @@
 
     this._offBtns = h('div', { class: 'btn-cluster' }, [
       actBtn('WR1', 'r1', 'r1'), actBtn('WR2', 'r2', 'r2'),
-      actBtn('RB', 'r3', 'r3'), actBtn('C', 'r4', 'r4'), sprint
+      actBtn('RB', 'r3', 'r3'), actBtn('C', 'r4', 'r4'),
+      actBtn('JUKE', 'juke', 'juke'), sprint
     ]);
     this._defBtns = h('div', { class: 'btn-cluster' }, [
       actBtn('SWITCH', 'sw', 'switch'), actBtn('PULL', 'pull', 'pull')

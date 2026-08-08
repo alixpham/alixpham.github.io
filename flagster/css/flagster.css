@@ -322,3 +322,23 @@ h1,h2,h3,h4{margin:.2em 0}
   .act-btn{min-width:52px;height:50px;font-size:.8rem}
   .joystick{width:100px;height:100px}
 }
+
+/* ---- contested flag-pull meter ---- */
+.grab-wrap{position:absolute;left:50%;top:52%;transform:translate(-50%,-50%);z-index:16;
+  pointer-events:none;text-align:center;width:min(240px,60vw)}
+.grab-label{font-weight:900;font-size:.9rem;letter-spacing:1px;color:#ffe14d;
+  text-shadow:0 2px 6px rgba(0,0,0,.85);margin-bottom:4px}
+.grab-bar{height:10px;border-radius:6px;background:rgba(0,0,0,.55);
+  border:1px solid rgba(255,255,255,.35);overflow:hidden}
+.grab-fill{height:100%;width:0;background:linear-gradient(90deg,#37d98a,#ffd23f);transition:width .06s linear}
+.grab-wrap.danger .grab-fill{background:linear-gradient(90deg,#ffd23f,#ff5a5a)}
+.grab-wrap.danger .grab-label{color:#ff8a8a}
+
+/* ---- CPU-vs-CPU demo badge ---- */
+.demo-badge{position:absolute;top:8px;left:50%;transform:translateX(-50%);z-index:40;
+  display:flex;align-items:center;gap:10px;background:rgba(4,18,10,.85);
+  border:1px solid var(--accent);border-radius:20px;padding:6px 8px 6px 14px;
+  font-weight:800;letter-spacing:1px;color:var(--accent2);font-size:.82rem}
+.demo-exit{background:var(--panel2);border:1px solid var(--line);color:var(--ink);
+  border-radius:14px;padding:4px 12px;font-weight:700;cursor:pointer}
+@media (max-width:620px){ .demo-badge{top:auto;bottom:14px;font-size:.72rem} }

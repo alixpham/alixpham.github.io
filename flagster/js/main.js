@@ -27,6 +27,7 @@
         ]);
       })),
       h('div', { class: 'menu-foot' }, [
+        h('button', { class: 'btn ghost', html: '▶ Watch Demo', title: 'CPU vs CPU', onClick: function () { startDemo(); } }),
         h('button', { class: 'btn ghost', html: '🎮 Controls', onClick: ui.openControls }),
         h('span', { class: 'platform-badge', text: mobile ? '📱 Mobile build' : '💻 Desktop build' })
       ])
@@ -35,6 +36,29 @@
     if (global.THREE && F.hero3d) {
       try { F.hero3d.mount(heroCanvas); } catch (e) { /* non-fatal: menu works without it */ }
     }
+  }
+
+  // CPU-vs-CPU attract mode: two random nations play themselves. No input.
+  function startDemo() {
+    var D = F.data;
+    var pool = D.NATIONS.slice();
+    var a = pool.splice(Math.floor(Math.random() * pool.length), 1)[0];
+    var b = pool[Math.floor(Math.random() * pool.length)];
+    var shell = new ui.GameShell({
+      home: a, away: b,
+      homeJersey: D.jerseysFor(a.id)[0], awayJersey: D.jerseysFor(b.id)[1],
+      userSide: 'home', startPossession: 'away',
+      quarters: 2, quarterLen: 120, demo: true, difficulty: 'pro',
+      onQuit: mainMenu,
+      onGameOver: function () { mainMenu(); }
+    });
+    ui.show(shell.build());
+    // A clear "this is a demo" badge with a way out.
+    var badge = h('div', { class: 'demo-badge' }, [
+      h('span', { text: '▶ DEMO — CPU vs CPU' }),
+      h('button', { class: 'demo-exit', text: 'Exit', onClick: function () { shell.destroy(); mainMenu(); } })
+    ]);
+    shell.el.appendChild(badge);
   }
 
   function boot() {
