@@ -565,6 +565,9 @@
 
     // cool the juke down whether or not anyone is on us
     if (c.jukeCd > 0) c.jukeCd = Math.max(0, c.jukeCd - dt);
+    // ...and let the renderer's juke cue expire, so a sidestep is a moment
+    // rather than a state the carrier is stuck in for the rest of the play.
+    if (c.jukeFx > 0) c.jukeFx = Math.max(0, c.jukeFx - dt);
 
     // closest defender within reach
     var grabber = null, best = 1e9;
