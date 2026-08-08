@@ -51,10 +51,10 @@
     var mobile = [
       ['Move', 'Swipe / drag anywhere on the field'],
       ['Snap the ball', 'SNAP button'],
-      ['Throw', 'Tap the receiver button (WR1/WR2/RB/C)'],
+      ['Throw', 'Tap a receiver on the field, or the WR1/WR2/RB/C button'],
       ['Juke (break a grab)', 'JUKE button'],
       ['Sprint', 'Hold the ⚡ button'],
-      ['Switch defender', 'SWITCH button'],
+      ['Switch defender', 'Tap a team-mate (or SWITCH)'],
       ['Pull the flag (on D)', 'PULL button']
     ];
     function tbl(rows) {
@@ -335,15 +335,31 @@
     base.style.display = 'none';
     var fknob = base.firstChild;
     var swipe = h('div', { class: 'swipe-pad' }, [base]);
-    var moveId = null, ox = 0, oy = 0;
-    function sStart(x, y, id) { moveId = id; ox = x; oy = y; base.style.display = 'block'; base.style.left = x + 'px'; base.style.top = y + 'px'; fknob.style.transform = 'translate(-50%,-50%)'; }
+    var moveId = null, ox = 0, oy = 0, tapT = 0, moved = 0;
+    // A short, near-stationary press is a TAP (select a defender / throw to a
+    // receiver); anything with real travel is a swipe that steers the player.
+    function tryTap(x, y) {
+      if (!self.field3d || !self.field3d.pick) return;
+      var idx = self.field3d.pick(x, y);
+      if (idx >= 0) eng.selectPlayerIndex(idx);
+    }
+    function sStart(x, y, id) {
+      moveId = id; ox = x; oy = y; moved = 0; tapT = Date.now();
+      base.style.display = 'block'; base.style.left = x + 'px'; base.style.top = y + 'px';
+      fknob.style.transform = 'translate(-50%,-50%)';
+    }
     function sMove(x, y) {
       var dx = x - ox, dy = y - oy, m = Math.hypot(dx, dy), max = 52;
+      if (m > moved) moved = m;
       var nx = m ? dx / m : 0, ny = m ? dy / m : 0, cl = Math.min(m, max);
       fknob.style.transform = 'translate(-50%,-50%) translate(' + (nx * cl) + 'px,' + (ny * cl) + 'px)';
       eng.setStick(nx, ny, m > 7);
     }
-    function sEnd() { moveId = null; base.style.display = 'none'; eng.setStick(0, 0, false); }
+    function sEnd(x, y) {
+      var wasTap = (moved < 12) && (Date.now() - tapT < 320);
+      moveId = null; base.style.display = 'none'; eng.setStick(0, 0, false);
+      if (wasTap && x != null) tryTap(x, y);
+    }
     swipe.addEventListener('touchstart', function (e) {
       if (moveId !== null) return;
       var t = e.changedTouches[0]; sStart(t.clientX, t.clientY, t.identifier); e.preventDefault();
@@ -351,13 +367,18 @@
     swipe.addEventListener('touchmove', function (e) {
       for (var i = 0; i < e.changedTouches.length; i++) { var t = e.changedTouches[i]; if (t.identifier === moveId) { sMove(t.clientX, t.clientY); e.preventDefault(); } }
     });
-    function touchEnd(e) { for (var i = 0; i < e.changedTouches.length; i++) { if (e.changedTouches[i].identifier === moveId) sEnd(); } }
+    function touchEnd(e) {
+      for (var i = 0; i < e.changedTouches.length; i++) {
+        var t = e.changedTouches[i];
+        if (t.identifier === moveId) sEnd(t.clientX, t.clientY);
+      }
+    }
     swipe.addEventListener('touchend', touchEnd);
     swipe.addEventListener('touchcancel', touchEnd);
     // mouse fallback (desktop testing)
     swipe.addEventListener('mousedown', function (e) { sStart(e.clientX, e.clientY, 'mouse'); });
     global.addEventListener('mousemove', function (e) { if (moveId === 'mouse') sMove(e.clientX, e.clientY); });
-    global.addEventListener('mouseup', function () { if (moveId === 'mouse') sEnd(); });
+    global.addEventListener('mouseup', function (e) { if (moveId === 'mouse') sEnd(e.clientX, e.clientY); });
 
     function actBtn(label, cls, act) {
       var b = h('button', { class: 'act-btn ' + cls, html: label });
