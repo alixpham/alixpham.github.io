@@ -20,7 +20,7 @@ const ROOT = new URL('../', import.meta.url).href;   // .../flagster/
 
 const FILES = [
   'js/data.js', 'js/storage.js', 'js/engine.js',
-  'js/player3d.js', 'js/stadium3d.js', 'js/fx3d.js',
+  'js/player3d.js', 'js/playermodel.js', 'js/stadium3d.js', 'js/fx3d.js',
   'js/hero3d.js', 'js/field3d.js',
   'js/ui.js', 'js/world.js', 'js/teambuilder.js', 'js/roadtoglory.js',
   'js/main.js'
@@ -83,4 +83,11 @@ async function setupThree() {
     try { await loadScript(ROOT + f); }
     catch (e) { if (window.console) console.error(e); }
   }
+  // Start fetching the rigged player model. Player3D.build() picks it up as
+  // soon as it's ready and falls back to the procedural rig until then.
+  try {
+    if (window.THREE && window.FLAGSTER && window.FLAGSTER.PlayerModel) {
+      window.FLAGSTER.PlayerModel.preload(window.THREE);
+    }
+  } catch (e) { /* optional: procedural rig still works */ }
 })();
