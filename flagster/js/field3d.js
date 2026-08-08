@@ -374,6 +374,32 @@
       if (sun.target) sun.target.position.set(0, 0, 0);
     }
 
+    /* Screen-space picking so a tap can select a player. Returns the index into
+       state.players under the given client coords, or -1. */
+    var _ray = new THREE.Raycaster();
+    var _ndc = new THREE.Vector2();
+    function pick(clientX, clientY) {
+      var r = canvas.getBoundingClientRect();
+      if (!r.width || !r.height) return -1;
+      _ndc.x = ((clientX - r.left) / r.width) * 2 - 1;
+      _ndc.y = -((clientY - r.top) / r.height) * 2 + 1;
+      _ray.setFromCamera(_ndc, camera);
+      var holders = [];
+      for (var i = 0; i < pMeshes.length; i++) if (pMeshes[i].holder) holders.push(pMeshes[i].holder);
+      var hits = _ray.intersectObjects(holders, true);
+      if (!hits.length) return -1;
+      var o = hits[0].object;
+      while (o && holders.indexOf(o) === -1) o = o.parent;
+      var hi = holders.indexOf(o);
+      if (hi < 0) return -1;
+      // holders array is dense over pMeshes, so map back to the player index
+      var seen = -1;
+      for (var j = 0; j < pMeshes.length; j++) {
+        if (pMeshes[j].holder) { seen++; if (seen === hi) return j; }
+      }
+      return -1;
+    }
+
     // ---------------------------- RESIZE -----------------------------------
     function resize() {
       var w = canvas.clientWidth || (canvas.parentElement && canvas.parentElement.clientWidth) || 800;
@@ -470,7 +496,9 @@
       renderer.dispose();
     }
 
-    return { render: render, resize: resize, stop: stop };
+    return {
+      pick: pick,
+      render: render, resize: resize, stop: stop };
   }
 
   /* =============================== FIELD ================================= */

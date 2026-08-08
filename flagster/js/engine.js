@@ -386,6 +386,18 @@
     if (m > 0.05) p.ang = Math.atan2(dy, dx);
   };
 
+  /* Input is given in SCREEN space (dx = right, dy = down). The camera sits
+     behind whichever team you're playing as and flips with possession, so
+     screen axes do NOT line up with field axes — feeding them straight through
+     made "right" travel sideways/down the pitch. Rotate the stick into field
+     space using the same orientation the camera uses:
+        on offense  we look toward +x  -> screen-up = +x, screen-right = +y
+        on defense  we look toward -x  -> screen-up = -x, screen-right = -y  */
+  Engine.prototype.viewSign = function () {
+    if (this.demo) return 1;
+    return (this.state && this.state.possession === this.userSide) ? 1 : -1;
+  };
+
   Engine.prototype._moveByInput = function (p, dt) {
     var i = this.input;
     var dx = 0, dy = 0;
@@ -396,11 +408,35 @@
     var sprint = i.sprint ? 1.12 : 1.0;
     var spd = this.speedYds(p.data.speed) * sprint;
     if (m > 0.05) {
-      p.vx = dx / m * spd; p.vy = dy / m * spd;
+      var sgn = this.viewSign();
+      var fx = (-dy / m) * sgn;          // screen up -> downfield
+      var fy = (dx / m) * sgn;           // screen right -> across the field
+      p.vx = fx * spd; p.vy = fy * spd;
       p.x = clamp(p.x + p.vx * dt, 0, FIELD_LEN);
       p.y = clamp(p.y + p.vy * dt, 0, FIELD_WID);
-      p.ang = Math.atan2(dy, dx);
+      p.ang = Math.atan2(fy, fx);
     } else { p.vx = 0; p.vy = 0; }
+  };
+
+  /* Tap-to-select (mobile): choose which defender you're controlling, or on
+     offense tap a receiver to throw to them. `i` indexes state.players. */
+  Engine.prototype.selectPlayerIndex = function (i) {
+    var s = this.state;
+    if (!s || this.demo) return false;
+    var p = s.players && s.players[i];
+    if (!p || p.team !== this.userSide) return false;
+
+    if (this.userOnOffense()) {
+      // tapping one of your receivers is a pass to them
+      if (s.phase !== 'live' || !s.carrier || s.ball && s.ball.inAir) return false;
+      if (p === s.carrier || p.slot === 'QB') return false;
+      this.throwTo(p.slot);
+      return true;
+    }
+    if (p.flagPulled) return false;
+    s.userControlled = p;
+    this.onEvent({ type: 'switch', player: p });
+    return true;
   };
 
   Engine.prototype._aiCarrier = function (p, dt) {
