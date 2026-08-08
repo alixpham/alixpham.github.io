@@ -154,6 +154,11 @@
     var flags = makeFlagPool(THREE, 10);
     scene.add(flags.group);
 
+    // Slash route: the line you drew, painted on the turf and eaten away as the
+    // player runs it, so you can always see how much of the order is left.
+    var slashInk = makeSlashInk(THREE);
+    scene.add(slashInk.group);
+
     // Touchdown flash sprite (full-scene tint via a big plane facing camera)
     var tdFx = { t: 0, dur: 0 };
 
@@ -430,6 +435,23 @@
       return -1;
     }
 
+    /* Same ray, but against the turf instead of the players: converts a screen
+       point into FIELD coordinates (yards). This is what turns a finger-stroke
+       into a route — field space is camera-independent, so a drawn line stays
+       pinned to the yardage you drew it on even when possession flips the
+       camera end-for-end. Returns null if the ray misses the ground. */
+    var _plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    var _hit = new THREE.Vector3();
+    function pickGround(clientX, clientY) {
+      var r = canvas.getBoundingClientRect();
+      if (!r.width || !r.height) return null;
+      _ndc.x = ((clientX - r.left) / r.width) * 2 - 1;
+      _ndc.y = -((clientY - r.top) / r.height) * 2 + 1;
+      _ray.setFromCamera(_ndc, camera);
+      if (!_ray.ray.intersectPlane(_plane, _hit)) return null;
+      return { x: clamp(_hit.x + LEN / 2, 0, LEN), y: clamp(_hit.z + WID / 2, 0, WID) };
+    }
+
     // ---------------------------- RESIZE -----------------------------------
     function resize() {
       var w = canvas.clientWidth || (canvas.parentElement && canvas.parentElement.clientWidth) || 800;
@@ -467,6 +489,10 @@
       for (var j = 0; j < pMeshes.length; j++) {
         if (state.players[j]) syncPlayer(pMeshes[j], state.players[j], dt, state);
       }
+
+      // Drawn route: from the player's own feet through the waypoints left.
+      var sl = engine && engine.slash;
+      slashInk.set(sl && sl.owner ? [sl.owner].concat(sl.pts) : null, dt);
 
       // Line of scrimmage & line-to-gain
       if (state.losX != null && state.phase !== 'final') {
@@ -509,6 +535,7 @@
 
     function stop() {
       if (ro) ro.disconnect(); else global.removeEventListener('resize', resize);
+      slashInk.dispose();
       // Dispose Player3D instances (mixer + geometry/materials) and their rings.
       pMeshes.forEach(function (e) {
         if (e.P) e.P.dispose();
@@ -527,8 +554,61 @@
     }
 
     return {
-      pick: pick,
+      pick: pick, pickGround: pickGround,
       render: render, resize: resize, stop: stop };
+  }
+
+  /* Route ink. A ribbon of small quads laid flat on the turf rather than a
+     THREE.Line, because line width is capped at 1px on almost every WebGL
+     implementation and a hairline is invisible from the broadcast camera.
+     The pool is fixed-size and reused, so drawing a route allocates nothing. */
+  function makeSlashInk(THREE) {
+    var MAX = 96, W = 0.8;
+    var group = new THREE.Group();
+    group.visible = false;
+    var geo = new THREE.PlaneGeometry(1, W);
+    geo.rotateX(-Math.PI / 2);                       // lie flat on the ground
+    var mat = new THREE.MeshBasicMaterial({
+      // Cyan, deliberately: yellow is already the line-to-gain and blue the
+      // line of scrimmage, and a route must not read as either.
+      color: 0x35e0ff, transparent: true, opacity: 0.85,
+      depthWrite: false, toneMapped: false
+    });
+    var mesh = new THREE.InstancedMesh(geo, mat, MAX);
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 3;
+    group.add(mesh);
+    var m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0);
+    var pos = new THREE.Vector3(), scl = new THREE.Vector3(1, 1, 1);
+    var pulse = 0;
+
+    /* pts: [{x, y}, ...] in field yards, starting at the player. */
+    function set(pts, dt) {
+      if (!pts || pts.length < 2) { group.visible = false; return; }
+      group.visible = true;
+      pulse = (pulse + (dt || 0.016) * 2.2) % 1;
+      mat.opacity = 0.70 + 0.22 * Math.sin(pulse * Math.PI * 2);
+      var n = 0;
+      for (var i = 0; i < pts.length - 1 && n < MAX; i++) {
+        var a = pts[i], b = pts[i + 1];
+        var ax = wx(a.x), az = wz(a.y), bx = wx(b.x), bz = wz(b.y);
+        var dx = bx - ax, dz = bz - az;
+        var len = Math.hypot(dx, dz);
+        if (len < 0.01) continue;
+        pos.set((ax + bx) / 2, 0.05, (az + bz) / 2);
+        q.setFromAxisAngle(up, -Math.atan2(dz, dx));   // +X quad onto the segment
+        scl.set(len, 1, 1);
+        m4.compose(pos, q, scl);
+        mesh.setMatrixAt(n++, m4);
+      }
+      mesh.count = n;
+      mesh.instanceMatrix.needsUpdate = true;
+      if (!n) group.visible = false;
+    }
+    // InstancedMesh holds its own instance buffers; the scene-wide geometry
+    // and material sweep in stop() doesn't reach those.
+    function dispose() { mesh.dispose(); }
+    return { group: group, set: set, dispose: dispose };
   }
 
   /* =============================== FIELD ================================= */

@@ -15,6 +15,10 @@
 
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
 
+  // How close a player must get to a drawn waypoint before it counts as reached.
+  var SLASH_REACH = 1.1;                 // yards
+  var SLASH_MAX = 80;                    // waypoints; a scribble can't run forever
+
   /* Difficulty presets. The game shipped at roughly "All-Pro" and was brutal:
      defenders matched your speed and the flag came off the instant they
      touched you. Rookie is now the default. */
@@ -34,6 +38,7 @@
     this.lastT = 0;
     this.input = { up: false, down: false, left: false, right: false, sprint: false };
     this.pointer = null;
+    this.slash = null;        // { owner, pts[] } — a route drawn with a slash
     this.state = null;
     this.anim = [];            // transient animations (flag pulls, etc.)
     this.onEvent = opts.onEvent || function () {};
@@ -140,6 +145,7 @@
       s.userControlled = this._nearestDefenderToBall();
     }
     s.phase = 'presnap';
+    this.clearSlash();
   };
 
   function makeGP(playerData, team, slot, spot, offPlay) {
@@ -407,15 +413,97 @@
     var m = Math.hypot(dx, dy);
     var sprint = i.sprint ? 1.12 : 1.0;
     var spd = this.speedYds(p.data.speed) * sprint;
+    var fx, fy;
+
     if (m > 0.05) {
+      // Hands on the controls always win — taking the stick tears up the route.
+      this.clearSlash();
       var sgn = this.viewSign();
-      var fx = (-dy / m) * sgn;          // screen up -> downfield
-      var fy = (dx / m) * sgn;           // screen right -> across the field
-      p.vx = fx * spd; p.vy = fy * spd;
-      p.x = clamp(p.x + p.vx * dt, 0, FIELD_LEN);
-      p.y = clamp(p.y + p.vy * dt, 0, FIELD_WID);
-      p.ang = Math.atan2(fy, fx);
-    } else { p.vx = 0; p.vy = 0; }
+      fx = (-dy / m) * sgn;              // screen up -> downfield
+      fy = (dx / m) * sgn;               // screen right -> across the field
+    } else {
+      var step = this._slashHeading(p);
+      if (!step) { p.vx = 0; p.vy = 0; return; }
+      fx = step.fx; fy = step.fy;
+    }
+
+    p.vx = fx * spd; p.vy = fy * spd;
+    p.x = clamp(p.x + p.vx * dt, 0, FIELD_LEN);
+    p.y = clamp(p.y + p.vy * dt, 0, FIELD_WID);
+    p.ang = Math.atan2(fy, fx);
+  };
+
+  /* SLASH-TO-DIRECT.
+     Draw a stroke across the field and the player runs it. The stroke is kept
+     as field-space waypoints, so it stays pinned to the turf you drew it on no
+     matter how the camera flips with possession — unlike stick input, which is
+     screen-space and has to be rotated by viewSign().
+
+     Returns a unit heading toward the next waypoint, or null when there is no
+     route left to run. */
+  Engine.prototype._slashHeading = function (p) {
+    var sl = this.slash;
+    if (!sl || !sl.pts.length) return null;
+    // Whoever we drew it for has handed off or been swapped out — a route drawn
+    // for the QB isn't the receiver's to run.
+    if (sl.owner !== p) { this.clearSlash(); return null; }
+    // Retire waypoints we've reached (several at once if the stroke was dense).
+    while (sl.pts.length) {
+      var w = sl.pts[0];
+      var ax = w.x - p.x, ay = w.y - p.y;
+      var d = Math.hypot(ax, ay);
+      if (d > SLASH_REACH) return { fx: ax / d, fy: ay / d };
+      sl.pts.shift();
+    }
+    this.clearSlash();
+    return null;
+  };
+
+  /* Extend the route by one waypoint, starting one if there isn't a route yet.
+     Strokes are fed in as they're drawn rather than handed over on release, so
+     the player sets off the moment the line is recognisable as a route and
+     keeps following it while you carry on drawing.
+
+     Waypoints closer together than the arrival radius get dropped: they'd be
+     retired the same instant as the one before, which only adds jitter to the
+     heading. */
+  Engine.prototype.appendSlash = function (pt) {
+    var s = this.state;
+    // Only while there's a play to run: a stroke that lands after the whistle
+    // (say, the swipe that put you out of bounds) must not queue a route.
+    if (!s || (s.phase !== 'live' && s.phase !== 'presnap')) return false;
+    if (!pt || !isFinite(pt.x) || !isFinite(pt.y)) return false;
+    var who = this.userPlayer();
+    if (!who) return false;
+    if (!this.slash || this.slash.owner !== who) this.slash = { owner: who, pts: [] };
+    var pts = this.slash.pts;
+    if (pts.length >= SLASH_MAX) return false;      // a route can't outlast the field
+    var last = pts.length ? pts[pts.length - 1] : who;
+    if (Math.hypot(pt.x - last.x, pt.y - last.y) < SLASH_REACH * 1.5) return false;
+    pts.push({ x: clamp(pt.x, 0, FIELD_LEN), y: clamp(pt.y, 0, FIELD_WID) });
+    return true;
+  };
+
+  /* Replace the running route with a whole stroke at once. */
+  Engine.prototype.setSlash = function (pts) {
+    if (!pts || !pts.length) return false;
+    this.clearSlash();
+    var any = false;
+    for (var i = 0; i < pts.length; i++) any = this.appendSlash(pts[i]) || any;
+    return any;
+  };
+
+  Engine.prototype.clearSlash = function () { this.slash = null; };
+
+  /* The player the user's input is actually driving this frame. On offense
+     that's whoever is holding the ball — the QB at the snap, then the receiver
+     the moment they catch it — which is NOT the same as state.userControlled,
+     since that still names the QB. On defense it's the selected defender. */
+  Engine.prototype.userPlayer = function () {
+    var s = this.state;
+    if (!s || this.demo) return null;
+    if (this.userOnOffense()) return s.carrier || s.userControlled || null;
+    return s.userControlled || null;
   };
 
   /* Tap-to-select (mobile): choose which defender you're controlling, or on
@@ -653,6 +741,7 @@
 
   /* --------------------------- PLAY RESOLUTION --------------------------- */
   Engine.prototype._endPlay = function (spotX, noGain) {
+    this.clearSlash();
     var s = this.state;
     if (s.phase === 'dead') return;
     s.phase = 'dead';
@@ -836,6 +925,7 @@
     if (this.userOnOffense()) return;
     var s = this.state;
     s.userControlled = this._nearestDefenderToBall();
+    this.clearSlash();                   // the route belonged to the old defender
   };
   Engine.prototype.pullAction = function () {
     // manual pull attempt for user-controlled defender
