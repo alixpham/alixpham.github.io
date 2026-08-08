@@ -42,11 +42,9 @@
     //   - "DOWNFIELD" is -Z (into the screen, away from the camera). Passes are
     //     thrown toward -Z and the diving catch pass arrives from -Z.
     //   - +X is screen-right, -X is screen-left. +Y is up.
-    //   Player3D forward is local +X and P.setYaw(yaw) sets root.rotation.y = -yaw.
-    //   Yaw meaning here (matches the primitive scene it replaces): 0 = downfield
-    //   (-Z), +PI = toward camera (+Z), +PI/2 = screen-left (-X), -PI/2 =
-    //   screen-right (+X).  (Local +X rotated by -yaw about Y: yaw 0 -> +X? no —
-    //   we adopt the scene convention below via YAW_* and it's tuned by eye.)
+    //   The rig faces local +Z and P.setYaw(yaw) sets root.rotation.y =
+    //   PI/2 - yaw, so yaw 0 points the player at world +X (screen-right).
+    //   The scene's named headings live in YAW below.
     var camera = new THREE.PerspectiveCamera(34, 2, 0.1, 1200);
     camera.position.set(0, 2.9, 8.4);
     camera.lookAt(0, 1.35, 0.6);
@@ -113,10 +111,6 @@
       green: { jersey: '#2ec77a', trim: '#08331d', skin: '#f2d3b3' }
     };
 
-    var runner   = makeP3D(COL.blue,  'CARTER', 24, -5.0, 1.8);
-    var star     = makeP3D(COL.red,   'RIVERA',  7,  0.0, 1.8);
-    var defender = makeP3D(COL.green, 'MÜLLER', 55,  5.0, 1.8);   // {P, carrier} each
-
     var ball = makeBall(THREE);
     scene.add(ball);
 
@@ -158,14 +152,29 @@
     // by the defender (green) rotation, so props never fight.
     var ctx = { ball: ballCtrl, looseFlag: looseFlag, confetti: confetti, THREE: THREE };
 
-    var players = [
-      setupRotation(runner,   ['run', 'juke', 'highstep', 'run'],          { x: -3.1, z: 1.8 }, 0.0),
-      setupRotation(star,     ['celebrate', 'throw', 'celebrate', 'dive'], { x: 0.0,  z: 1.8 }, 1.5),
-      setupRotation(defender, ['flagpull', 'run', 'highstep', 'flagpull'], { x: 5.0,  z: 1.8 }, 3.0)
-    ];   // each takes a {P, carrier} from makeP3D
-
+    // The landing screen must show the SAME rigged, skinned players you play
+    // with, not the procedural stand-in. The .glb is still in flight when the
+    // menu first paints, so hold the cast back until it lands (the stadium is
+    // already on screen meanwhile) and only fall back to the procedural rig if
+    // the model genuinely fails to load.
     // ---- Animation state ---------------------------------------------------
     var raf = null, t0 = null, lastT = null, running = true;
+
+    var players = [];
+    function spawnCast() {
+      if (!running || players.length) return;
+      players = [
+        setupRotation(makeP3D(COL.blue, 'CARTER', 24, -5.0, 1.8),
+          ['run', 'juke', 'highstep', 'run'], { x: -3.1, z: 1.8 }, 0.0),
+        setupRotation(makeP3D(COL.red, 'RIVERA', 7, 0.0, 1.8),
+          ['celebrate', 'throw', 'celebrate', 'dive'], { x: 0.0, z: 1.8 }, 1.5),
+        setupRotation(makeP3D(COL.green, 'MÜLLER', 55, 5.0, 1.8),
+          ['flagpull', 'run', 'highstep', 'flagpull'], { x: 5.0, z: 1.8 }, 3.0)
+      ];   // each takes a {P, carrier} from makeP3D
+    }
+    var PM = global.FLAGSTER && global.FLAGSTER.PlayerModel;
+    if (PM && !PM.isReady() && !PM.isFailed()) PM.whenReady(spawnCast);
+    else spawnCast();
 
     function resize() {
       var w = canvas.clientWidth || canvas.parentElement.clientWidth || 600;
@@ -297,11 +306,9 @@
     throw: 5.5, dive: 4.2, celebrate: 5.0, flagpull: 5.0
   };
 
-  // Yaw each move wants the body to face. Player3D: setYaw(y) => root.rotation.y
-  // = -y, model forward = local +X. Tuned so "downfield" = into the screen (-Z).
-  // With rotation.y = -y, local +X maps to world dir (cos(-y), 0, -sin(y))...
-  // we simply choose values that LOOK right in the tilted cam (verified by shot):
-  //   DOWNFIELD faces away from camera (into screen), CAMERA faces the viewer.
+  // Yaw each move wants the body to face. setYaw(y) => rotation.y = PI/2 - y
+  // and the rig faces local +Z, so yaw 0 aims the player at world +X. That
+  // makes -PI/2 "downfield" (into the screen, -Z) in this scene's camera.
   var YAW = {
     DOWNFIELD: -Math.PI / 2,   // face into the screen (-Z)
     CAMERA:     Math.PI / 2,   // face the viewer (+Z)

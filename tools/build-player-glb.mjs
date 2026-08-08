@@ -521,98 +521,249 @@ const hipY = (times, ys) => pos('Hips', times, ys.map(y => [0, y, 0]));
 const CLIPS = [];
 const clip = (name, duration, tracks) => CLIPS.push({ name, duration, tracks });
 
+/* --- Sagittal-plane sign convention ---------------------------------------
+   The rig faces +Z and every limb hangs along -Y, so a POSITIVE rotation about
+   X swings a limb's far end toward -Z (backwards) and a negative one swings it
+   toward +Z (forwards). Authoring raw X values against that rule is how the
+   first pass shipped knees and elbows that bent the wrong way — a knee folding
+   FORWARD also carries the whole foot around behind the shin, which is why the
+   run read as a bird's gait with reversed feet. Sagittal joints are therefore
+   authored in DEGREES of the motion they anatomically perform, and converted
+   here exactly once:
+
+     hip(a)       a > 0  thigh swings forward (flexion)
+     knee(a)      a > 0  heel folds up behind the thigh — a human knee is
+                         never negative here
+     ankle(a)     a > 0  toes pull up toward the shin (dorsiflexion)
+                  a < 0  toes point away from the shin (plantarflexion)
+     shoulder(a)  a > 0  arm swings forward
+     elbow(a)     a > 0  hand comes up toward the shoulder — never negative
+
+   Spine/Chest/Head point +Y rather than -Y, so their raw X sign already means
+   "positive leans forward"; those stay in radians.                          */
+const D = Math.PI / 180;
+const hip = a => -a * D;
+const knee = a => a * D;
+const ankle = a => -a * D;
+const shoulder = a => -a * D;
+const elbow = a => -a * D;
+
+/* --- Gait plumbing --------------------------------------------------------
+   A walk/run cycle is one description of ONE leg; the other leg is the same
+   curve half a cycle later. Authoring at named gait phases and resampling onto
+   a uniform grid is what makes that shift a plain array rotation, so the two
+   legs can never drift out of agreement.                                    */
+const STEPS = 16;
+
+/* rows: [phase, hipDeg, kneeDeg, ankleDeg] — phase 0..1, ascending. */
+function sampleGait(rows, col) {
+  const out = [];
+  for (let i = 0; i < STEPS; i++) {
+    const p = i / STEPS;
+    let k = 0;
+    while (k < rows.length - 2 && rows[k + 1][0] <= p) k++;
+    const u = (p - rows[k][0]) / (rows[k + 1][0] - rows[k][0]);
+    out.push(rows[k][col + 1] + (rows[k + 1][col + 1] - rows[k][col + 1]) * u);
+  }
+  return out;
+}
+const cycleTimes = dur => Array.from({ length: STEPS + 1 }, (_, i) => (i / STEPS) * dur);
+const closeLoop = a => a.concat([a[0]]);
+const halfCycle = a => a.slice(STEPS / 2).concat(a.slice(0, STEPS / 2));
+
+/* --- Pelvis height, solved rather than guessed -----------------------------
+   Hand-keyed hip bob is how a cycle ends up skating 15cm above the turf. The
+   legs only rotate about X, so the whole thing is 2D forward kinematics in the
+   (forward, up) plane: walk the chain down each leg, find the lowest point of
+   either sole, and drop the pelvis by exactly that much. The support foot then
+   plants itself, and the natural rise and fall of the gait — down at
+   mid-stance, up over a near-straight leg — comes out of the pose for free.
+
+   `lift` adds a small cosine bump at the two mid-flight phases, which is the
+   one part a runner's pelvis does that the kinematics can't know about: for a
+   moment nothing is holding the body up at all. A walk never leaves the
+   ground, so it passes lift = 0. */
+const THIGH = 0.460, SHIN = 0.410;
+const HIP_Y = 1.000 - 0.040;                       // UpperLeg height at rest
+const SOLE = 0.090;                                // ankle joint above the sole
+const SOLE_BACK = -0.075, SOLE_FWD = 0.175;        // heel and ball, along the foot
+
+/* Lowest sole point of one leg, relative to a pelvis sitting at HIP_Y. */
+function soleHeight(hipDeg, kneeDeg, ankleDeg) {
+  const t = hipDeg * D;                            // forward tilt of the thigh
+  const s = t - kneeDeg * D;                       // knee folds the shin back
+  const f = s + ankleDeg * D;                      // dorsiflexion lifts the toes
+  const kneeY = HIP_Y - THIGH * Math.cos(t);
+  const ankleY = kneeY - SHIN * Math.cos(s);
+  const cos = Math.cos(f), sin = Math.sin(f);
+  const pt = z => ankleY + (-SOLE * cos + z * sin);
+  return Math.min(pt(SOLE_BACK), pt(SOLE_FWD));
+}
+
+function solveHipY(dur, rows, lift = 0, stanceEnd = 0.5) {
+  const H = sampleGait(rows, 0), K = sampleGait(rows, 1), A = sampleGait(rows, 2);
+  const Hr = halfCycle(H), Kr = halfCycle(K), Ar = halfCycle(A);
+  const span = 0.5 - stanceEnd;                    // half-cycle spent airborne
+  const ys = [];
+  for (let i = 0; i < STEPS; i++) {
+    const low = Math.min(soleHeight(H[i], K[i], A[i]), soleHeight(Hr[i], Kr[i], Ar[i]));
+    // Every step is two half-cycles, so the airborne window repeats twice.
+    const q = (i / STEPS) % 0.5;
+    const air = span > 0 && q > stanceEnd ? Math.sin(Math.PI * (q - stanceEnd) / span) : 0;
+    ys.push(1.000 - low + lift * air);
+  }
+  return hipY(cycleTimes(dur), closeLoop(ys));
+}
+
+/* Six leg tracks (both sides) from one authored cycle. */
+function legTracks(dur, rows, splay = 0.02) {
+  const T = cycleTimes(dur);
+  const H = sampleGait(rows, 0), K = sampleGait(rows, 1), A = sampleGait(rows, 2);
+  const mk = (node, vals, f, z) => rot(node, T, closeLoop(vals).map(v => [f(v), 0, z]));
+  return [
+    mk('UpperLeg_L', H, hip, splay),
+    mk('LowerLeg_L', K, knee, 0),
+    mk('Foot_L', A, ankle, 0),
+    mk('UpperLeg_R', halfCycle(H), hip, -splay),
+    mk('LowerLeg_R', halfCycle(K), knee, 0),
+    mk('Foot_R', halfCycle(A), ankle, 0)
+  ];
+}
+
+/* Four arm tracks sampled from a cosine, so the swing is smooth and the two
+   arms come from a single description. `peakL` is the cycle phase at which the
+   LEFT arm is furthest forward; the right arm is half a cycle behind it. Arms
+   run CONTRALATERALLY to the legs — the left arm drives forward as the right
+   knee does, which is what cancels the rotation the hips put into the torso. */
+function armTracks(dur, peakL, fwd, back, flexFwd, flexBack, abduct) {
+  const n = 12;
+  const T = Array.from({ length: n + 1 }, (_, i) => (i / n) * dur);
+  const side = (peak, sgn) => {
+    const sh = [], el = [];
+    for (let i = 0; i <= n; i++) {
+      const w = (Math.cos(2 * Math.PI * (i / n - peak)) + 1) / 2;   // 1 = fully forward
+      sh.push([shoulder(back + (fwd - back) * w), 0, sgn * abduct]);
+      el.push([elbow(flexBack + (flexFwd - flexBack) * w), 0, sgn * 0.05]);
+    }
+    return [sh, el];
+  };
+  const [shL, elL] = side(peakL, 1);
+  const [shR, elR] = side((peakL + 0.5) % 1, -1);
+  return [
+    rot('UpperArm_L', T, shL), rot('LowerArm_L', T, elL),
+    rot('UpperArm_R', T, shR), rot('LowerArm_R', T, elR)
+  ];
+}
+
 /* ------------------------------------------------------------------ Idle */
+const IDLE_DROP = soleHeight(16, 28, 11);
 clip('Idle', 2.4, [
-  hipY([0, 1.2, 2.4], [0.998, 1.010, 0.998]),
-  rot('Spine', [0, 1.2, 2.4], [[0.10, 0, 0], [0.13, 0.02, 0], [0.10, 0, 0]]),
+  hipY([0, 1.2, 2.4], [0.998 - IDLE_DROP, 1.010 - IDLE_DROP, 0.998 - IDLE_DROP]),
+  rot('Spine', [0, 1.2, 2.4], [[0.20, 0, 0], [0.23, 0.02, 0], [0.20, 0, 0]]),
   rot('Chest', [0, 1.2, 2.4], [[0.05, 0, 0], [0.02, -0.03, 0], [0.05, 0, 0]]),
-  rot('Head', [0, 1.2, 2.4], [[-0.05, 0, 0], [-0.03, 0.06, 0], [-0.05, 0, 0]]),
-  rot('UpperArm_L', [0, 1.2, 2.4], [[0.10, 0, 0.17], [0.14, 0, 0.20], [0.10, 0, 0.17]]),
-  rot('LowerArm_L', [0, 1.2, 2.4], [[0.42, 0, 0.05], [0.47, 0, 0.05], [0.42, 0, 0.05]]),
-  rot('UpperArm_R', [0, 1.2, 2.4], [[0.10, 0, -0.17], [0.14, 0, -0.20], [0.10, 0, -0.17]]),
-  rot('LowerArm_R', [0, 1.2, 2.4], [[0.42, 0, -0.05], [0.47, 0, -0.05], [0.42, 0, -0.05]]),
-  rot('UpperLeg_L', [0, 2.4], [[0.10, 0, 0.03], [0.10, 0, 0.03]]),
-  rot('LowerLeg_L', [0, 2.4], [[-0.18, 0, 0], [-0.18, 0, 0]]),
-  rot('Foot_L', [0, 2.4], [[0.08, 0, 0], [0.08, 0, 0]]),
-  rot('UpperLeg_R', [0, 2.4], [[0.10, 0, -0.03], [0.10, 0, -0.03]]),
-  rot('LowerLeg_R', [0, 2.4], [[-0.18, 0, 0], [-0.18, 0, 0]]),
-  rot('Foot_R', [0, 2.4], [[0.08, 0, 0], [0.08, 0, 0]]),
+  rot('Head', [0, 1.2, 2.4], [[-0.16, 0, 0], [-0.14, 0.06, 0], [-0.16, 0, 0]]),
+  rot('UpperArm_L', [0, 1.2, 2.4], [[shoulder(6), 0, 0.19], [shoulder(3), 0, 0.22], [shoulder(6), 0, 0.19]]),
+  rot('LowerArm_L', [0, 1.2, 2.4], [[elbow(48), 0, 0.05], [elbow(53), 0, 0.05], [elbow(48), 0, 0.05]]),
+  rot('UpperArm_R', [0, 1.2, 2.4], [[shoulder(6), 0, -0.19], [shoulder(3), 0, -0.22], [shoulder(6), 0, -0.19]]),
+  rot('LowerArm_R', [0, 1.2, 2.4], [[elbow(48), 0, -0.05], [elbow(53), 0, -0.05], [elbow(48), 0, -0.05]]),
+  // Athletic ready stance: weight forward over slightly bent knees.
+  rot('UpperLeg_L', [0, 2.4], [[hip(16), 0, 0.03], [hip(16), 0, 0.03]]),
+  rot('LowerLeg_L', [0, 2.4], [[knee(28), 0, 0], [knee(28), 0, 0]]),
+  rot('Foot_L', [0, 2.4], [[ankle(11), 0, 0], [ankle(11), 0, 0]]),
+  rot('UpperLeg_R', [0, 2.4], [[hip(16), 0, -0.03], [hip(16), 0, -0.03]]),
+  rot('LowerLeg_R', [0, 2.4], [[knee(28), 0, 0], [knee(28), 0, 0]]),
+  rot('Foot_R', [0, 2.4], [[ankle(11), 0, 0], [ankle(11), 0, 0]]),
   rot('Flag_L', [0, 1.2, 2.4], [[0.02, 0, 0.04], [-0.03, 0, 0.02], [0.02, 0, 0.04]]),
   rot('Flag_R', [0, 1.2, 2.4], [[-0.02, 0, -0.02], [0.03, 0, -0.04], [-0.02, 0, -0.02]])
 ]);
 
 /* ------------------------------------------------------------------- Run */
+/* The six phases of the running gait, for ONE leg, as fractions of a stride.
+   Stance runs 0.00 -> 0.30 (~30% of the cycle, which is right for a run) and
+   swing fills the rest; because the other leg is half a cycle behind, both
+   feet are off the ground between one leg's toe-off and the other's contact —
+   the flight phase falls out of the timing rather than being posed. */
 {
-  const T = [0, 0.155, 0.31, 0.465, 0.62];
-  // left leg cycle: contact -> midstance -> toe-off -> mid-swing -> contact
-  const thighL = [-0.48, -0.05, 0.42, -0.28, -0.48];
-  const shinL = [-0.22, -0.14, -0.58, -1.55, -0.22];
-  const footL = [0.22, 0.05, 0.38, -0.18, 0.22];
-  const shift = a => [a[2], a[3], a[0], a[1], a[2]];
-  clip('Run', 0.62, [
-    hipY(T, [1.030, 1.004, 1.030, 1.004, 1.030]),
-    rot('Spine', [0, 0.62], [[0.26, 0, 0], [0.26, 0, 0]]),
-    rot('Chest', T, [[0.06, 0.13, 0], [0.06, 0.05, 0], [0.06, -0.13, 0], [0.06, -0.05, 0], [0.06, 0.13, 0]]),
-    rot('Head', [0, 0.62], [[-0.22, 0, 0], [-0.22, 0, 0]]),
-    rot('UpperLeg_L', T, thighL.map(v => [v, 0, 0.02])),
-    rot('LowerLeg_L', T, shinL.map(v => [v, 0, 0])),
-    rot('Foot_L', T, footL.map(v => [v, 0, 0])),
-    rot('UpperLeg_R', T, shift(thighL).map(v => [v, 0, -0.02])),
-    rot('LowerLeg_R', T, shift(shinL).map(v => [v, 0, 0])),
-    rot('Foot_R', T, shift(footL).map(v => [v, 0, 0])),
-    rot('UpperArm_L', [0, 0.31, 0.62], [[0.62, 0, 0.22], [-0.78, 0, 0.22], [0.62, 0, 0.22]]),
-    rot('LowerArm_L', [0, 0.31, 0.62], [[1.05, 0, 0.08], [1.38, 0, 0.08], [1.05, 0, 0.08]]),
-    rot('UpperArm_R', [0, 0.31, 0.62], [[-0.78, 0, -0.22], [0.62, 0, -0.22], [-0.78, 0, -0.22]]),
-    rot('LowerArm_R', [0, 0.31, 0.62], [[1.38, 0, -0.08], [1.05, 0, -0.08], [1.38, 0, -0.08]]),
-    rot('Flag_L', T, [[-0.30, 0, 0.06], [0.18, 0, 0.06], [-0.30, 0, 0.06], [0.18, 0, 0.06], [-0.30, 0, 0.06]]),
-    rot('Flag_R', T, [[0.18, 0, -0.06], [-0.30, 0, -0.06], [0.18, 0, -0.06], [-0.30, 0, -0.06], [0.18, 0, -0.06]])
+  const RUN_LEG = [
+    //  phase   hip   knee  ankle
+    [0.00, 25, 20, -6],    // 1. initial contact — midfoot lands just ahead of the hips
+    [0.10, 2, 34, 9],      // 2. mid-stance — knee and ankle flex to absorb, hips lowest
+    [0.30, -28, 10, -34],  // 3. propulsion — hip/knee/ankle extend, the foot rolls onto the toes
+    [0.38, -14, 78, -12],  // 4. flight — the trailing knee starts to fold
+    [0.48, 8, 122, 6],     // 5a. recovery — heel snaps up under the glute
+    [0.62, 48, 92, 13],    // 5b. knee drive — hip flexors carry the knee forward, toes up
+    [0.78, 46, 52, 9],
+    [0.92, 34, 26, 0],     // 6. reach — the shin unfolds toward the next contact
+    [1.00, 25, 20, -6]
+  ];
+  const d = 0.62;
+  clip('Run', d, [
+    solveHipY(d, RUN_LEG, 0.030, 0.30),
+    rot('Spine', [0, d], [[0.17, 0, 0], [0.17, 0, 0]]),
+    rot('Chest', [0, 0.25, 0.5, 0.75, 1].map(p => p * d),
+      [[0.05, 0.12, 0], [0.05, 0, 0], [0.05, -0.12, 0], [0.05, 0, 0], [0.05, 0.12, 0]]),
+    rot('Hips', [0, 0.25, 0.5, 0.75, 1].map(p => p * d),
+      [[0, -0.09, 0], [0, 0, 0], [0, 0.09, 0], [0, 0, 0], [0, -0.09, 0]]),
+    rot('Head', [0, d], [[-0.15, 0, 0], [-0.15, 0, 0]]),
+    ...legTracks(d, RUN_LEG),
+    // The left knee drives at phase 0.62, so the left ARM leads half a cycle
+    // out of step with it — furthest forward at 0.12.
+    ...armTracks(d, 0.12, 26, -46, 118, 52, 0.14),
+    rot('Flag_L', cycleTimes(d), closeLoop(sampleGait(RUN_LEG, 0)).map(h => [-0.004 * h, 0, 0.06])),
+    rot('Flag_R', cycleTimes(d), closeLoop(halfCycle(sampleGait(RUN_LEG, 0))).map(h => [-0.004 * h, 0, -0.06]))
   ]);
 }
 
 /* ------------------------------------------------------------------ Walk */
+/* Same six phases, but a walk heel-strikes, keeps a much straighter stance
+   leg, and spends ~60% of the cycle in stance — so the two legs overlap in
+   double support instead of flying. */
 {
-  const T = [0, 0.25, 0.5, 0.75, 1.0];
-  const thighL = [-0.34, -0.06, 0.30, -0.16, -0.34];
-  const shinL = [-0.12, -0.08, -0.36, -0.78, -0.12];
-  const footL = [0.12, 0.02, 0.26, -0.10, 0.12];
-  const shift = a => [a[2], a[3], a[0], a[1], a[2]];
-  clip('Walk', 1.0, [
-    hipY(T, [1.006, 0.996, 1.006, 0.996, 1.006]),
-    rot('Spine', [0, 1.0], [[0.10, 0, 0], [0.10, 0, 0]]),
-    rot('Chest', T, [[0.02, 0.07, 0], [0.02, 0.02, 0], [0.02, -0.07, 0], [0.02, -0.02, 0], [0.02, 0.07, 0]]),
-    rot('UpperLeg_L', T, thighL.map(v => [v, 0, 0.02])),
-    rot('LowerLeg_L', T, shinL.map(v => [v, 0, 0])),
-    rot('Foot_L', T, footL.map(v => [v, 0, 0])),
-    rot('UpperLeg_R', T, shift(thighL).map(v => [v, 0, -0.02])),
-    rot('LowerLeg_R', T, shift(shinL).map(v => [v, 0, 0])),
-    rot('Foot_R', T, shift(footL).map(v => [v, 0, 0])),
-    rot('UpperArm_L', [0, 0.5, 1.0], [[0.32, 0, 0.16], [-0.34, 0, 0.16], [0.32, 0, 0.16]]),
-    rot('LowerArm_L', [0, 0.5, 1.0], [[0.44, 0, 0.05], [0.62, 0, 0.05], [0.44, 0, 0.05]]),
-    rot('UpperArm_R', [0, 0.5, 1.0], [[-0.34, 0, -0.16], [0.32, 0, -0.16], [-0.34, 0, -0.16]]),
-    rot('LowerArm_R', [0, 0.5, 1.0], [[0.62, 0, -0.05], [0.44, 0, -0.05], [0.62, 0, -0.05]]),
+  const WALK_LEG = [
+    //  phase   hip   knee  ankle
+    [0.00, 22, 6, 6],      // heel strike — toes held up
+    [0.15, 12, 16, -4],    // loading — the foot flattens onto the ground
+    [0.32, -2, 6, 7],      // mid-stance — the shin rolls forward over a near-straight leg
+    [0.50, -20, 20, -18],  // heel-off into toe-off
+    [0.62, -2, 62, 4],     // early swing — the knee folds
+    [0.78, 20, 40, 9],     // mid-swing — toes up to clear the ground
+    [0.92, 27, 12, 7],     // terminal swing — the shin reaches out
+    [1.00, 22, 6, 6]
+  ];
+  const d = 1.0;
+  clip('Walk', d, [
+    solveHipY(d, WALK_LEG),
+    rot('Spine', [0, d], [[0.07, 0, 0], [0.07, 0, 0]]),
+    rot('Chest', [0, 0.25, 0.5, 0.75, 1].map(p => p * d),
+      [[0.02, 0.07, 0], [0.02, 0, 0], [0.02, -0.07, 0], [0.02, 0, 0], [0.02, 0.07, 0]]),
+    ...legTracks(d, WALK_LEG),
+    ...armTracks(d, 0.42, 20, -22, 34, 18, 0.15),
     rot('Flag_L', [0, 0.5, 1.0], [[-0.12, 0, 0.04], [0.08, 0, 0.04], [-0.12, 0, 0.04]]),
     rot('Flag_R', [0, 0.5, 1.0], [[0.08, 0, -0.04], [-0.12, 0, -0.04], [0.08, 0, -0.04]])
   ]);
 }
 
 /* ------------------------------------------------------------- Backpedal */
+/* A defender's backpedal: hips sunk, chest kept over the toes, short choppy
+   steps that reach BEHIND the body — so the thigh spends most of the cycle
+   extended while the knee stays deeply bent. */
 {
-  const T = [0, 0.25, 0.5];
-  clip('Backpedal', 0.5, [
-    hipY(T, [0.960, 0.978, 0.960]),
-    rot('Spine', [0, 0.5], [[-0.10, 0, 0], [-0.10, 0, 0]]),
-    rot('Chest', [0, 0.5], [[0.14, 0, 0], [0.14, 0, 0]]),
-    rot('Head', [0, 0.5], [[0.06, 0, 0], [0.06, 0, 0]]),
-    rot('UpperLeg_L', T, [[-0.42, 0, 0.05], [0.18, 0, 0.05], [-0.42, 0, 0.05]]),
-    rot('LowerLeg_L', T, [[-0.95, 0, 0], [-0.45, 0, 0], [-0.95, 0, 0]]),
-    rot('Foot_L', T, [[0.30, 0, 0], [0.20, 0, 0], [0.30, 0, 0]]),
-    rot('UpperLeg_R', T, [[0.18, 0, -0.05], [-0.42, 0, -0.05], [0.18, 0, -0.05]]),
-    rot('LowerLeg_R', T, [[-0.45, 0, 0], [-0.95, 0, 0], [-0.45, 0, 0]]),
-    rot('Foot_R', T, [[0.20, 0, 0], [0.30, 0, 0], [0.20, 0, 0]]),
-    rot('UpperArm_L', T, [[-0.18, 0, 0.34], [0.02, 0, 0.34], [-0.18, 0, 0.34]]),
-    rot('LowerArm_L', [0, 0.5], [[1.20, 0, 0.12], [1.20, 0, 0.12]]),
-    rot('UpperArm_R', T, [[0.02, 0, -0.34], [-0.18, 0, -0.34], [0.02, 0, -0.34]]),
-    rot('LowerArm_R', [0, 0.5], [[1.20, 0, -0.12], [1.20, 0, -0.12]])
+  const BACK_LEG = [
+    //  phase   hip   knee  ankle
+    [0.00, 20, 44, 10],    // knee up in front, toes up, foot about to reach back
+    [0.28, -6, 22, -4],    // the foot lands behind and drives the body backwards
+    [0.55, -20, 40, 4],    // hip fully extended behind, the knee begins to fold
+    [0.78, 4, 58, 10],     // knee folds and swings back through under the hips
+    [1.00, 20, 44, 10]
+  ];
+  const d = 0.5;
+  clip('Backpedal', d, [
+    solveHipY(d, BACK_LEG),
+    rot('Spine', [0, d], [[0.16, 0, 0], [0.16, 0, 0]]),
+    rot('Chest', [0, d], [[0.03, 0, 0], [0.03, 0, 0]]),
+    rot('Head', [0, d], [[-0.16, 0, 0], [-0.16, 0, 0]]),
+    ...legTracks(d, BACK_LEG, 0.05),
+    ...armTracks(d, 0.30, 4, -22, 82, 60, 0.26)
   ]);
 }
 
@@ -633,14 +784,14 @@ clip('Throw', 1.10, [
     [[0.12, 0, -0.20], [-0.20, -0.35, -1.20], [-0.05, -0.55, -1.55],
      [-1.20, -0.15, -1.15], [-2.10, 0.30, -0.75], [-1.30, 0.35, -0.45], [0.12, 0, -0.18]]),
   rot('LowerArm_R', [0, 0.34, 0.52, 0.66, 0.78, 0.92, 1.10],
-    [[1.10, 0, 0], [1.60, 0, 0], [1.95, 0, 0], [1.60, 0, 0], [0.45, 0, 0], [0.75, 0, 0], [1.10, 0, 0]]),
+    [[-1.1, 0, 0], [-1.6, 0, 0], [-1.95, 0, 0], [-1.6, 0, 0], [-0.45, 0, 0], [-0.75, 0, 0], [-1.1, 0, 0]]),
   // left arm points at the target then tucks
   rot('UpperArm_L', [0, 0.45, 0.70, 1.10], [[0.10, 0, 0.18], [-1.15, 0.30, 0.35], [-0.55, 0.20, 0.30], [0.12, 0, 0.18]]),
-  rot('LowerArm_L', [0, 0.45, 0.70, 1.10], [[1.00, 0, 0], [0.35, 0, 0], [0.90, 0, 0], [1.05, 0, 0]]),
+  rot('LowerArm_L', [0, 0.45, 0.70, 1.10], [[-1, 0, 0], [-0.35, 0, 0], [-0.9, 0, 0], [-1.05, 0, 0]]),
   rot('UpperLeg_L', [0, 0.42, 0.66, 1.10], [[0.06, 0, 0.03], [-0.30, 0, 0.05], [-0.45, 0, 0.05], [-0.12, 0, 0.03]]),
-  rot('LowerLeg_L', [0, 0.42, 0.66, 1.10], [[-0.24, 0, 0], [-0.30, 0, 0], [-0.18, 0, 0], [-0.22, 0, 0]]),
+  rot('LowerLeg_L', [0, 0.42, 0.66, 1.10], [[0.24, 0, 0], [0.3, 0, 0], [0.18, 0, 0], [0.22, 0, 0]]),
   rot('UpperLeg_R', [0, 0.42, 0.66, 1.10], [[0.06, 0, -0.03], [0.22, 0, -0.06], [0.34, 0, -0.06], [0.10, 0, -0.03]]),
-  rot('LowerLeg_R', [0, 0.42, 0.66, 1.10], [[-0.24, 0, 0], [-0.42, 0, 0], [-0.55, 0, 0], [-0.26, 0, 0]]),
+  rot('LowerLeg_R', [0, 0.42, 0.66, 1.10], [[0.24, 0, 0], [0.42, 0, 0], [0.55, 0, 0], [0.26, 0, 0]]),
   rot('Foot_R', [0, 0.66, 1.10], [[0.08, 0, 0], [0.28, 0, 0], [0.10, 0, 0]])
 ]);
 
@@ -651,13 +802,13 @@ clip('Catch', 0.90, [
   rot('Chest', [0, 0.35, 0.9], [[0.04, 0, 0], [-0.06, 0, 0], [0.06, 0, 0]]),
   rot('Head', [0, 0.35, 0.9], [[-0.05, 0, 0], [-0.30, 0, 0], [-0.02, 0, 0]]),
   rot('UpperArm_L', [0, 0.35, 0.60, 0.90], [[0.12, 0, 0.18], [-2.30, 0, 0.22], [-1.60, 0, 0.30], [0.20, 0, 0.20]]),
-  rot('LowerArm_L', [0, 0.35, 0.60, 0.90], [[1.05, 0, 0], [0.22, 0, 0], [1.10, 0, 0], [1.35, 0, 0]]),
+  rot('LowerArm_L', [0, 0.35, 0.60, 0.90], [[-1.05, 0, 0], [-0.22, 0, 0], [-1.1, 0, 0], [-1.35, 0, 0]]),
   rot('UpperArm_R', [0, 0.35, 0.60, 0.90], [[0.12, 0, -0.18], [-2.30, 0, -0.22], [-1.60, 0, -0.30], [0.20, 0, -0.20]]),
-  rot('LowerArm_R', [0, 0.35, 0.60, 0.90], [[1.05, 0, 0], [0.22, 0, 0], [1.10, 0, 0], [1.35, 0, 0]]),
+  rot('LowerArm_R', [0, 0.35, 0.60, 0.90], [[-1.05, 0, 0], [-0.22, 0, 0], [-1.1, 0, 0], [-1.35, 0, 0]]),
   rot('UpperLeg_L', [0, 0.35, 0.9], [[-0.10, 0, 0.03], [-0.05, 0, 0.03], [-0.18, 0, 0.03]]),
-  rot('LowerLeg_L', [0, 0.9], [[-0.22, 0, 0], [-0.30, 0, 0]]),
+  rot('LowerLeg_L', [0, 0.9], [[0.22, 0, 0], [0.3, 0, 0]]),
   rot('UpperLeg_R', [0, 0.35, 0.9], [[0.14, 0, -0.03], [-0.05, 0, -0.03], [0.18, 0, -0.03]]),
-  rot('LowerLeg_R', [0, 0.9], [[-0.22, 0, 0], [-0.30, 0, 0]])
+  rot('LowerLeg_R', [0, 0.9], [[0.22, 0, 0], [0.3, 0, 0]])
 ]);
 
 /* ------------------------------------------------------------------ Dive */
@@ -667,13 +818,13 @@ clip('Dive', 1.20, [
   rot('Spine', [0, 0.35, 1.20], [[0.20, 0, 0], [-0.10, 0, 0], [-0.16, 0, 0]]),
   rot('Head', [0, 0.35, 1.20], [[-0.10, 0, 0], [0.45, 0, 0], [0.55, 0, 0]]),
   rot('UpperArm_L', [0, 0.40, 1.20], [[0.12, 0, 0.18], [-2.55, 0, 0.18], [-2.35, 0, 0.16]]),
-  rot('LowerArm_L', [0, 0.40, 1.20], [[0.90, 0, 0], [0.30, 0, 0], [0.15, 0, 0]]),
+  rot('LowerArm_L', [0, 0.40, 1.20], [[-0.9, 0, 0], [-0.3, 0, 0], [-0.15, 0, 0]]),
   rot('UpperArm_R', [0, 0.40, 1.20], [[0.12, 0, -0.18], [-2.55, 0, -0.18], [-2.35, 0, -0.16]]),
-  rot('LowerArm_R', [0, 0.40, 1.20], [[0.90, 0, 0], [0.30, 0, 0], [0.15, 0, 0]]),
+  rot('LowerArm_R', [0, 0.40, 1.20], [[-0.9, 0, 0], [-0.3, 0, 0], [-0.15, 0, 0]]),
   rot('UpperLeg_L', [0, 0.35, 0.70, 1.20], [[-0.30, 0, 0.04], [0.55, 0, 0.06], [0.70, 0, 0.06], [0.55, 0, 0.05]]),
-  rot('LowerLeg_L', [0, 0.35, 1.20], [[-0.55, 0, 0], [-0.35, 0, 0], [-0.85, 0, 0]]),
+  rot('LowerLeg_L', [0, 0.35, 1.20], [[0.55, 0, 0], [0.35, 0, 0], [0.85, 0, 0]]),
   rot('UpperLeg_R', [0, 0.35, 0.70, 1.20], [[-0.30, 0, -0.04], [0.55, 0, -0.06], [0.70, 0, -0.06], [0.55, 0, -0.05]]),
-  rot('LowerLeg_R', [0, 0.35, 1.20], [[-0.55, 0, 0], [-0.35, 0, 0], [-0.85, 0, 0]])
+  rot('LowerLeg_R', [0, 0.35, 1.20], [[0.55, 0, 0], [0.35, 0, 0], [0.85, 0, 0]])
 ]);
 
 /* ------------------------------------------------------------ FlagPulled */
@@ -685,13 +836,13 @@ clip('FlagPulled', 1.10, [
   rot('Chest', [0, 0.18, 0.45, 1.10], [[0.04, 0, 0], [-0.14, 0, 0], [0.18, 0, 0], [0.14, 0, 0]]),
   rot('Head', [0, 0.18, 0.45, 1.10], [[-0.05, 0, 0], [-0.28, 0, 0], [0.30, 0, 0], [0.22, 0, 0]]),
   rot('UpperArm_L', [0, 0.18, 0.45, 1.10], [[0.10, 0, 0.18], [-1.30, 0, 0.55], [-0.55, 0, 0.45], [-0.20, 0, 0.35]]),
-  rot('LowerArm_L', [0, 0.18, 0.45, 1.10], [[1.00, 0, 0], [0.55, 0, 0], [1.10, 0, 0], [1.25, 0, 0]]),
+  rot('LowerArm_L', [0, 0.18, 0.45, 1.10], [[-1, 0, 0], [-0.55, 0, 0], [-1.1, 0, 0], [-1.25, 0, 0]]),
   rot('UpperArm_R', [0, 0.18, 0.45, 1.10], [[0.10, 0, -0.18], [-1.30, 0, -0.55], [-0.55, 0, -0.45], [-0.20, 0, -0.35]]),
-  rot('LowerArm_R', [0, 0.18, 0.45, 1.10], [[1.00, 0, 0], [0.55, 0, 0], [1.10, 0, 0], [1.25, 0, 0]]),
+  rot('LowerArm_R', [0, 0.18, 0.45, 1.10], [[-1, 0, 0], [-0.55, 0, 0], [-1.1, 0, 0], [-1.25, 0, 0]]),
   rot('UpperLeg_L', [0, 0.18, 0.45, 1.10], [[-0.35, 0, 0.04], [-0.60, 0, 0.06], [-0.25, 0, 0.05], [-0.20, 0, 0.04]]),
-  rot('LowerLeg_L', [0, 0.18, 0.45, 1.10], [[-0.30, 0, 0], [-0.20, 0, 0], [-0.55, 0, 0], [-0.45, 0, 0]]),
+  rot('LowerLeg_L', [0, 0.18, 0.45, 1.10], [[0.3, 0, 0], [0.2, 0, 0], [0.55, 0, 0], [0.45, 0, 0]]),
   rot('UpperLeg_R', [0, 0.18, 0.45, 1.10], [[0.30, 0, -0.04], [0.45, 0, -0.06], [0.10, 0, -0.05], [0.05, 0, -0.04]]),
-  rot('LowerLeg_R', [0, 0.18, 0.45, 1.10], [[-0.55, 0, 0], [-0.70, 0, 0], [-0.40, 0, 0], [-0.35, 0, 0]]),
+  rot('LowerLeg_R', [0, 0.18, 0.45, 1.10], [[0.55, 0, 0], [0.7, 0, 0], [0.4, 0, 0], [0.35, 0, 0]]),
   // the flag rips away and flies
   rot('Flag_L', [0, 0.18, 0.45, 1.10], [[0, 0, 0.05], [-0.9, 0.4, 0.5], [-1.6, 0.9, 0.9], [-1.9, 1.2, 1.1]]),
   rot('Flag_R', [0, 1.10], [[0, 0, -0.05], [0.25, 0, -0.10]])
@@ -703,13 +854,13 @@ clip('Celebrate', 1.00, [
   rot('Spine', [0, 0.5, 1.0], [[0.02, 0.16, 0], [0.02, -0.16, 0], [0.02, 0.16, 0]]),
   rot('Head', [0, 0.5, 1.0], [[-0.18, 0.10, 0], [-0.18, -0.10, 0], [-0.18, 0.10, 0]]),
   rot('UpperArm_L', [0, 0.5, 1.0], [[-2.75, 0, 0.30], [-2.55, 0, 0.55], [-2.75, 0, 0.30]]),
-  rot('LowerArm_L', [0, 0.5, 1.0], [[0.35, 0, 0], [0.10, 0, 0], [0.35, 0, 0]]),
+  rot('LowerArm_L', [0, 0.5, 1.0], [[-0.35, 0, 0], [-0.1, 0, 0], [-0.35, 0, 0]]),
   rot('UpperArm_R', [0, 0.5, 1.0], [[-2.75, 0, -0.30], [-2.55, 0, -0.55], [-2.75, 0, -0.30]]),
-  rot('LowerArm_R', [0, 0.5, 1.0], [[0.35, 0, 0], [0.10, 0, 0], [0.35, 0, 0]]),
+  rot('LowerArm_R', [0, 0.5, 1.0], [[-0.35, 0, 0], [-0.1, 0, 0], [-0.35, 0, 0]]),
   rot('UpperLeg_L', [0, 0.25, 0.5, 0.75, 1.0], [[0.05, 0, 0.03], [-0.35, 0, 0.05], [0.05, 0, 0.03], [-0.35, 0, 0.05], [0.05, 0, 0.03]]),
-  rot('LowerLeg_L', [0, 0.25, 0.5, 0.75, 1.0], [[-0.22, 0, 0], [-0.75, 0, 0], [-0.22, 0, 0], [-0.75, 0, 0], [-0.22, 0, 0]]),
+  rot('LowerLeg_L', [0, 0.25, 0.5, 0.75, 1.0], [[0.22, 0, 0], [0.75, 0, 0], [0.22, 0, 0], [0.75, 0, 0], [0.22, 0, 0]]),
   rot('UpperLeg_R', [0, 0.25, 0.5, 0.75, 1.0], [[0.05, 0, -0.03], [-0.35, 0, -0.05], [0.05, 0, -0.03], [-0.35, 0, -0.05], [0.05, 0, -0.03]]),
-  rot('LowerLeg_R', [0, 0.25, 0.5, 0.75, 1.0], [[-0.22, 0, 0], [-0.75, 0, 0], [-0.22, 0, 0], [-0.75, 0, 0], [-0.22, 0, 0]]),
+  rot('LowerLeg_R', [0, 0.25, 0.5, 0.75, 1.0], [[0.22, 0, 0], [0.75, 0, 0], [0.22, 0, 0], [0.75, 0, 0], [0.22, 0, 0]]),
   rot('Foot_L', [0, 0.25, 0.5, 0.75, 1.0], [[0.10, 0, 0], [0.40, 0, 0], [0.10, 0, 0], [0.40, 0, 0], [0.10, 0, 0]]),
   rot('Foot_R', [0, 0.25, 0.5, 0.75, 1.0], [[0.10, 0, 0], [0.40, 0, 0], [0.10, 0, 0], [0.40, 0, 0], [0.10, 0, 0]]),
   rot('Flag_L', [0, 0.25, 0.5, 0.75, 1.0], [[0.25, 0, 0.08], [-0.30, 0, 0.08], [0.25, 0, 0.08], [-0.30, 0, 0.08], [0.25, 0, 0.08]]),
@@ -723,13 +874,13 @@ clip('Juke', 0.80, [
   rot('Spine', [0, 0.20, 0.45, 0.80], [[0.12, 0, -0.18], [0.30, -0.20, -0.34], [0.24, 0.25, 0.30], [0.14, 0, 0.10]]),
   rot('Head', [0, 0.20, 0.45, 0.80], [[-0.08, 0.20, 0], [-0.08, 0.35, 0], [-0.08, -0.30, 0], [-0.08, 0, 0]]),
   rot('UpperArm_L', [0, 0.20, 0.45, 0.80], [[-0.35, 0, 0.55], [-0.75, 0, 0.85], [0.30, 0, 0.30], [-0.10, 0, 0.30]]),
-  rot('LowerArm_L', [0, 0.80], [[1.25, 0, 0], [1.15, 0, 0]]),
+  rot('LowerArm_L', [0, 0.80], [[-1.25, 0, 0], [-1.15, 0, 0]]),
   rot('UpperArm_R', [0, 0.20, 0.45, 0.80], [[0.30, 0, -0.30], [0.55, 0, -0.30], [-0.75, 0, -0.85], [-0.10, 0, -0.30]]),
-  rot('LowerArm_R', [0, 0.80], [[1.15, 0, 0], [1.25, 0, 0]]),
+  rot('LowerArm_R', [0, 0.80], [[-1.15, 0, 0], [-1.25, 0, 0]]),
   rot('UpperLeg_L', [0, 0.20, 0.45, 0.80], [[-0.45, 0, 0.10], [0.20, 0, 0.35], [-0.55, 0, 0.06], [-0.30, 0, 0.04]]),
-  rot('LowerLeg_L', [0, 0.20, 0.45, 0.80], [[-0.35, 0, 0], [-0.30, 0, 0], [-0.90, 0, 0], [-0.35, 0, 0]]),
+  rot('LowerLeg_L', [0, 0.20, 0.45, 0.80], [[0.35, 0, 0], [0.3, 0, 0], [0.9, 0, 0], [0.35, 0, 0]]),
   rot('UpperLeg_R', [0, 0.20, 0.45, 0.80], [[0.30, 0, -0.06], [-0.50, 0, -0.10], [0.35, 0, -0.35], [-0.15, 0, -0.04]]),
-  rot('LowerLeg_R', [0, 0.20, 0.45, 0.80], [[-0.60, 0, 0], [-0.95, 0, 0], [-0.35, 0, 0], [-0.40, 0, 0]]),
+  rot('LowerLeg_R', [0, 0.20, 0.45, 0.80], [[0.6, 0, 0], [0.95, 0, 0], [0.35, 0, 0], [0.4, 0, 0]]),
   rot('Flag_L', [0, 0.20, 0.45, 0.80], [[0.15, 0, 0.05], [-0.35, 0.3, 0.30], [0.35, -0.3, -0.10], [0.05, 0, 0.05]]),
   rot('Flag_R', [0, 0.20, 0.45, 0.80], [[0.15, 0, -0.05], [-0.35, 0.3, 0.10], [0.35, -0.3, -0.30], [0.05, 0, -0.05]])
 ]);

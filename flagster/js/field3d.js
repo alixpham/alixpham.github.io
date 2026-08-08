@@ -28,6 +28,25 @@
           { LEN: 70, WID: 25, EZ: 10, GOAL_L: 10, GOAL_R: 60, MID: 35 };
   var LEN = F.LEN, WID = F.WID, EZ = F.EZ, GOAL_L = F.GOAL_L, GOAL_R = F.GOAL_R, MID = F.MID;
 
+  /* Face where you're going.
+     Players look at whatever the play demands — a defender watches the ball
+     carrier, a receiver turns to the throw — but a body can only twist so far
+     off its own line of travel before it's running sideways with a forward
+     stride cycle, which reads as moonwalking. So the rope shortens with speed:
+     free to look anywhere at a standstill, pinned close to the velocity vector
+     at a sprint. `slack` is the deviation (radians) still allowed flat out —
+     defenders in coverage get more of it than a receiver in full stride. */
+  function alongMotion(yawWant, vx, vy, speed, slack) {
+    if (speed <= 1.0) return yawWant;
+    var yawMove = Math.atan2(vy, vx);
+    var d = yawWant - yawMove;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    var t = clamp((speed - 1.0) / 5.0, 0, 1);
+    var lim = Math.PI * (1 - t) + slack * t;
+    return yawMove + clamp(d, -lim, lim);
+  }
+
   // Field(yards) -> world(units). Field centered on origin, ground plane y=0.
   function wx(fx) { return fx - LEN / 2; }   // -35 .. +35   (offense attacks +x)
   function wz(fy) { return fy - WID / 2; }   // -12.5 .. +12.5
@@ -198,7 +217,7 @@
         var ring = makeRing(); scene.add(ring);
         pMeshes.push({
           P: P, holder: holder, ring: ring,
-          ud: { yaw: seedYaw, celebT: 0, _wasPulled: false, _threw: false, _caught: false, clip: 'idle' }
+          ud: { yaw: seedYaw, celebT: 0, _wasPulled: false, _threw: false, _caught: false, _juked: false, clip: 'idle' }
         });
       });
       playersRef = players;
@@ -223,27 +242,34 @@
 
       if (ud.celebT > 0) ud.celebT = Math.max(0, ud.celebT - dt);
 
+      var juking = (gp.jukeFx || 0) > 0;
+
       // ---- FACING: pick a target yaw (field-angle space) by role ----------
       var yawT = ud.yaw;
       if (throwing) {
         var to = (state.ball && state.ball.to) || state.thrownTo;
         if (to) yawT = Math.atan2(to.y - gp.y, to.x - gp.x);
       } else if (reaching) {
-        yawT = Math.atan2(state.ball.y - gp.y, state.ball.x - gp.x);
+        // Turn to the ball, but a receiver at full stride can only look so far
+        // off their own line before they'd be running sideways.
+        yawT = alongMotion(Math.atan2(state.ball.y - gp.y, state.ball.x - gp.x), vx, vy, speed, 0.95);
       } else if (carrier === gp) {
         if (moving) yawT = Math.atan2(vy, vx);        // ball carrier faces motion
       } else if (isOff) {
         if (moving) yawT = Math.atan2(vy, vx);        // receivers/QB face motion
       } else {
-        // DEFENSE: face what they're playing (carrier -> ball target -> receiver).
+        // DEFENSE: play what you're covering (carrier -> ball target -> receiver),
+        // but only as far as your feet allow — see alongMotion().
         var chase = carrier ||
                     (ballInAir && state.ball.to ? state.ball.to : null) ||
                     state.thrownTo;
-        if (chase) yawT = Math.atan2(chase.y - gp.y, chase.x - gp.x);
+        if (chase) yawT = alongMotion(Math.atan2(chase.y - gp.y, chase.x - gp.x), vx, vy, speed, 1.15);
         else if (moving) yawT = Math.atan2(vy, vx);
       }
       ud.yaw = yawT;
-      P.face(yawT, dt);                    // smooth turn; sets root.rotation.y = -yaw
+      // A juke is a sidestep: the body deliberately leaves the line of travel
+      // for a beat, so snap through it instead of easing.
+      P.face(yawT, juking ? dt * 2.2 : dt);
 
       // Backpedal = actual facing roughly opposite to velocity (coverage).
       var face = P._yaw;
@@ -254,6 +280,10 @@
       // Throw: QB releasing the ball.
       if (throwing && !ud._threw) { P.oneShot('throw', 'idle'); ud._threw = true; }
       if (!ballInAir) ud._threw = false;
+
+      // Juke: the carrier breaks a grip with a sidestep.
+      if (juking && !ud._juked) { P.oneShot('juke', 'run'); ud._juked = true; }
+      if (!juking) ud._juked = false;
 
       // Catch: targeted receiver secures the ball as it arrives.
       if (reaching) ud._caught = false;                 // re-arm while ball inbound
