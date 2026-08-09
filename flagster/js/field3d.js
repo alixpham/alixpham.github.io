@@ -168,10 +168,33 @@
     losLine.visible = false; ltgLine.visible = false;
     scene.add(losLine); scene.add(ltgLine);
 
+    var PLAYER_SCALE = 0.87;   // players render at 0.87 of the rig's authored height
+
     // Football
     var ball = makeBall(THREE);
     ball.visible = false;
     scene.add(ball);
+
+    /* The ball is one shared mesh, re-parented to whoever has it. Anything
+       under a player inherits the 0.87 the renderer scales them by, so the
+       ball is scaled back up to keep the regulation size it is drawn at. */
+    var ballHost = null;
+    function hostBall(node) {
+      if (ballHost === node) return;
+      if (node) node.add(ball); else scene.add(ball);
+      ball.scale.setScalar(node ? 1 / PLAYER_SCALE : 1);
+      ballHost = node;
+    }
+    // A named bone or socket on the player holding the ball, if the rigged
+    // model is the one in play (the procedural fallback has neither).
+    function carryNode(gp, name) {
+      if (!gp || !playersRef) return null;
+      var i = playersRef.indexOf(gp);
+      if (i < 0 || !pMeshes[i]) return null;
+      var P = pMeshes[i].P;
+      if (!P) return null;
+      return (P.sockets && P.sockets[name]) || (P.nodes && P.nodes[name]) || null;
+    }
 
     // Flying-flag effect pool (spawned on flag pulls)
     var flags = makeFlagPool(THREE, 10);
@@ -190,7 +213,6 @@
     var PLAYER3D = global.FLAGSTER && global.FLAGSTER.Player3D;
     // Human scale: the rig is ~2.39yd tall, so 0.87 puts players at ~6'2".
     // (It was 1.45 — which rendered ~10ft-tall giants.)
-    var PLAYER_SCALE = 0.87;
 
     /* STRIDE MATCHING — why the players used to skate.
 
@@ -630,7 +652,7 @@
       if (dt > 0.05) dt = 0.05;
 
       // Rebuild player meshes if the roster array was replaced (new down).
-      if (state.players !== playersRef) rebuildPlayers(state.players);
+      if (state.players !== playersRef) { hostBall(null); rebuildPlayers(state.players); }
 
       var inAir = !!(state.ball && state.ball.inAir);
       prevInAir = inAir;
@@ -655,14 +677,42 @@
       if (state.ball) {
         ball.visible = true;
         if (state.ball.inAir) {
+          hostBall(null);
           ball.position.set(wx(state.ball.x), 1.0 + (state.ball.z || 0), wz(state.ball.y));
           ball.rotation.z += 0.5; ball.rotation.x += 0.2;
+        } else if (state.pendingThrow && carryNode(state.pendingThrow.thrower, 'Socket_Hand_R')) {
+          // Winding up: the ball rides the throwing hand, so it comes forward
+          // with the arm and leaves from where the hand actually is.
+          hostBall(carryNode(state.pendingThrow.thrower, 'Socket_Hand_R'));
+          ball.position.set(0, 0, 0.02);
+          ball.rotation.set(0, Math.PI / 2, 0.25);
         } else if (state.carrier) {
-          // tuck near the carrier's near hip
+          /* CARRIED. This used to be a world-space guess — a fixed height of
+             1.15 with an offset along fixed world axes — so the ball hung at a
+             constant altitude while the player bobbed underneath it, and sat
+             on a fixed compass side no matter which way they were facing. Park
+             it on the chest bone instead and it inherits the whole body for
+             free: the bob of the stride, the lean, the turn, the juke.
+
+             High and tight: nose up, tucked on the diagonal between the upper
+             arm and the ribs, on the OUTSIDE arm — away from the middle of the
+             field, which is the side a carrier actually keeps it and the side
+             the defenders aren't on. */
           var c = state.carrier;
-          ball.position.set(wx(c.x) + Math.cos(-(c.ang || 0)) * 0.1, 1.15, wz(c.y) + 0.35);
-          ball.rotation.set(0, -(c.ang || 0), 0.4);
+          var chest = carryNode(c, 'Chest');
+          if (chest) {
+            var side = (c.y < WID / 2) ? -1 : 1;
+            hostBall(chest);
+            ball.position.set(side * 0.145, -0.06, 0.045);
+            ball.rotation.set(0, side * 0.30, side * 1.05);
+          } else {
+            // Procedural fallback rig: no bones to hang it off, so approximate.
+            hostBall(null);
+            ball.position.set(wx(c.x) + Math.cos(-(c.ang || 0)) * 0.1, 1.15, wz(c.y) + 0.35);
+            ball.rotation.set(0, -(c.ang || 0), 0.4);
+          }
         } else {
+          hostBall(null);
           ball.position.set(wx(state.ball.x), 1.0, wz(state.ball.y));
         }
       } else { ball.visible = false; }
