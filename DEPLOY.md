@@ -4,7 +4,7 @@ Flagster is served by GitHub Pages from the `master` branch at
 **https://alixpham.github.io/**. This file records the commit id behind each
 notable live deploy (newest first).
 
-Version tags (see `VERSION`): **v2.10.0** = `PENDINGSHA`,
+Version tags (see `VERSION`): **v2.10.0** = `626f1a3d8fb5ec6b0f00488cadd3d24b4947c664`,
 **v2.9.0** = `0cc4900b4c3590fbd91065d3e419951e383ba6ce`,
 **v2.8.0** = `0111346b16523e61752e9d59fc289a1c81136527`,
 **v2.7.0** = `a73fc4a3919275213a2ffe522621249c7d68a8fa`,
@@ -33,7 +33,7 @@ git proxy blocks tag pushes, so these are the authoritative version→commit rec
 
 | Date (UTC) | Commit | What shipped |
 | --- | --- | --- |
-| 2026-08-09 | `PENDINGSHA` | **v2.10.0** — no more skating: a player may face along their line of travel or along its reverse, never square across it, so legs always cycle in the direction the body is going |
+| 2026-08-09 | `626f1a3d8fb5ec6b0f00488cadd3d24b4947c664` | **v2.10.0** — no more skating: a player may face along their line of travel or along its reverse, never square across it, so legs always cycle in the direction the body is going |
 | 2026-08-09 | `0cc4900b4c3590fbd91065d3e419951e383ba6ce` | **v2.9.0** — juke reworked (no more juke-lock, no cooldown burned on a whiff, a real sidestep), throws wind up so the ball leaves with the arm, and the CPU quarterback can finally pass at all |
 | 2026-08-09 | `0111346b16523e61752e9d59fc289a1c81136527` | **v2.8.0** — the ball is regulation size instead of twice it, and the run cycle is stride-matched to ground speed with a longer stride, so feet plant instead of skating |
 | 2026-08-09 | `a73fc4a3919275213a2ffe522621249c7d68a8fa` | **v2.7.0** — nobody freezes any more: receivers work open after their route, the centre releases instead of standing still, and zone/man/spy coverage tracks live targets instead of parking on a fixed dot |
