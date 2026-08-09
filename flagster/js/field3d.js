@@ -373,7 +373,11 @@
       // the true horizon — a wide vertical FOV on a tall screen fills the top
       // half of the phone with crowd. Tightening the lens and pitching further
       // down crops the bowl out and gives the turf the frame instead.
-      tall: { back: 8.5, height: 4.8, ahead: 10.5, lookY: 0.8, fov: 54 }
+      // Pulled back from an earlier 8.5/4.8: on a phone that sat ~10yd off the
+      // carrier, which crops the play down to the one player you're driving.
+      // Height rises with the distance so the pitch stays steep enough to keep
+      // the bowl out of the top of the frame.
+      tall: { back: 12.5, height: 6.6, ahead: 11.5, lookY: 0.85, fov: 54 }
     };
 
     function updateCamera(state, dt) {
@@ -418,7 +422,14 @@
       camFx = lerp(camFx, focusFx, clamp(dt * 4.5, 0, 1));
       var anchorX = wx(camFx);
 
-      var camX = anchorX - s * C.back;
+      /* Keep the LENS inside the bowl, not just the focus. Backed up near your
+         own goal line, focus - back lands behind the end line, and the camera
+         ends up outside the stadium shooting the play through the back wall
+         and the stand behind it — a grey slab across the bottom of the frame.
+         Clamping here means the camera stops at the wall and rides closer to
+         the carrier instead, which is what a real touchline camera does. */
+      var camLimit = LEN / 2 - 1.5;
+      var camX = clamp(anchorX - s * C.back, -camLimit, camLimit);
       var lookX = anchorX + s * C.ahead;
 
       // Ease so possession changes swing smoothly instead of snapping.
