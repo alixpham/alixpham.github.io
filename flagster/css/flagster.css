@@ -107,19 +107,68 @@ h1,h2,h3,h4{margin:.2em 0}
 /* ================= GAME SCREEN ================= */
 .game-screen{position:fixed;inset:0;background:#06180c;overflow:hidden}
 .field-canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
-.hud{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;justify-content:center;gap:14px;
-  padding:8px 12px;background:linear-gradient(180deg,rgba(0,0,0,.6),transparent);z-index:10;font-weight:800}
-.hud-team{display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:10px;background:rgba(0,0,0,.35)}
-.hud-team.has-ball{box-shadow:0 0 0 2px var(--accent2)}
-.hud-flag{font-size:1.2rem}
-.hud-abbr{font-size:.95rem;letter-spacing:1px}
-.hud-score{font-size:1.5rem;color:var(--accent2)}
-.hud-mid{text-align:center}
-.hud-clock{font-size:1.05rem}
-.hud-down{font-size:.75rem;color:var(--muted);font-weight:600}
-.game-top-btns{position:absolute;top:8px;left:8px;z-index:20;display:flex;gap:8px}
+/* ---------------------------- BROADCAST HUD -------------------------------
+   Three independent panels absolutely positioned against the game screen, so
+   each keeps its own corner and none can push another around: the scorebug
+   (top-left on desktop, a full-width slab on phones), the play clock (centre)
+   and the situation stack (right). `.hud` itself is a transparent, click-
+   through layer — the field beneath it has to stay draggable.               */
+.hud{position:absolute;top:0;left:0;right:0;z-index:10;pointer-events:none;
+  font-weight:800;font-variant-numeric:tabular-nums}
+.hud > *{pointer-events:auto}
+
+/* --- panel look, shared --- */
+.sb,.pc,.sit{background:linear-gradient(180deg,rgba(12,22,34,.94),rgba(8,15,24,.92));
+  border:1px solid rgba(255,255,255,.14);border-radius:12px;
+  box-shadow:0 6px 22px rgba(0,0,0,.5)}
+
+/* --- scorebug --- */
+.sb{position:absolute;top:10px;left:12px;display:flex;align-items:stretch;gap:0;overflow:hidden}
+.sb-team{display:flex;align-items:center;gap:8px;padding:8px 14px}
+.sb-team.has-ball{background:rgba(255,210,63,.14)}
+.sb-crest{width:30px;height:32px;display:block;flex:none}
+.sb-abbr{font-size:.95rem;letter-spacing:1.5px;color:#dce9f5}
+.sb-score{font-size:1.7rem;line-height:1;color:#fff}
+.sb-home{flex-direction:row-reverse}
+.sb-clock{padding:6px 16px;text-align:center;border-left:1px solid rgba(255,255,255,.14);
+  border-right:1px solid rgba(255,255,255,.14);background:rgba(0,0,0,.32);
+  display:flex;flex-direction:column;justify-content:center;min-width:104px}
+.sb-time{font-size:1.32rem;line-height:1.1;color:#fff}
+.sb-dd{font-size:.68rem;letter-spacing:1.2px;color:var(--accent2)}
+
+/* --- portrait-only strip under the scorebug --- */
+.sb-strip{display:none;position:absolute;top:62px;left:12px;right:12px;
+  justify-content:space-between;padding:5px 14px;border-radius:9px;
+  background:rgba(8,15,24,.86);border:1px solid rgba(255,255,255,.12);
+  font-size:.72rem;letter-spacing:1.1px}
+.sb-strip em{font-style:normal;color:var(--muted)}
+.sb-strip b{color:#fff}
+
+/* --- play clock --- */
+.pc{position:absolute;top:10px;left:50%;transform:translateX(-50%);
+  padding:6px 22px;text-align:center}
+.pc.hidden{display:none}
+.pc-label{font-size:.6rem;letter-spacing:2px;color:var(--muted)}
+.pc-num{font-size:1.9rem;line-height:1.05;color:#fff}
+.pc.hot .pc-num{color:#ff6b6b}
+
+/* --- situation stack --- */
+.sit{position:absolute;top:10px;right:12px;width:224px;padding:8px 12px 10px}
+.sit-row{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:3px}
+.sit-label{font-size:.58rem;letter-spacing:1.6px;color:var(--muted);line-height:1.25}
+/* Never let "1ST & 20" break across two lines — the panel is a fixed block and
+   a wrap shoves the field map down out of alignment with the stamina rows. */
+.sit-val{font-size:.92rem;color:#fff;white-space:nowrap;flex:none}
+.mini-map{display:block;width:100%;height:auto;margin:6px 0 8px;border-radius:5px;
+  border:1px solid rgba(255,255,255,.16)}
+.stam-head{display:block;margin-bottom:4px}
+.stam-bar{height:7px;border-radius:4px;background:rgba(255,255,255,.13);overflow:hidden;margin-bottom:4px}
+.stam-fill{height:100%;width:100%;background:#37d98a;transition:width .18s linear}
+.stam-fill.mid{background:var(--accent2)}
+.stam-fill.low{background:#ff6b6b}
+
+.game-top-btns{position:absolute;top:auto;bottom:12px;left:12px;z-index:20;display:flex;gap:8px}
 .mini-btn{width:40px;height:40px;border-radius:10px;border:1px solid var(--line);background:rgba(15,47,28,.9);color:var(--ink);font-size:1.1rem}
-.game-top-btns .controls-btn{position:static;padding:8px 12px;font-size:.85rem}
 
 /* playcall */
 .playcall{position:absolute;inset:0;z-index:30;background:rgba(4,18,10,.94);
@@ -146,17 +195,34 @@ h1,h2,h3,h4{margin:.2em 0}
   transform:translate(-50%,-50%);pointer-events:none}
 .float-knob{position:absolute;left:50%;top:50%;width:54px;height:54px;border-radius:50%;
   background:rgba(46,199,122,.85);box-shadow:0 4px 12px rgba(0,0,0,.4);transform:translate(-50%,-50%)}
-.right-cluster{position:absolute;right:18px;bottom:20px;display:flex;flex-direction:column;align-items:flex-end;gap:10px;pointer-events:auto;z-index:3}
-.btn-cluster{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;max-width:230px}
-.act-btn{min-width:60px;height:56px;border-radius:14px;border:1px solid var(--line);
-  background:rgba(15,47,28,.92);color:var(--ink);font-weight:800;font-size:.9rem;padding:0 12px}
+/* The thumb controls are part of the broadcast overlay, not a separate toy
+   palette. They used to be six solid blocks in six unrelated hues — blue,
+   purple, brown, teal, green, violet — which read as louder than the game
+   behind them. Same dark glass as the scorebug, with the role carried by the
+   label colour and a thin left rule instead of a full-bleed fill. Tucked into
+   the bottom-right corner so the ball carrier, who sits low-centre under the
+   chase cam, isn't behind a button. */
+.right-cluster{position:absolute;right:14px;bottom:16px;display:flex;flex-direction:column;
+  align-items:flex-end;gap:8px;pointer-events:auto;z-index:3}
+.btn-cluster{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;max-width:184px}
+.act-btn{min-width:54px;height:46px;border-radius:11px;padding:0 11px;
+  border:1px solid rgba(255,255,255,.16);border-left:3px solid rgba(255,255,255,.30);
+  background:linear-gradient(180deg,rgba(12,22,34,.88),rgba(8,15,24,.86));
+  color:#eaf3fb;font-weight:800;font-size:.82rem;letter-spacing:.5px;
+  box-shadow:0 4px 14px rgba(0,0,0,.45);backdrop-filter:blur(3px)}
 .act-btn:active{transform:scale(.94)}
-.act-btn.snap{background:linear-gradient(180deg,#37d98a,#1fa863);color:#04240f;min-width:130px;height:58px;font-size:1.1rem}
-.act-btn.r1{background:#2b4c8f}.act-btn.r2{background:#7a3b8f}
-.act-btn.r3{background:#8f6b2b}.act-btn.r4{background:#2b7a6b}
-.act-btn.sprint{background:#5a3a8f;font-size:1.3rem;border-radius:50%;min-width:56px}
-.act-btn.sprint.on{background:var(--accent2);color:#222}
-.act-btn.sw{background:#2b4c8f}.act-btn.pull{background:#8f2b2b}
+.act-btn.snap{border-left-color:#37d98a;color:#8ff0bd;min-width:118px;height:50px;font-size:1rem}
+.act-btn.r1{border-left-color:#5b9bff}
+.act-btn.r2{border-left-color:#c07bff}
+.act-btn.r3{border-left-color:#ffb84d}
+.act-btn.r4{border-left-color:#4fd6c0}
+.act-btn.juke{border-left-color:#ffd23f}
+.act-btn.sprint{border-radius:50%;min-width:46px;width:46px;padding:0;font-size:1.05rem;
+  border-left-width:1px;border-color:rgba(255,255,255,.22)}
+.act-btn.sprint.on{background:linear-gradient(180deg,#ffd23f,#e0a800);color:#22201a;
+  border-color:#ffd23f}
+.act-btn.sw{border-left-color:#5b9bff}
+.act-btn.pull{border-left-color:#ff6b6b}
 
 .game-banner{position:absolute;top:44%;left:0;right:0;text-align:center;z-index:12;font-size:2rem;font-weight:900}
 
@@ -296,31 +362,34 @@ h1,h2,h3,h4{margin:.2em 0}
   .ctrl-cols{grid-template-columns:1fr}
   .trade-grid{grid-template-columns:1fr}
   .bracket{grid-template-columns:1fr}
-  .hud-score{font-size:1.2rem}
-  .hud-down{font-size:.66rem}
 }
-@media (min-width:821px){
-  /* desktop: hide the on-screen joystick unless touch; keep action hints subtle */
-  body:not(.is-touch) .joystick{opacity:.35}
-  body:not(.is-touch) .act-btn{opacity:.85}
-}
-/* Narrow screens: drop the scoreboard BELOW the pause/controls buttons so they
-   never overlap, and tighten it so nothing is clipped. */
+/* On a machine with a keyboard the thumb buttons are redundant — every one of
+   them has a key — so they come off the field entirely rather than sitting
+   there at reduced opacity as a permanent control legend. The swipe layer
+   stays: slash-to-direct works with a mouse. */
+body:not(.is-touch) .right-cluster{display:none}
+/* Narrow screens: the scorebug becomes a full-width slab with a stats strip
+   beneath it, and the two side panels are dropped. There is no room on a phone
+   for a play clock and a field map without covering the play itself, and the
+   same numbers already live in the slab and the strip. */
 @media (max-width:620px){
-  .game-top-btns{transform:scale(.86);transform-origin:top left}
-  .hud{top:44px;background:linear-gradient(180deg,rgba(0,0,0,.55),transparent);gap:8px;padding:4px 8px 10px}
-  .hud-team{padding:3px 7px;gap:4px}
-  .hud-score{font-size:1.15rem}
-  .hud-abbr{font-size:.8rem}
-  .hud-flag{font-size:1rem}
-  .hud-clock{font-size:.92rem}
-  .hud-down{font-size:.62rem}
+  .sb{left:8px;right:8px;top:8px;justify-content:space-between}
+  .sb-team{padding:7px 10px;gap:7px}
+  .sb-crest{width:26px;height:28px}
+  .sb-abbr{font-size:.85rem;letter-spacing:1.2px}
+  .sb-score{font-size:1.5rem}
+  .sb-clock{min-width:88px;padding:5px 10px}
+  .sb-time{font-size:1.16rem}
+  .sb-dd{font-size:.62rem}
+  .sb-strip{display:flex;top:60px;left:8px;right:8px}
+  .pc,.sit{display:none}
 }
 @media (max-width:420px){
   .play-grid{grid-template-columns:repeat(2,1fr)}
   .team-grid{grid-template-columns:repeat(auto-fill,minmax(110px,1fr))}
-  .act-btn{min-width:52px;height:50px;font-size:.8rem}
-  .joystick{width:100px;height:100px}
+  .act-btn{min-width:50px;height:44px;font-size:.76rem;padding:0 9px}
+  .act-btn.sprint{width:44px;min-width:44px}
+  .btn-cluster{max-width:172px}
 }
 
 /* ---- contested flag-pull meter ---- */
@@ -335,10 +404,11 @@ h1,h2,h3,h4{margin:.2em 0}
 .grab-wrap.danger .grab-label{color:#ff8a8a}
 
 /* ---- CPU-vs-CPU demo badge ---- */
-.demo-badge{position:absolute;top:8px;left:50%;transform:translateX(-50%);z-index:40;
+/* Bottom-centre, clear of the scorebug it used to sit on top of. */
+.demo-badge{position:absolute;bottom:14px;left:50%;transform:translateX(-50%);z-index:40;
   display:flex;align-items:center;gap:10px;background:rgba(4,18,10,.85);
   border:1px solid var(--accent);border-radius:20px;padding:6px 8px 6px 14px;
-  font-weight:800;letter-spacing:1px;color:var(--accent2);font-size:.82rem}
+  font-weight:800;letter-spacing:1px;color:var(--accent2);font-size:.82rem;white-space:nowrap}
 .demo-exit{background:var(--panel2);border:1px solid var(--line);color:var(--ink);
   border-radius:14px;padding:4px 12px;font-weight:700;cursor:pointer}
-@media (max-width:620px){ .demo-badge{top:auto;bottom:14px;font-size:.72rem} }
+@media (max-width:620px){ .demo-badge{font-size:.72rem} }

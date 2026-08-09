@@ -359,8 +359,19 @@
     root.add(lightTower(THREE, towerX, -towerZ, rimTop));
     root.add(lightTower(THREE, towerX, towerZ, rimTop));
 
-    /* ------------------------- 6. SCOREBOARD ----------------------------- */
-    root.add(scoreboard(THREE, innerX + 14, rimTop));
+    /* ------------------------- 6. JUMBOTRONS ----------------------------- */
+    // One behind each end zone. The gameplay camera flips end-for-end with
+    // possession, so a single board would be behind the lens for half the
+    // game; a pair means there is always a live score in shot.
+    var boards = [
+      scoreboard(THREE, innerX + 14, false),
+      scoreboard(THREE, -(innerX + 14), true)
+    ];
+    boards.forEach(function (b) { root.add(b); });
+    // Hand the caller a single updater that drives both faces.
+    root.userData.updateBoards = function (info) {
+      for (var i = 0; i < boards.length; i++) boards[i].userData.updateBoard(info);
+    };
 
     // Nothing in the stadium casts shadows; keep the shadow map cheap.
     root.traverse(function (o) { o.castShadow = false; o.frustumCulled = true; });
@@ -368,20 +379,48 @@
   }
 
   /* ------------------------------- SKY ---------------------------------- */
+  /* A bright afternoon sky. This used to be a dusk gradient, which looked
+     handsome on the menu but rendered gameplay in permanent twilight — jersey
+     colours went muddy and the turf read grey. Daylight instead, with a band
+     of fair-weather cumulus scattered across the middle of the dome so the sky
+     isn't a flat wash of blue above the rim. */
   function makeSky(THREE, radius) {
     var cv = document.createElement('canvas');
-    cv.width = 8; cv.height = 512;
+    cv.width = 1024; cv.height = 512;
     var g = cv.getContext('2d');
     var grd = g.createLinearGradient(0, 0, 0, 512);
-    grd.addColorStop(0.00, '#0b1a3d');           // zenith: deep dusk blue
-    grd.addColorStop(0.28, '#1d3f77');
-    grd.addColorStop(0.52, '#3f6ea6');
-    grd.addColorStop(0.70, '#8aa4bf');
-    grd.addColorStop(0.83, '#e0a271');           // warm horizon
-    grd.addColorStop(0.92, '#c9714a');
-    grd.addColorStop(1.00, '#3a2a26');           // below horizon: dim ground haze
+    grd.addColorStop(0.00, '#2f74c8');           // zenith: deep summer blue
+    grd.addColorStop(0.30, '#4e93da');
+    grd.addColorStop(0.55, '#79b3e8');
+    grd.addColorStop(0.74, '#a8cef0');
+    grd.addColorStop(0.86, '#d3e6f6');           // pale haze at the horizon
+    grd.addColorStop(1.00, '#8fa48c');           // below horizon: distant ground
     g.fillStyle = grd;
-    g.fillRect(0, 0, 8, 512);
+    g.fillRect(0, 0, 1024, 512);
+
+    /* Clouds: each is a clump of soft overlapping blobs. Seeded from a fixed
+       integer sequence rather than Math.random so the sky is identical on
+       every load and screenshots stay comparable between runs. */
+    var seed = 20280714;
+    function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+    g.globalAlpha = 1;
+    for (var c = 0; c < 26; c++) {
+      var cx = rnd() * 1024;
+      var cy = 150 + rnd() * 210;                // keep them off the zenith/horizon
+      var scale = 0.55 + rnd() * 0.9;
+      // Higher clouds are smaller and fainter, so the band reads as depth.
+      var fade = 0.30 + 0.55 * ((cy - 150) / 210);
+      for (var b = 0; b < 7; b++) {
+        var bx = cx + (rnd() - 0.5) * 150 * scale;
+        var by = cy + (rnd() - 0.5) * 32 * scale;
+        var br = (16 + rnd() * 30) * scale;
+        var blob = g.createRadialGradient(bx, by, 0, bx, by, br);
+        blob.addColorStop(0, 'rgba(255,255,255,' + (0.85 * fade).toFixed(3) + ')');
+        blob.addColorStop(1, 'rgba(255,255,255,0)');
+        g.fillStyle = blob;
+        g.beginPath(); g.arc(bx, by, br, 0, Math.PI * 2); g.fill();
+      }
+    }
 
     var tex = new THREE.CanvasTexture(cv);
     tex.minFilter = THREE.LinearFilter;
@@ -638,56 +677,105 @@
   }
 
   /* --------------------------- SCOREBOARD -------------------------------- */
-  function scoreboard(THREE, x, top) {
+  /* A live jumbotron behind an end zone. `flip` faces it the other way so the
+     pair at opposite ends both point in at the field.
+
+     The board hangs at y=17 rather than up on the rim: the gameplay camera is
+     a low chase cam about four yards off the turf, and anything much higher
+     than this sits above the top of its frustum — a scoreboard you can only
+     see by pausing is decoration, not information. Returned with
+     userData.updateBoard(info) so the renderer can repaint the score. */
+  var BOARD_W = 17, BOARD_H = 8.5, BOARD_Y = 21;
+
+  function scoreboard(THREE, x, flip) {
     var grp = new THREE.Group();
-    var H = (top || 22) + 2;
+    var H = BOARD_Y - BOARD_H / 2;
     var steel = std(THREE, { color: 0x232a30, roughness: 0.85, metalness: 0.2 });
     var legs = new THREE.Mesh(mergeGeos(THREE, [
-      boxAt(THREE, 1.1, H, 1.1, -7, H / 2, 0),
-      boxAt(THREE, 1.1, H, 1.1, 7, H / 2, 0)
+      boxAt(THREE, 1.2, H, 1.2, -9, H / 2, 0),
+      boxAt(THREE, 1.2, H, 1.2, 9, H / 2, 0)
     ]), steel);
     grp.add(legs);
 
     var cv = document.createElement('canvas');
-    cv.width = 512; cv.height = 256;
+    cv.width = 1024; cv.height = 512;
     var g = cv.getContext('2d');
-    g.fillStyle = '#080b10'; g.fillRect(0, 0, 512, 256);
-    g.fillStyle = '#0d1420'; g.fillRect(10, 10, 492, 236);
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillStyle = '#ffb61e';
-    g.font = 'bold 72px Impact, "Arial Black", Arial, sans-serif';
-    g.fillText('FLAGSTER', 256, 70);
-    g.fillStyle = '#7fe0a0';
-    g.font = 'bold 54px Impact, "Arial Black", Arial, sans-serif';
-    var line = 'AWAY 00 - 00 HOME';
-    var lw = g.measureText(line).width, maxw = 460;
-    g.save();
-    if (lw > maxw) { g.translate(256, 168); g.scale(maxw / lw, 1); g.fillText(line, 0, 0); }
-    else g.fillText(line, 256, 168);
-    g.restore();
-    // faint LED grid
-    g.fillStyle = 'rgba(0,0,0,0.25)';
-    for (var i = 0; i < 256; i += 3) g.fillRect(0, i, 512, 1);
+
     var tex = new THREE.CanvasTexture(cv);
     tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
     tex.generateMipmaps = false;
     if (THREE.SRGBColorSpace !== undefined && 'colorSpace' in tex) tex.colorSpace = THREE.SRGBColorSpace;
     else if (THREE.sRGBEncoding !== undefined && 'encoding' in tex) tex.encoding = THREE.sRGBEncoding;
 
+    function paint(info) {
+      info = info || {};
+      var away = info.awayAbbr || 'AWAY', home = info.homeAbbr || 'HOME';
+      var as = (info.awayScore != null) ? String(info.awayScore) : '0';
+      var hs = (info.homeScore != null) ? String(info.homeScore) : '0';
+      var period = info.period || 'Q1';
+      var clock = info.clock || '0:00';
+      var aCol = info.awayColor || '#e8443a', hCol = info.homeColor || '#3f7fe0';
+
+      g.fillStyle = '#05080d'; g.fillRect(0, 0, 1024, 512);
+      g.fillStyle = '#0c131d'; g.fillRect(12, 12, 1000, 488);
+
+      // Team colour flashes down the outer edges so the board is identifiably
+      // this fixture even at the distance the chase cam sees it from.
+      g.fillStyle = aCol; g.fillRect(12, 12, 26, 488);
+      g.fillStyle = hCol; g.fillRect(986, 12, 26, 488);
+
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+
+      // Team names
+      g.fillStyle = '#9fb3c8';
+      g.font = 'bold 62px Impact, "Arial Black", Arial, sans-serif';
+      g.fillText(away, 240, 96);
+      g.fillText(home, 784, 96);
+
+      // Scores — the thing you read from 80 yards away.
+      g.fillStyle = '#ffffff';
+      g.font = 'bold 190px Impact, "Arial Black", Arial, sans-serif';
+      g.fillText(as, 240, 250);
+      g.fillText(hs, 784, 250);
+
+      // Centre column: period over clock.
+      g.strokeStyle = 'rgba(255,255,255,0.14)'; g.lineWidth = 3;
+      g.beginPath(); g.moveTo(512, 60); g.lineTo(512, 330); g.stroke();
+      g.fillStyle = '#ffb61e';
+      g.font = 'bold 58px Impact, "Arial Black", Arial, sans-serif';
+      g.fillText(period, 512, 120);
+      g.fillStyle = '#7fe0a0';
+      g.font = 'bold 92px Impact, "Arial Black", Arial, sans-serif';
+      g.fillText(clock, 512, 218);
+
+      // Footer ribbon
+      g.fillStyle = '#141c28'; g.fillRect(40, 372, 944, 104);
+      g.fillStyle = '#ffb61e';
+      g.font = 'bold 66px Impact, "Arial Black", Arial, sans-serif';
+      g.fillText(info.footer || 'FLAGSTER', 512, 426);
+
+      // Faint scanlines so it reads as an LED wall rather than a flat decal.
+      g.fillStyle = 'rgba(0,0,0,0.22)';
+      for (var i = 0; i < 512; i += 4) g.fillRect(0, i, 1024, 1);
+      tex.needsUpdate = true;
+    }
+    paint(null);
+
     var screen = new THREE.Mesh(
-      new THREE.BoxGeometry(20, 10, 1.4),
+      new THREE.BoxGeometry(BOARD_W, BOARD_H, 1.4),
       [
         steel, steel, steel, steel,
         new THREE.MeshBasicMaterial({ map: tex, fog: FOG }),   // +Z face (toward field side)
         steel
       ]
     );
-    screen.position.y = 27;
+    screen.position.y = BOARD_Y;
     grp.add(screen);
 
     grp.position.set(x, 0, 0);
-    grp.rotation.y = -Math.PI / 2;                  // face back down the field
+    grp.rotation.y = flip ? Math.PI / 2 : -Math.PI / 2;   // face in toward the field
     grp.traverse(function (o) { o.castShadow = false; });
+    grp.userData.updateBoard = paint;
     return grp;
   }
 

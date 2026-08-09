@@ -32,6 +32,68 @@
   function mount(el) { root = el; }
   function show(node) { clear(root); root.appendChild(node); global.scrollTo(0, 0); }
 
+  /* ------------------------------ CRESTS ---------------------------------
+     A shield badge per team, drawn from that nation's own two kit colours and
+     its three-letter code. The HUD used to show the flag emoji, which renders
+     at a different size, weight and baseline on every platform — and on the
+     several that ship no flag glyphs at all it degrades to two letters in a
+     box. A crest we draw ourselves looks the same everywhere and sits properly
+     against the scorebug.
+
+     Returned as an SVG data URI and memoised, since the scorebug re-renders
+     several times a second and these never change within a game. */
+  var _crestCache = {};
+  function crestFor(team) {
+    if (!team) return '';
+    var id = team.id || '??';
+    var cols = team.colors || ['#26467f', '#ffffff'];
+    var key = id + '|' + cols[0] + '|' + cols[1];
+    if (_crestCache[key]) return _crestCache[key];
+
+    var base = cols[0], trim = cols[1];
+    // A near-white primary would vanish against the dark scorebug, so in that
+    // case swap the roles and let the trim carry the shield.
+    if (luma(base) > 0.80 && luma(trim) < 0.80) { base = cols[1]; trim = cols[0]; }
+    var ink = luma(base) > 0.60 ? '#12181f' : '#ffffff';
+
+    var shield = 'M32 3 L60 12 L60 34 Q60 54 32 65 Q4 54 4 34 L4 12 Z';
+    var svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 68" width="64" height="68">' +
+        '<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">' +
+          '<stop offset="0" stop-color="' + shade(base, 1.35) + '"/>' +
+          '<stop offset="1" stop-color="' + shade(base, 0.72) + '"/>' +
+        '</linearGradient></defs>' +
+        '<path d="' + shield + '" fill="url(#g)" stroke="' + trim + '" stroke-width="4"/>' +
+        // A chevron band across the shield so it reads as a crest, not a blob.
+        '<path d="M6 30 L32 40 L58 30 L58 37 L32 47 L6 37 Z" fill="' + trim + '" opacity="0.55"/>' +
+        '<text x="32" y="27" text-anchor="middle" font-family="Impact, \'Arial Black\', sans-serif" ' +
+          'font-size="20" fill="' + ink + '">' + esc(id) + '</text>' +
+      '</svg>';
+    _crestCache[key] = 'data:image/svg+xml,' + encodeURIComponent(svg);
+    return _crestCache[key];
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c];
+    });
+  }
+  function hex2rgb(h) {
+    h = String(h || '').replace('#', '');
+    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    var n = parseInt(h, 16);
+    if (isNaN(n)) return { r: 128, g: 128, b: 128 };
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+  }
+  function luma(h) {
+    var c = hex2rgb(h);
+    return (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) / 255;
+  }
+  function shade(h, k) {
+    var c = hex2rgb(h);
+    function f(v) { return Math.max(0, Math.min(255, Math.round(v * k))); }
+    return 'rgb(' + f(c.r) + ',' + f(c.g) + ',' + f(c.b) + ')';
+  }
+
   /* ----------------------- Platform detection ---------------------------- */
   var IS_TOUCH = ('ontouchstart' in global) || navigator.maxTouchPoints > 0;
   function isMobile() { return IS_TOUCH && Math.min(global.innerWidth, global.innerHeight) < 820; }
@@ -112,9 +174,11 @@
 
     var wrap = h('div', { class: 'game-screen' }, [
       canvas, this.hud, this.playcallEl, this.touch, this.banner, this.grab,
+      // Only the pause button lives on the game screen. The controls sheet is
+      // one tap further in, from the pause menu — a permanent "🎮 Controls"
+      // chip over the field is a tutorial that never ends.
       h('div', { class: 'game-top-btns' }, [
-        h('button', { class: 'mini-btn', html: '⏸', title: 'Menu', onClick: function () { self.pauseMenu(); } }),
-        controlsButton()
+        h('button', { class: 'mini-btn', html: '⏸', title: 'Menu', onClick: function () { self.pauseMenu(); } })
       ])
     ]);
     this.el = wrap;
@@ -193,30 +257,199 @@
     }
   };
 
+  /* ------------------------------- HUD -----------------------------------
+     A broadcast-style overlay: scorebug, play clock, down & distance with a
+     field position map, and stamina bars.
+
+     Built ONCE into a stable tree; _syncUI only writes the values that
+     changed. The previous version tore the whole HUD down and rebuilt every
+     node eleven times a second, which churned the DOM continuously and made
+     the text impossible to select or animate.                              */
+  GameShell.prototype._buildHud = function () {
+    var cfg = this.cfg;
+    function team(side) {
+      var t = cfg[side];
+      return h('div', { class: 'sb-team sb-' + side }, [
+        h('img', { class: 'sb-crest', src: crestFor(t), alt: '' }),
+        h('span', { class: 'sb-abbr', text: t.id }),
+        h('span', { class: 'sb-score', text: '0' })
+      ]);
+    }
+    var away = team('away'), home = team('home');
+    var clockBox = h('div', { class: 'sb-clock' }, [
+      h('div', { class: 'sb-time', text: '0:00' }),
+      h('div', { class: 'sb-dd', text: '1ST & 10' })
+    ]);
+    var scorebug = h('div', { class: 'sb' }, [away, clockBox, home]);
+
+    // Play clock — landscape only; portrait has no room for it.
+    var playClock = h('div', { class: 'pc' }, [
+      h('div', { class: 'pc-label', text: 'PLAY CLOCK' }),
+      h('div', { class: 'pc-num', text: '25' })
+    ]);
+
+    // Right-hand stack: situation + a field map + stamina.
+    var map = h('canvas', { class: 'mini-map', width: 132, height: 56 });
+    var situation = h('div', { class: 'sit' }, [
+      h('div', { class: 'sit-row' }, [
+        h('span', { class: 'sit-label', text: 'DOWN & DISTANCE' }),
+        h('span', { class: 'sit-val js-dd', text: '1ST & 10' })
+      ]),
+      h('div', { class: 'sit-row' }, [
+        h('span', { class: 'sit-label', text: 'BALL ON' }),
+        h('span', { class: 'sit-val js-ballon', text: '—' })
+      ]),
+      map
+    ]);
+    var bars = [];
+    for (var i = 0; i < 3; i++) {
+      var fill = h('div', { class: 'stam-fill' });
+      bars.push(fill);
+      situation.appendChild(h('div', { class: 'stam-bar' }, [fill]));
+    }
+    situation.insertBefore(h('div', { class: 'sit-label stam-head', text: 'STAMINA' }),
+                           situation.querySelector('.stam-bar'));
+
+    // Portrait strip under the scorebug.
+    var strip = h('div', { class: 'sb-strip' }, [
+      h('span', {}, [h('em', { text: 'BALL ON ' }), h('b', { class: 'js-strip-ballon', text: '—' })]),
+      h('span', {}, [h('em', { text: 'YDS TO GO: ' }), h('b', { class: 'js-strip-togo', text: '—' })])
+    ]);
+
+    clear(this.hud);
+    this.hud.appendChild(scorebug);
+    this.hud.appendChild(strip);
+    this.hud.appendChild(playClock);
+    this.hud.appendChild(situation);
+
+    this._hudRefs = {
+      awayScore: away.querySelector('.sb-score'),
+      homeScore: home.querySelector('.sb-score'),
+      awayTeam: away, homeTeam: home,
+      time: clockBox.querySelector('.sb-time'),
+      dd: clockBox.querySelector('.sb-dd'),
+      pc: playClock, pcNum: playClock.querySelector('.pc-num'),
+      sitDd: situation.querySelector('.js-dd'),
+      sitBallOn: situation.querySelector('.js-ballon'),
+      stripBallOn: strip.querySelector('.js-strip-ballon'),
+      stripToGo: strip.querySelector('.js-strip-togo'),
+      map: map, bars: bars, last: {}
+    };
+  };
+
+  var ORD = ['1ST', '2ND', '3RD', '4TH'];
+
+  /* Field position in broadcast shorthand: "OWN 34" / "OPP 27" / "50".
+     `yardsToGoal` counts down to the offense's target end zone, so anything
+     past 50 is still in their own half. */
+  function ballOnText(s) {
+    var ytg = Math.round(s.yardsToGoal);
+    if (ytg === 50) return '50';
+    return (ytg > 50) ? ('OWN ' + (100 - ytg)) : ('OPP ' + ytg);
+  }
+
+  // Yards needed for a new set of downs: to midfield, or to the goal line.
+  function yardsToGo(s) {
+    return s.crossedMid
+      ? Math.max(0, Math.round(s.yardsToGoal))
+      : Math.max(0, Math.round(s.yardsToGoal - 25));
+  }
+
+  /* The little field map. Drawn only when the ball actually moves — this is a
+     canvas repaint inside a 11Hz interval, and redrawing an unchanged picture
+     is pure waste. */
+  GameShell.prototype._drawMiniMap = function (s) {
+    var r = this._hudRefs, cv = r.map;
+    if (!cv) return;
+    var g = cv.getContext('2d');
+    if (!g) return;
+    var W = cv.width, H = cv.height, pad = 4;
+    g.clearRect(0, 0, W, H);
+    g.fillStyle = '#1c5c30'; g.fillRect(pad, pad, W - pad * 2, H - pad * 2);
+
+    var fw = W - pad * 2;
+    // End zones
+    g.fillStyle = 'rgba(255,255,255,0.20)';
+    g.fillRect(pad, pad, fw * 0.14, H - pad * 2);
+    g.fillRect(W - pad - fw * 0.14, pad, fw * 0.14, H - pad * 2);
+    // Yard lines
+    g.strokeStyle = 'rgba(255,255,255,0.35)'; g.lineWidth = 1;
+    for (var i = 1; i < 8; i++) {
+      var x = pad + fw * (0.14 + (0.72 * i / 8));
+      g.beginPath(); g.moveTo(x, pad); g.lineTo(x, H - pad); g.stroke();
+    }
+    // Ball spot. The offense attacks +x, so yardsToGoal maps right-to-left.
+    var t = 1 - (Math.max(0, Math.min(100, s.yardsToGoal)) / 100);
+    var bx = pad + fw * (0.14 + 0.72 * t);
+    g.fillStyle = '#ffd23f';
+    g.beginPath(); g.arc(bx, H / 2, 3.6, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = '#ffd23f'; g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(bx, pad + 1); g.lineTo(bx, H - pad - 1); g.stroke();
+  };
+
   GameShell.prototype._syncUI = function () {
     var eng = this.engine, s = eng && eng.state;
     if (!s) return;
-    // HUD
-    var offTeam = s.possession;
-    var downTxt = s.down + (['st','nd','rd','th'][Math.min(s.down - 1, 3)]);
-    var toGain = s.crossedMid ? ('Goal: ' + Math.round(s.yardsToGoal) + ' yд') : ('Midfield in ' + Math.max(0, Math.round(s.yardsToGoal - 25)) + ' yд');
+    if (!this._hudRefs) this._buildHud();
+    var r = this._hudRefs, last = r.last;
+
+    function set(el, key, val) {
+      if (last[key] === val) return;
+      last[key] = val; el.textContent = val;
+    }
+
     var mm = Math.floor(Math.max(0, s.clock) / 60), ss = Math.max(0, Math.round(s.clock % 60));
     var clk = mm + ':' + (ss < 10 ? '0' : '') + ss;
-    clear(this.hud);
-    this.hud.appendChild(h('div', { class: 'hud-team ' + (offTeam === 'away' ? 'has-ball' : '') }, [
-      h('span', { class: 'hud-flag', text: this.cfg.away.flag }),
-      h('span', { class: 'hud-abbr', text: this.cfg.away.id }),
-      h('span', { class: 'hud-score', text: s.score.away })
-    ]));
-    this.hud.appendChild(h('div', { class: 'hud-mid' }, [
-      h('div', { class: 'hud-clock', text: (s.overtime ? 'OT ' : 'Q' + s.quarter + '  ') + clk }),
-      h('div', { class: 'hud-down', text: downTxt + ' — ' + toGain })
-    ]));
-    this.hud.appendChild(h('div', { class: 'hud-team ' + (offTeam === 'home' ? 'has-ball' : '') }, [
-      h('span', { class: 'hud-score', text: s.score.home }),
-      h('span', { class: 'hud-abbr', text: this.cfg.home.id }),
-      h('span', { class: 'hud-flag', text: this.cfg.home.flag })
-    ]));
+    var down = ORD[Math.min(Math.max(s.down, 1) - 1, 3)];
+    var ddTxt = down + ' & ' + (s.crossedMid && s.yardsToGoal <= 10 ? 'GOAL' : yardsToGo(s));
+    var period = s.overtime ? 'OT' : ('Q' + s.quarter);
+
+    set(r.awayScore, 'as', String(s.score.away));
+    set(r.homeScore, 'hs', String(s.score.home));
+    set(r.time, 'clk', period + ' ' + clk);
+    set(r.dd, 'dd', ddTxt);
+    set(r.sitDd, 'dd2', ddTxt);
+    set(r.sitBallOn, 'bo', ballOnText(s));
+    set(r.stripBallOn, 'bo2', ballOnText(s));
+    set(r.stripToGo, 'tg', String(yardsToGo(s)));
+
+    // Possession highlight
+    var awayBall = (s.possession === 'away');
+    if (last.poss !== awayBall) {
+      last.poss = awayBall;
+      r.awayTeam.classList.toggle('has-ball', awayBall);
+      r.homeTeam.classList.toggle('has-ball', !awayBall);
+    }
+
+    // Play clock: only meaningful pre-snap, and it turns red in the last five.
+    var pcOn = (s.phase === 'presnap');
+    if (last.pcOn !== pcOn) { last.pcOn = pcOn; r.pc.classList.toggle('hidden', !pcOn); }
+    if (pcOn) {
+      var left = Math.ceil(s.playClockLeft == null ? 25 : s.playClockLeft);
+      set(r.pcNum, 'pc', String(left));
+      var hot = left <= 5;
+      if (last.pcHot !== hot) { last.pcHot = hot; r.pc.classList.toggle('hot', hot); }
+    }
+
+    // Stamina for the three skill players on the side we're watching.
+    var watch = this.cfg.demo ? s.possession : this.cfg.userSide;
+    var mine = (s.players || []).filter(function (p) {
+      return p.team === watch && p.slot !== 'C' && p.slot !== 'RUSH';
+    }).slice(0, 3);
+    for (var i = 0; i < r.bars.length; i++) {
+      var p = mine[i];
+      var v = p && p.stam != null ? p.stam : 1;
+      var pct = Math.round(v * 100);
+      if (last['st' + i] !== pct) {
+        last['st' + i] = pct;
+        r.bars[i].style.width = pct + '%';
+        r.bars[i].className = 'stam-fill' + (v < 0.35 ? ' low' : (v < 0.7 ? ' mid' : ''));
+      }
+    }
+
+    // Field map — repaint only when the spot actually changed.
+    var spot = Math.round(s.yardsToGoal);
+    if (last.spot !== spot) { last.spot = spot; this._drawMiniMap(s); }
 
     // Contested flag-pull meter — shows a grab filling so you know to juke.
     var gp = s.grabProgress || 0;
