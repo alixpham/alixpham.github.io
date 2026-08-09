@@ -4,7 +4,8 @@ Flagster is served by GitHub Pages from the `master` branch at
 **https://alixpham.github.io/**. This file records the commit id behind each
 notable live deploy (newest first).
 
-Version tags (see `VERSION`): **v2.5.0** = `629f643ab2e4ec96e42e003cf3eb9c39e67598db`,
+Version tags (see `VERSION`): **v2.6.0** = `PENDINGSHA`,
+**v2.5.0** = `01cffb2ae102abab864c9c791b65914a229e3c62`,
 **v2.4.0** = `1f26722c7c368f849d1ec74f9a1f0ad83164b476`,
 **v2.3.0** = `243074430c9bc2db549b82f9576abc015f5e60d5`,
 **v2.2.0** = `ee8883d78e5fb19ca925c7332cf351fc88bd5194`,
@@ -28,7 +29,8 @@ git proxy blocks tag pushes, so these are the authoritative version→commit rec
 
 | Date (UTC) | Commit | What shipped |
 | --- | --- | --- |
-| 2026-08-09 | `629f643ab2e4ec96e42e003cf3eb9c39e67598db` | **v2.5.0** — real jersey numbers by position (the renderer had been painting each player's OVR rating on their chest) and a safety only when your flag is pulled behind your own goal line, never for standing there |
+| 2026-08-09 | `PENDINGSHA` | **v2.6.0** — the running version is shown on the home screen, read from the VERSION file itself so it can't drift from what's deployed |
+| 2026-08-09 | `01cffb2ae102abab864c9c791b65914a229e3c62` | **v2.5.0** — real jersey numbers by position (the renderer had been painting each player's OVR rating on their chest) and a safety only when your flag is pulled behind your own goal line, never for standing there |
 | 2026-08-09 | `1f26722c7c368f849d1ec74f9a1f0ad83164b476` | **v2.4.0** — athletic player build (square shoulders, real neck, thicker arms and calves) and a portrait camera pulled back off the carrier, with the lens clamped inside the bowl |
 | 2026-08-09 | `243074430c9bc2db549b82f9576abc015f5e60d5` | **v2.3.0** — broadcast presentation across the demo AND every played mode: a low over-the-shoulder chase camera in place of the fit-the-whole-field view, a scorebug/play-clock/situation HUD with procedural team crests and a field map, daylight relight with live jumbotrons, a real play clock and working stamina, and control hints, thumb-button clutter and floating nameplates taken off the field |
 | 2026-08-08 | `ee8883d78e5fb19ca925c7332cf351fc88bd5194` | **v2.2.0** — slash to direct: draw a line across the field and your player runs the whole route hands-off, with the route painted on the turf |
