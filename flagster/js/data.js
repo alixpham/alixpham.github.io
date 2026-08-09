@@ -104,12 +104,52 @@
     };
   }
 
+  /* ---- JERSEY NUMBERS ----------------------------------------------------
+     Numbers follow the ranges real football assigns by position, so a corner
+     doesn't line up in a lineman's number. Drawn without replacement inside a
+     roster, and seeded, so a nation's squad wears the same numbers every
+     session. (The renderer used to paint each player's OVR rating on their
+     chest, which is why 80-rated receivers all wore 80.) */
+  var NUM_POOLS = {
+    QB:   [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 14, 16, 17, 18, 19],
+    RB:   [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 32, 33, 34],
+    WR:   [80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 11, 13, 15, 17, 18, 19],
+    C:    [50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 65, 66],
+    RUSH: [90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 70, 71, 72, 74, 75],
+    MLB:  [40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59],
+    CB:   [20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 33, 35, 37, 38, 39],
+    S:    [20, 21, 22, 23, 24, 25, 26, 27, 29, 31, 32, 36, 37, 38, 39, 42, 43]
+  };
+
+  /* Give every player in `players` a unique `num`. Players that already carry
+     one keep it, so a trade doesn't renumber the squad it arrives in. */
+  function assignNumbers(players, rnd) {
+    rnd = rnd || seeded(hashStr((players[0] && players[0].nation) || 'flagster'));
+    var taken = {};
+    players.forEach(function (p) { if (p && p.num != null) taken[p.num] = true; });
+    players.forEach(function (p) {
+      if (!p || p.num != null) return;
+      var pool = NUM_POOLS[p.pos] || NUM_POOLS.WR;
+      var start = Math.floor(rnd() * pool.length);
+      for (var i = 0; i < pool.length; i++) {
+        var n = pool[(start + i) % pool.length];
+        if (!taken[n]) { taken[n] = true; p.num = n; return; }
+      }
+      for (var k = 1; k < 100; k++) {          // pool exhausted (traded-in glut)
+        if (!taken[k]) { taken[k] = true; p.num = k; return; }
+      }
+      p.num = 0;
+    });
+    return players;
+  }
+
   // Build a full roster (12 players covering both units + depth).
   function buildRoster(nation) {
     var rnd = seeded(hashStr(nation.id));
     var baseline = 60 + (nation.rating - 75) * 0.9;
     var slots = ['QB', 'C', 'WR', 'WR', 'RB', 'WR', 'RUSH', 'MLB', 'CB', 'CB', 'S', 'RB'];
-    return slots.map(function (pos, i) { return makePlayer(nation.id, i, pos, rnd, baseline); });
+    return assignNumbers(
+      slots.map(function (pos, i) { return makePlayer(nation.id, i, pos, rnd, baseline); }), rnd);
   }
 
   var ROSTERS = {};
@@ -117,7 +157,17 @@
 
   // Roster overrides let Team Builder (franchise) trades change lineups.
   var OVERRIDES = {};
-  function setRosterOverride(nationId, players) { OVERRIDES[nationId] = players; }
+  function setRosterOverride(nationId, players) {
+    // A traded-in player may arrive unnumbered, or wearing a number someone in
+    // this squad already has — renumber only what actually collides.
+    var seen = {};
+    players.forEach(function (p) {
+      if (!p) return;
+      if (p.num != null && seen[p.num]) p.num = null;    // loser of a clash redraws
+      if (p.num != null) seen[p.num] = true;
+    });
+    OVERRIDES[nationId] = assignNumbers(players);
+  }
   function clearOverrides() { OVERRIDES = {}; }
   function rosterOf(nationId) { return OVERRIDES[nationId] || ROSTERS[nationId]; }
 
@@ -264,6 +314,7 @@
     ARCHETYPES: ARCHETYPES, RTG_POSITIONS: RTG_POSITIONS,
     starters: starters, teamOvr: teamOvr, jerseysFor: jerseysFor,
     rosterOf: rosterOf, setRosterOverride: setRosterOverride, clearOverrides: clearOverrides,
+    assignNumbers: assignNumbers,
     buildRoster: buildRoster,
     nationById: function (id) { return NATIONS.filter(function (n) { return n.id === id; })[0]; }
   };

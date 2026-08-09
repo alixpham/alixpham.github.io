@@ -203,7 +203,9 @@
         var P = PLAYER3D.build(THREE, {
           jersey: cols[0], trim: cols[1] || '#ffffff',
           skin: SKINS[idx % SKINS.length],
-          number: (gp.ovr != null ? gp.ovr : idx),
+          // The jersey number — NOT gp.ovr, which is what used to be painted
+          // here and is why every 80-rated receiver wore 80.
+          number: (gp.num != null ? gp.num : ''),
           name: (gp.last || '')
         });
         P.root.scale.setScalar(PLAYER_SCALE);

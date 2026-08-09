@@ -161,7 +161,7 @@
       x: spot.x, y: spot.y, vx: 0, vy: 0, ang: 0,
       route: routeKey, wp: 0, flagPulled: false, stam: 1,
       cover: null, isUser: false, animPhase: 0,
-      pos: playerData.pos, last: playerData.last, ovr: playerData.ovr
+      pos: playerData.pos, last: playerData.last, ovr: playerData.ovr, num: playerData.num
     };
   }
 
@@ -175,6 +175,14 @@
     for (var i = 0; i < arr.length; i++) { if (arr[i].pos === me.pos) { idx = i; break; } }
     if (idx === -1) idx = 0;
     arr[idx] = me;
+    // Your number could already be on someone else's back in this unit; the
+    // squad was numbered without knowing you'd be added to it.
+    var clash = arr.some(function (p, i) { return i !== idx && p && p.num === me.num; });
+    if (clash) {
+      var used = {};
+      arr.forEach(function (p, i) { if (i !== idx && p) used[p.num] = true; });
+      for (var n = 1; n < 100; n++) if (!used[n]) { me.num = n; break; }
+    }
     this._rtgPlayerId = me.id;
   };
 
@@ -770,8 +778,14 @@
     var spotX = carrier.x;
     this.anim.push({ type: 'flag', x: carrier.x, y: carrier.y, t: 0, dur: 0.7,
       color: this._jerseyColor(carrier.team)[0] });
-    this._flash(defender.last + ' pulls the flag!');
     this.onEvent({ type: 'flagpull', defender: defender, carrier: carrier });
+    // THE safety condition: the flag came off behind your own goal line.
+    if (spotX <= GOAL_L) {
+      this._flash(defender.last + ' pulls the flag — SAFETY!');
+      this._safety();
+      return;
+    }
+    this._flash(defender.last + ' pulls the flag!');
     this._endPlay(spotX, false);
   };
 
@@ -781,8 +795,14 @@
     if (!c) return;
     // Touchdown
     if (c.x >= GOAL_R) { this._touchdown(); return; }
-    // Safety (tackled in own end zone)
-    if (c.x <= GOAL_L && s.snapT > 0.3) { this._safety(); return; }
+    /* NO automatic safety for merely being back there. This used to fire on
+       position alone — c.x <= GOAL_L — with no defender within ten yards, and
+       backed up near your own line it was unavoidable: at yardsToGoal 50 the
+       line of scrimmage IS the goal line, so the QB starts at x = 6, already
+       behind it, and conceded two points 0.3s after every snap without being
+       touched. Retreating into your own end zone is legal and you can run back
+       out; it costs you two points only if your flag comes off back there,
+       which _flagPull now handles. */
     // Out of bounds
     if (c.y <= 0.4 || c.y >= FIELD_WID - 0.4) { this._endPlay(c.x, false); }
   };
@@ -866,6 +886,7 @@
   Engine.prototype._touchdown = function () {
     var s = this.state;
     var off = this.offenseTeam();
+    this.clearSlash();            // scoring plays skip _endPlay, which usually does this
     s.phase = 'dead';
     s.score[off] += 6;
     s.stats[off].td++;
@@ -888,6 +909,7 @@
   Engine.prototype._safety = function () {
     var s = this.state;
     var def = this.defenseTeam();
+    this.clearSlash();            // scoring plays skip _endPlay, which usually does this
     s.score[def] += 2;
     this._flash('SAFETY!');
     s.phase = 'dead';

@@ -25,7 +25,10 @@
     return {
       id: 'RTG-me', name: save.name, last: last, pos: save.pos, ovr: save.ovr,
       speed: s.speed, catch: s.catch, throw: s.throw, agi: s.agi, aware: s.aware, pull: s.pull,
-      nation: save.country, isMe: true
+      nation: save.country, isMe: true,
+      // A number from your position's real range, stable across sessions
+      // because the save carries it once drawn.
+      num: (save.num != null ? save.num : (save.num = D.assignNumbers([{ pos: save.pos }])[0].num))
     };
   }
   function archetypeOf(save) {
