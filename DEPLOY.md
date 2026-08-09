@@ -4,7 +4,8 @@ Flagster is served by GitHub Pages from the `master` branch at
 **https://alixpham.github.io/**. This file records the commit id behind each
 notable live deploy (newest first).
 
-Version tags (see `VERSION`): **v2.2.0** = `b993213b434c7426d0efb7b578435ed78225abd4`,
+Version tags (see `VERSION`): **v2.3.0** = `6757674e95862cb4c3f54c15a1ed6b740b4c81c9`,
+**v2.2.0** = `ee8883d78e5fb19ca925c7332cf351fc88bd5194`,
 **v2.1.1** = `d44e50d5f9a89b7ed15c49193b6700bd3232397c`,
 **v2.1.0** = `8f8804f57a644dcea6ba8b997aee2a77d0d9c1d0`,
 **v2.0.0** = `323d1906391a50cdc257d1ed746f04994e6751df`,
@@ -25,7 +26,8 @@ git proxy blocks tag pushes, so these are the authoritative version→commit rec
 
 | Date (UTC) | Commit | What shipped |
 | --- | --- | --- |
-| 2026-08-08 | `b993213b434c7426d0efb7b578435ed78225abd4` | **v2.2.0** — slash to direct: draw a line across the field and your player runs the whole route hands-off, with the route painted on the turf |
+| 2026-08-09 | `6757674e95862cb4c3f54c15a1ed6b740b4c81c9` | **v2.3.0** — broadcast presentation across the demo AND every played mode: a low over-the-shoulder chase camera in place of the fit-the-whole-field view, a scorebug/play-clock/situation HUD with procedural team crests and a field map, daylight relight with live jumbotrons, a real play clock and working stamina, and control hints, thumb-button clutter and floating nameplates taken off the field |
+| 2026-08-08 | `ee8883d78e5fb19ca925c7332cf351fc88bd5194` | **v2.2.0** — slash to direct: draw a line across the field and your player runs the whole route hands-off, with the route painted on the turf |
 | 2026-08-08 | `d44e50d5f9a89b7ed15c49193b6700bd3232397c` | **v2.1.1** — landing screen turned around: the cast now runs, cuts and throws toward the viewer, so you see faces and jersey fronts instead of three backs jogging away |
 | 2026-08-08 | `8f8804f57a644dcea6ba8b997aee2a77d0d9c1d0` | **v2.1.0** — real running gait: knees and elbows bend the right way (they were inverted, which folded the foot behind the shin — the "ostrich run"), six-phase run/walk cycles, pelvis height solved by forward kinematics so feet plant instead of skating, landing screen waits for the rigged players, everyone faces the way they're running |
 | 2026-08-08 | `323d1906391a50cdc257d1ed746f04994e6751df` | **v2.0.0** — real rigged/skinned/team-skinnable flag football player (glTF SkinnedMesh, 27 joints, 10 clips, 9 tintable regions) + reproducible generator; drops the 2.8MB Xbot (#34) |

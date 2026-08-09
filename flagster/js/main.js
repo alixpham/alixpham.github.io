@@ -66,11 +66,9 @@
     var appEl = document.getElementById('app');
     ui.mount(appEl);
     mainMenu();
-    // First-run: show controls once
-    if (!F.storage.get('seenControls')) {
-      F.storage.set('seenControls', true);
-      setTimeout(ui.openControls, 600);
-    }
+    // No first-run controls popup. It fired before anyone had seen the game,
+    // so it read as a modal in the way of the thing you came for; the same
+    // sheet is on the menu and in the pause menu when it's actually wanted.
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

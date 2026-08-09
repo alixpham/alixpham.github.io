@@ -18,6 +18,7 @@
   // How close a player must get to a drawn waypoint before it counts as reached.
   var SLASH_REACH = 1.1;                 // yards
   var SLASH_MAX = 80;                    // waypoints; a scribble can't run forever
+  var PLAY_CLOCK = 25;                   // seconds on the play clock pre-snap
 
   /* Difficulty presets. The game shipped at roughly "All-Pro" and was brutal:
      defenders matched your speed and the flag came off the instant they
@@ -145,6 +146,7 @@
       s.userControlled = this._nearestDefenderToBall();
     }
     s.phase = 'presnap';
+    s.playClockLeft = PLAY_CLOCK;        // fresh 25 on every new down
     this.clearSlash();
   };
 
@@ -157,7 +159,7 @@
     return {
       data: playerData, team: team, slot: slot,
       x: spot.x, y: spot.y, vx: 0, vy: 0, ang: 0,
-      route: routeKey, wp: 0, flagPulled: false,
+      route: routeKey, wp: 0, flagPulled: false, stam: 1,
       cover: null, isUser: false, animPhase: 0,
       pos: playerData.pos, last: playerData.last, ovr: playerData.ovr
     };
@@ -286,9 +288,23 @@
   /* ---------------------------- UPDATE LOOP ------------------------------ */
   Engine.prototype._update = function (dt) {
     var s = this.state;
-    if (!s || s.phase !== 'live') return;
+    if (!s) return;
+
+    /* PLAY CLOCK. Counts down while the offense stands over the ball. Running
+       it out snaps the ball rather than flagging delay of game: this is a
+       5v5 arcade game with no penalty system to hang a flag off, and a dead
+       stop with no way to resume would be worse than a rushed snap. */
+    if (s.phase === 'presnap') {
+      s.playClockLeft = Math.max(0, (s.playClockLeft == null ? PLAY_CLOCK : s.playClockLeft) - dt);
+      if (s.playClockLeft <= 0) { this._flash('Play clock — snap!'); this.snap(); }
+    } else if (s.phase !== 'live') {
+      s.playClockLeft = PLAY_CLOCK;
+    }
+
+    if (s.phase !== 'live') return;
     s.snapT += dt;
     s.playClock += dt;
+    this._updateStamina(dt);
 
     var off = s.players.filter(function (p) { return p.team === this.offenseTeam(); }, this);
     var def = s.players.filter(function (p) { return p.team === this.defenseTeam(); }, this);
@@ -339,6 +355,38 @@
     }
   };
 
+  /* STAMINA. Each player carries a 0..1 gas tank that empties while they are
+     running hard and refills when they ease off. It is read by the HUD, and
+     it feeds `staminaScale()` so a gassed player actually slows down — a bar
+     that only decorates the screen isn't worth the pixels.
+
+     Drain is keyed off SPEED rather than the sprint flag so the CPU pays the
+     same price as the player; recovery is deliberately slower than drain, but
+     a play only lasts a few seconds so nobody bottoms out mid-down. */
+  var STAM_DRAIN = 0.16;      // per second at full sprint
+  var STAM_RECOVER = 0.10;    // per second at a standstill
+  var STAM_FLOOR = 0.35;      // worst-case speed multiplier
+
+  Engine.prototype._updateStamina = function (dt) {
+    var s = this.state;
+    if (!s.players) return;
+    for (var i = 0; i < s.players.length; i++) {
+      var p = s.players[i];
+      if (p.stam == null) p.stam = 1;
+      var sp = Math.hypot(p.vx || 0, p.vy || 0);
+      var effort = clamp(sp / 7.0, 0, 1);           // 7 yd/s ~= flat out
+      p.stam = clamp(p.stam + (effort > 0.35
+        ? -STAM_DRAIN * effort * dt
+        : STAM_RECOVER * (1 - effort) * dt), 0, 1);
+    }
+  };
+
+  // Speed multiplier from remaining stamina: full pace down to STAM_FLOOR.
+  Engine.prototype.staminaScale = function (p) {
+    if (!p || p.stam == null) return 1;
+    return STAM_FLOOR + (1 - STAM_FLOOR) * clamp(p.stam, 0, 1);
+  };
+
   Engine.prototype._isUserCarrier = function () { return true; };
 
   Engine.prototype._dropback = function (qb, dt) {
@@ -378,7 +426,7 @@
   };
 
   Engine.prototype._seek = function (p, target, dt, spdMul) {
-    var spd = this.speedYds(p.data.speed) * (spdMul || 1);
+    var spd = this.speedYds(p.data.speed) * (spdMul || 1) * this.staminaScale(p);
     // Give a human ball carrier a fighting chance: CPU defenders run at a
     // difficulty-scaled fraction of full speed.
     if (!this.demo && this.difficulty && p.team !== this.userSide) {
@@ -412,7 +460,7 @@
     if (this.pointer && this.pointer.active) { dx = this.pointer.dx; dy = this.pointer.dy; }
     var m = Math.hypot(dx, dy);
     var sprint = i.sprint ? 1.12 : 1.0;
-    var spd = this.speedYds(p.data.speed) * sprint;
+    var spd = this.speedYds(p.data.speed) * sprint * this.staminaScale(p);
     var fx, fy;
 
     if (m > 0.05) {

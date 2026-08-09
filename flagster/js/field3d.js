@@ -79,7 +79,7 @@
     }
     if (THREE.ACESFilmicToneMapping !== undefined) {
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      renderer.toneMappingExposure = 0.86;
+      renderer.toneMappingExposure = 1.02;
     }
 
     var scene = new THREE.Scene();
@@ -93,9 +93,9 @@
     // ---- Lights (stadium daylight) ----
     // NOTE: r155+ uses physically-correct light units — intensities that looked
     // right on r128 render ~PI times too dark, so these are scaled accordingly.
-    scene.add(new THREE.HemisphereLight(0xdff0ff, 0x4a7a4a, 1.55));
-    var sun = new THREE.DirectionalLight(0xfff4e0, 1.95);
-    sun.position.set(-40, 70, 40);
+    scene.add(new THREE.HemisphereLight(0xe8f4ff, 0x5d8a52, 2.05));
+    var sun = new THREE.DirectionalLight(0xfff6e6, 2.70);
+    sun.position.set(-40, 82, 40);
     sun.castShadow = true;
     sun.shadow.mapSize.width = 2048;
     sun.shadow.mapSize.height = 2048;
@@ -329,9 +329,13 @@
 
       P.update(dt);
 
-      // Nameplates only on the players that matter — the one you control and
-      // whoever has the ball — so the full-field view stays clean.
-      if (P.setPlateVisible) P.setPlateVisible(state.userControlled === gp || carrier === gp);
+      /* No floating nameplates during play. They were a world-space Sprite
+         with depthTest off, which under the old distant camera was a harmless
+         speck but under the chase cam is a label painted across whichever
+         player happens to be nearer the lens. The jersey number reads clearly
+         at this range and the user's player carries a highlight ring, so the
+         tag was covering the very thing that identifies him. */
+      if (P.setPlateVisible) P.setPlateVisible(false);
 
       // Highlight ring under the user-controlled player.
       entry.ring.visible = (state.userControlled === gp);
@@ -339,73 +343,100 @@
     }
     function cols0(gp) { return gp.team === 'home' ? homeCols[0] : awayCols[0]; }
 
-    /* ---- BROADCAST CAMERA -------------------------------------------------
-       Always frames the ENTIRE field. We solve for the camera distance at
-       which every corner of the field's bounding box sits inside the frustum
-       (both horizontally and vertically), so the whole pitch stays visible on
-       any screen shape — portrait phone or wide desktop. The view sits behind
-       the user's end zone looking downfield, so "our" side is nearest.       */
-    var _fitPts = [];
-    (function () {
-      var xs = [-35.5, 35.5], ys = [0, 2.5], zs = [-13, 13];
-      for (var i = 0; i < 2; i++) for (var j = 0; j < 2; j++) for (var k = 0; k < 2; k++)
-        _fitPts.push(new THREE.Vector3(xs[i], ys[j], zs[k]));
-    })();
-    var _target = new THREE.Vector3(0, 1.2, 0);
-    var _dir = new THREE.Vector3(), _fwd = new THREE.Vector3(),
-        _rgt = new THREE.Vector3(), _upv = new THREE.Vector3(),
-        _v = new THREE.Vector3(), _UPY = new THREE.Vector3(0, 1, 0);
-    var camDist = 95;
+    /* ---- CHASE CAMERA -----------------------------------------------------
+       A low, over-the-shoulder camera that rides a few yards behind the player
+       we're following, roughly at head height, looking downfield.
+
+       This replaces an earlier solver that framed the WHOLE field at once. It
+       was honest about the geometry and useless to look at: fitting 70 yards
+       into the frame puts the lens ~60 yards back, which renders the players
+       four pixels tall and fills two thirds of the screen with crowd. Football
+       on a screen reads from behind the ball carrier, close enough that you can
+       see the jersey number and the flags on their hips.
+
+       Everything is expressed as an offset from a FOCUS point (the carrier, or
+       the ball in flight, or the line of scrimmage pre-snap):
+
+           camera  = focus - forward*BACK + up*HEIGHT   (+ lateral follow)
+           look-at = focus + forward*AHEAD
+
+       `s` flips with possession so the camera is always behind the side we're
+       playing as and the opponent's end zone is the thing we're driving at. */
+    var _target = new THREE.Vector3(0, 1.6, 0);
+    // Portrait phones get a slightly higher, slightly further camera: the frame
+    // is narrow, so a lower one would hide the whole width of the play behind
+    // the carrier's shoulders. Wide screens keep the low, dramatic sightline.
+    var CAM = {
+      wide: { back: 11.0, height: 4.2, ahead: 17.0, lookY: 1.5, fov: 52 },
+      // Portrait runs a NARROWER lens, not a wider one. The stands are 30
+      // units tall and only ~60 yards away, so they subtend ~27 degrees above
+      // the true horizon — a wide vertical FOV on a tall screen fills the top
+      // half of the phone with crowd. Tightening the lens and pitching further
+      // down crops the bowl out and gives the turf the frame instead.
+      tall: { back: 8.5, height: 4.8, ahead: 10.5, lookY: 0.8, fov: 54 }
+    };
 
     function updateCamera(state, dt) {
       var userSide = (engine && engine.userSide) || 'home';
       var userOff = (state.possession === userSide);
       var s = userOff ? 1 : -1;                    // we attack toward +x on offense
+      var C = (viewAspect < 1.0) ? CAM.tall : CAM.wide;
 
-      /* MADDEN-STYLE FRAMING — always behind the team we're playing as.
-         `s` flips with possession, so our players are always in the foreground
-         and we look downfield at the opponent's end zone.
+      if (camera.fov !== C.fov) { camera.fov = C.fov; camera.updateProjectionMatrix(); }
 
-         Rather than forcing our own back line into frame (which shoves the
-         camera miles back and shrinks the field to a strip), we anchor on OUR
-         GOAL LINE and pull back exactly far enough that the field's full WIDTH
-         spans the screen. Because we're looking straight down the field, the
-         entire length — all the way to the opposite end zone — stays in view
-         as it converges toward the horizon. */
-      var halfW = 13.2;                            // field half-width + margin
-      var vt = Math.tan(camera.fov * Math.PI / 360);
-      var ht = vt * Math.max(0.22, viewAspect);
+      /* FOCUS — whoever the eye should be on. Pre-snap that's the line of
+         scrimmage; once the ball is live it's the carrier, and a throw hands
+         the focus to the ball so the camera leads the receiver into the catch
+         instead of staying home with the quarterback. */
+      var hasLos = (state.losX != null && isFinite(state.losX));
+      var focusFx = hasLos ? state.losX : MID;
+      var focusFy = WID / 2;
+      if (state.carrier) { focusFx = state.carrier.x; focusFy = state.carrier.y; }
+      else if (state.ball && state.ball.inAir) { focusFx = state.ball.x; focusFy = state.ball.y; }
+      else if (hasLos && (state.phase === 'presnap' || state.phase === 'playcall')) {
+        // Pre-snap, sit back off the line so the whole formation is in frame.
+        focusFx = state.losX - s * 3;
+      }
+      // A single NaN here poisons the camera matrix and the scene renders as
+      // bare clear-colour, so refuse to feed anything non-finite forward.
+      if (!isFinite(focusFx)) focusFx = MID;
+      if (!isFinite(focusFy)) focusFy = WID / 2;
 
-      // Horizontal pull-back so the width just fills the frame.
-      var back = clamp(halfW / ht * 1.06, 15, 78);
-      // Tall screens sit higher and aim shorter, so the frame is filled with
-      // FIELD rather than sky; wide screens keep the low, dramatic sightline.
-      var tall = (viewAspect < 1.0);
-      var height = clamp(back * (tall ? 0.95 : 0.60), 9, 52);
-      var ahead = clamp(back * (tall ? 0.80 : 1.50), 22, 62);
+      /* Keep the camera inside the bowl. Behind our own end line there is only
+         apron and seating, and a camera that drifts back there looks through
+         the stand at the back of the end zone. */
+      var minFx = GOAL_L - EZ + 2, maxFx = GOAL_R + EZ - 2;
+      focusFx = clamp(focusFx, minFx, maxFx);
 
-      // Anchor a few yards behind the ACTION (like a broadcast/Madden cam) so
-      // players stay readable, clamped so we never drift past our own end line.
-      var focusFx = (state.losX != null) ? state.losX : MID;
-      if (state.carrier) focusFx = state.carrier.x;
-      else if (state.ball && state.ball.inAir) focusFx = state.ball.x;
-      var anchorFx = focusFx - s * 7;
-      anchorFx = (s > 0) ? Math.max(anchorFx, GOAL_L - 3) : Math.min(anchorFx, GOAL_R + 3);
-      camFx = lerp(camFx, anchorFx, clamp(dt * 2.2, 0, 1));
+      // Lateral follow is damped hard — matching the carrier's sideways cuts
+      // yard-for-yard swings the whole world sideways and reads as a camera
+      // fault rather than a juke. Half-weight, and clamped near the hashes.
+      var latTarget = clamp((focusFy - WID / 2) * 0.55, -5.0, 5.0);
+      if (camFz == null) camFz = latTarget;
+      camFz = lerp(camFz, latTarget, clamp(dt * 2.4, 0, 1));
+
+      camFx = lerp(camFx, focusFx, clamp(dt * 4.5, 0, 1));
       var anchorX = wx(camFx);
 
-      var camX = anchorX - s * back;
-      var lookX = anchorX + s * ahead;
+      var camX = anchorX - s * C.back;
+      var lookX = anchorX + s * C.ahead;
 
       // Ease so possession changes swing smoothly instead of snapping.
-      var k = clamp(dt * 2.6, 0, 1);
+      var k = clamp(dt * 3.2, 0, 1);
       camera.position.set(
         lerp(camera.position.x, camX, k),
-        lerp(camera.position.y, height, k),
-        0
+        lerp(camera.position.y, C.height, k),
+        lerp(camera.position.z, camFz, k)
       );
-      _target.set(lerp(_target.x, lookX, k), 1.6, 0);
+      _target.set(
+        lerp(_target.x, lookX, k),
+        lerp(_target.y, C.lookY, k),
+        lerp(_target.z, camFz * 0.65, k)
+      );
       camera.lookAt(_target);
+      // Sun target stays at the origin: its shadow box already spans the whole
+      // field, and swinging the target while the light's position is fixed
+      // would rotate the sun's direction as the play moves.
       if (sun.target) sun.target.position.set(0, 0, 0);
     }
 
@@ -460,8 +491,8 @@
       renderer.setSize(w, h, false);
       if (fx) fx.setSize(w, h);
       camera.aspect = w / h; viewAspect = w / h;
-      // FOV stays fixed — updateCamera() solves the distance that fits the
-      // whole field for this aspect, so nothing is ever cropped.
+      // updateCamera() picks the FOV for this aspect (portrait runs wider so a
+      // narrow frame still shows the play either side of the carrier).
       camera.updateProjectionMatrix();
     }
     // Optional post-processing (subtle bloom + SMAA). null => render direct.
@@ -472,6 +503,36 @@
     var ro = ('ResizeObserver' in global) ? new ResizeObserver(resize) : null;
     if (ro) ro.observe(canvas); else global.addEventListener('resize', resize);
     resize();
+
+    /* ---- JUMBOTRON --------------------------------------------------------
+       Repaints the in-world scoreboards from live game state. Each repaint is
+       a full 1024x512 canvas redraw plus a texture upload, so it runs on a
+       ~4Hz timer and only when something on the board actually changed — at
+       frame rate it would cost more than the rest of the scene combined. */
+    var boardT = 0, boardKey = '';
+    function updateJumbotron(state, dt) {
+      if (!stadiumGroup || !stadiumGroup.userData.updateBoards) return;
+      boardT += dt;
+      if (boardT < 0.25) return;
+      boardT = 0;
+
+      var mm = Math.floor(Math.max(0, state.clock || 0) / 60);
+      var ss = Math.max(0, Math.round((state.clock || 0) % 60));
+      var info = {
+        awayAbbr: (st0.away && st0.away.id) || 'AWAY',
+        homeAbbr: (st0.home && st0.home.id) || 'HOME',
+        awayScore: (state.score && state.score.away) || 0,
+        homeScore: (state.score && state.score.home) || 0,
+        period: state.overtime ? 'OT' : ('Q' + (state.quarter || 1)),
+        clock: mm + ':' + (ss < 10 ? '0' : '') + ss,
+        awayColor: awayCols[0], homeColor: homeCols[0],
+        footer: 'FLAGSTER'
+      };
+      var key = [info.awayScore, info.homeScore, info.period, info.clock].join('|');
+      if (key === boardKey) return;
+      boardKey = key;
+      stadiumGroup.userData.updateBoards(info);
+    }
 
     // ---------------------------- RENDER -----------------------------------
     function render(state) {
@@ -529,6 +590,7 @@
       flags.update(dt);
       if (tdFx.dur > 0) { tdFx.t += dt; if (tdFx.t >= tdFx.dur) tdFx.dur = 0; }
 
+      updateJumbotron(state, dt);
       updateCamera(state, dt);
       if (fx) fx.render(); else renderer.render(scene, camera);
     }
