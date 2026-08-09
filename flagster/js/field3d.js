@@ -28,23 +28,46 @@
           { LEN: 70, WID: 25, EZ: 10, GOAL_L: 10, GOAL_R: 60, MID: 35 };
   var LEN = F.LEN, WID = F.WID, EZ = F.EZ, GOAL_L = F.GOAL_L, GOAL_R = F.GOAL_R, MID = F.MID;
 
-  /* Face where you're going.
-     Players look at whatever the play demands — a defender watches the ball
-     carrier, a receiver turns to the throw — but a body can only twist so far
-     off its own line of travel before it's running sideways with a forward
-     stride cycle, which reads as moonwalking. So the rope shortens with speed:
-     free to look anywhere at a standstill, pinned close to the velocity vector
-     at a sprint. `slack` is the deviation (radians) still allowed flat out —
-     defenders in coverage get more of it than a receiver in full stride. */
+  /* Face where you're going — or where you're coming FROM. Never square across it.
+
+     The rig's legs swing in the sagittal plane: fore and aft, along whatever
+     way the body is pointing. That covers running forward and it covers
+     backpedalling, which is why there's a Backpedal clip. What it cannot cover
+     is travelling SIDEWAYS, because then the legs pump fore/aft while the body
+     slides across — both legs drifting laterally together, which is exactly
+     what a skater looks like and nothing like football.
+
+     The old rule was a single cone that widened as you slowed: `PI*(1-t) +
+     slack*t` with t reaching 1 only at 6yd/s, and slack as loose as 1.15rad.
+     A defender at a 3yd/s jog was therefore allowed 135 degrees off their line
+     of travel, and at a sprint still 66 — where sin(66) = 0.91, so nine tenths
+     of the motion was sideways to the stride. Measured across every play and
+     coverage, 29% of moving samples sat at 45 degrees or worse.
+
+     So permit two bands and forbid what's between them: close to the line of
+     travel (run), or close to its reverse (backpedal). A facing that wants to
+     sit across the line gets pushed to whichever edge is nearer, which turns
+     the player's hips into the run instead of skating them across it. */
+  var BACK_SLACK = 0.62;                 // radians either side of straight back
   function alongMotion(yawWant, vx, vy, speed, slack) {
-    if (speed <= 1.0) return yawWant;
+    if (speed <= 0.8) return yawWant;    // standing still: look wherever you like
     var yawMove = Math.atan2(vy, vx);
     var d = yawWant - yawMove;
     while (d > Math.PI) d -= Math.PI * 2;
     while (d < -Math.PI) d += Math.PI * 2;
-    var t = clamp((speed - 1.0) / 5.0, 0, 1);
-    var lim = Math.PI * (1 - t) + slack * t;
-    return yawMove + clamp(d, -lim, lim);
+    /* Reaches full strictness almost as soon as they're moving. It only has
+       to be gradual enough not to snap, and it doesn't even need that much:
+       this constrains the TARGET yaw and P.face() eases toward it, so the
+       easing absorbs the step. Below ~1yd/s the renderer plays idle anyway,
+       so there is no stride to disagree with. */
+    var t = clamp((speed - 0.8) / 0.5, 0, 1);
+    var fwd = Math.PI * (1 - t) + slack * t;
+    var back = Math.PI * (1 - t) + BACK_SLACK * t;
+    var sgn = d < 0 ? -1 : 1, a = Math.abs(d);
+    if (a <= fwd) return yawWant;                       // running into it
+    if (a >= Math.PI - back) return yawWant;            // backpedalling out of it
+    var toFwd = a - fwd, toBack = (Math.PI - back) - a; // stuck across it: pick a side
+    return yawMove + sgn * (toFwd <= toBack ? fwd : Math.PI - back);
   }
 
   // Field(yards) -> world(units). Field centered on origin, ground plane y=0.
@@ -301,9 +324,15 @@
       } else if (reaching) {
         // Turn to the ball, but a receiver at full stride can only look so far
         // off their own line before they'd be running sideways.
-        yawT = alongMotion(Math.atan2(state.ball.y - gp.y, state.ball.x - gp.x), vx, vy, speed, 0.95);
+        yawT = alongMotion(Math.atan2(state.ball.y - gp.y, state.ball.x - gp.x), vx, vy, speed, 0.50);
       } else if (carrier === gp) {
-        if (moving) yawT = Math.atan2(vy, vx);        // ball carrier faces motion
+        /* ...but not mid-juke. The sidestep drives the carrier hard across
+           their own line for a fifth of a second, and facing into it would
+           spin the body square to the cut. The Juke clip already carries the
+           lateral weight shift — hips rotating about Z, the trail leg
+           abducting — so the body holds its line and the clip does the step,
+           which is what a juke actually is. */
+        if (moving && !juking) yawT = Math.atan2(vy, vx);   // ball carrier faces motion
       } else if (isOff) {
         if (moving) yawT = Math.atan2(vy, vx);        // receivers/QB face motion
       } else {
@@ -312,7 +341,7 @@
         var chase = carrier ||
                     (ballInAir && state.ball.to ? state.ball.to : null) ||
                     state.thrownTo;
-        if (chase) yawT = alongMotion(Math.atan2(chase.y - gp.y, chase.x - gp.x), vx, vy, speed, 1.15);
+        if (chase) yawT = alongMotion(Math.atan2(chase.y - gp.y, chase.x - gp.x), vx, vy, speed, 0.55);
         else if (moving) yawT = Math.atan2(vy, vx);
       }
       ud.yaw = yawT;
@@ -320,10 +349,14 @@
       // for a beat, so snap through it instead of easing.
       P.face(yawT, juking ? dt * 2.2 : dt);
 
-      // Backpedal = actual facing roughly opposite to velocity (coverage).
+      /* Backpedal = actual facing roughly opposite to velocity. This was gated
+         to the defence, but it isn't a defensive motion, it's a direction of
+         travel: a receiver coming back to an underthrown ball faces it and
+         moves away from where they're pointing, and with the run clip on top
+         of that they moonwalked. Anyone travelling backwards backpedals. */
       var face = P._yaw;
       var fwdDot = moving ? (Math.cos(face) * vx + Math.sin(face) * vy) : 0;
-      var backpedal = !isOff && moving && fwdDot < -0.4;
+      var backpedal = moving && fwdDot < -0.4;
 
       // ---- ONE-SHOT events (fire once per event) ---------------------------
       // Throw: QB releasing the ball.
