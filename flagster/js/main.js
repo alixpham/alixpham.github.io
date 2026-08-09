@@ -13,10 +13,30 @@
       { id: 'glory', icon: '⭐', title: 'Road to Glory', sub: 'Superstar mode — create a player, pick an archetype, and grind 65 → 99 OVR.', go: function () { F.roadtoglory.start(mainMenu); } }
     ];
     var heroCanvas = h('canvas', { class: 'hero3d-canvas' });
+
+    /* Build badge. The version is READ FROM the VERSION file rather than kept
+       as a constant in here: VERSION is what a release bumps and what the
+       deploy log records, so reading it means the badge can't drift out of
+       sync with whatever is actually being served. no-cache so it revalidates
+       and a fresh deploy shows its own number rather than a stale one. Stays
+       hidden if the fetch can't happen — opened over file://, or offline. */
+    var verBadge = h('span', { class: 'version-badge hidden' });
+    if (global.fetch) {
+      global.fetch('VERSION', { cache: 'no-cache' })
+        .then(function (r) { return r.ok ? r.text() : null; })
+        .then(function (t) {
+          var v = (t || '').trim();
+          if (!/^[0-9]+\.[0-9]+\.[0-9]+$/.test(v)) return;
+          verBadge.textContent = 'v' + v;
+          verBadge.classList.remove('hidden');
+        })
+        .catch(function () { /* no badge is better than a wrong one */ });
+    }
     ui.show(h('div', { class: 'screen main-menu' }, [
       h('div', { class: 'brand' }, [
         h('div', { class: 'brand-logo' }, [ h('span', { class: 'brand-flag', text: '🏈' }), h('h1', { class: 'brand-name', text: 'FLAGSTER' }) ]),
-        h('p', { class: 'brand-tag', text: 'Olympic Flag Football • LA 2028' })
+        h('p', { class: 'brand-tag', text: 'Olympic Flag Football • LA 2028' }),
+        verBadge
       ]),
       global.THREE ? h('div', { class: 'hero3d' }, [heroCanvas]) : null,
       h('div', { class: 'menu-tiles' }, tiles.map(function (t) {
