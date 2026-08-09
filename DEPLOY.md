@@ -4,7 +4,8 @@ Flagster is served by GitHub Pages from the `master` branch at
 **https://alixpham.github.io/**. This file records the commit id behind each
 notable live deploy (newest first).
 
-Version tags (see `VERSION`): **v2.8.0** = `1e92050b947deec3abe332b3795c596454800ee0`,
+Version tags (see `VERSION`): **v2.9.0** = `PENDINGSHA`,
+**v2.8.0** = `0111346b16523e61752e9d59fc289a1c81136527`,
 **v2.7.0** = `a73fc4a3919275213a2ffe522621249c7d68a8fa`,
 **v2.6.0** = `9bdbdc10e6f10d70f55b52083a8c8495439270a6`,
 **v2.5.0** = `01cffb2ae102abab864c9c791b65914a229e3c62`,
@@ -31,7 +32,8 @@ git proxy blocks tag pushes, so these are the authoritative version→commit rec
 
 | Date (UTC) | Commit | What shipped |
 | --- | --- | --- |
-| 2026-08-09 | `1e92050b947deec3abe332b3795c596454800ee0` | **v2.8.0** — the ball is regulation size instead of twice it, and the run cycle is stride-matched to ground speed with a longer stride, so feet plant instead of skating |
+| 2026-08-09 | `PENDINGSHA` | **v2.9.0** — juke reworked (no more juke-lock, no cooldown burned on a whiff, a real sidestep), throws wind up so the ball leaves with the arm, and the CPU quarterback can finally pass at all |
+| 2026-08-09 | `0111346b16523e61752e9d59fc289a1c81136527` | **v2.8.0** — the ball is regulation size instead of twice it, and the run cycle is stride-matched to ground speed with a longer stride, so feet plant instead of skating |
 | 2026-08-09 | `a73fc4a3919275213a2ffe522621249c7d68a8fa` | **v2.7.0** — nobody freezes any more: receivers work open after their route, the centre releases instead of standing still, and zone/man/spy coverage tracks live targets instead of parking on a fixed dot |
 | 2026-08-09 | `9bdbdc10e6f10d70f55b52083a8c8495439270a6` | **v2.6.0** — the running version is shown on the home screen, read from the VERSION file itself so it can't drift from what's deployed |
 | 2026-08-09 | `01cffb2ae102abab864c9c791b65914a229e3c62` | **v2.5.0** — real jersey numbers by position (the renderer had been painting each player's OVR rating on their chest) and a safety only when your flag is pulled behind your own goal line, never for standing there |

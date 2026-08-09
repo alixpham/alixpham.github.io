@@ -283,7 +283,11 @@
       var carrier = state.carrier;
       var ballInAir = !!(state.ball && state.ball.inAir);
       var reaching = !!(ballInAir && state.thrownTo === gp);
-      var throwing = !!(ballInAir && state.ball.thrower === gp);
+      /* The throw animation now starts on the WIND-UP, not on the ball going
+         airborne — the engine holds the ball in hand for the first third of
+         the clip so the pass leaves as the arm comes through. */
+      var winding = !!(state.pendingThrow && state.pendingThrow.thrower === gp);
+      var throwing = winding || !!(ballInAir && state.ball.thrower === gp);
 
       if (ud.celebT > 0) ud.celebT = Math.max(0, ud.celebT - dt);
 
@@ -324,7 +328,7 @@
       // ---- ONE-SHOT events (fire once per event) ---------------------------
       // Throw: QB releasing the ball.
       if (throwing && !ud._threw) { P.oneShot('throw', 'idle'); ud._threw = true; }
-      if (!ballInAir) ud._threw = false;
+      if (!throwing) ud._threw = false;
 
       // Juke: the carrier breaks a grip with a sidestep.
       if (juking && !ud._juked) { P.oneShot('juke', 'run'); ud._juked = true; }
