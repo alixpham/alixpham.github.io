@@ -19,6 +19,10 @@
   var SLASH_REACH = 1.1;                 // yards
   var SLASH_MAX = 80;                    // waypoints; a scribble can't run forever
   var PLAY_CLOCK = 25;                   // seconds on the play clock pre-snap
+  var AI_JUKE_PER_SEC = 2.2;             // AI escape attempts per second, frame-rate free
+  var AI_SCRAMBLE_AT = 3.4;              // seconds holding the ball before a QB tucks and runs
+  var AI_MIN_SEP = 2.2;                  // yards of separation a CPU QB wants before throwing
+  var AI_FORCE_THROW_AT = 3.0;           // ...unless it's been this long, then take what's there
 
   /* Difficulty presets. The game shipped at roughly "All-Pro" and was brutal:
      defenders matched your speed and the flag came off the instant they
@@ -159,7 +163,8 @@
     return {
       data: playerData, team: team, slot: slot,
       x: spot.x, y: spot.y, vx: 0, vy: 0, ang: 0,
-      route: routeKey, wp: 0, flagPulled: false, stam: 1,
+      route: routeKey, wp: 0, flagPulled: false,
+      jukeCd: 0, jukeFx: 0, jukeCount: 0, stun: 0, jukeImpT: 0, stam: 1,
       cover: null, isUser: false, animPhase: 0,
       pos: playerData.pos, last: playerData.last, ovr: playerData.ovr, num: playerData.num
     };
@@ -242,7 +247,7 @@
   // slot: 'WR1'|'WR2'|'RB'|'C'  (throw to that receiver)
   Engine.prototype.throwTo = function (slot) {
     var s = this.state;
-    if (s.phase !== 'live' || !s.carrier || s.ball.inAir) return;
+    if (s.phase !== 'live' || !s.carrier || s.ball.inAir || s.pendingThrow) return;
     var carrier = s.carrier;
     if (carrier.slot === 'QB' && D.POS_INFO.QB) { /* QB or trick passer */ }
     // Only the ball carrier who is a legal passer may throw, and only behind LOS-ish
@@ -260,18 +265,68 @@
     var predicted = { x: target.x + target.vx * lead, y: target.y + target.vy * lead };
     predicted.x = clamp(predicted.x, 0, FIELD_LEN);
     predicted.y = clamp(predicted.y, 0, FIELD_WID);
+    /* WIND UP, then release. The ball used to become airborne on the same
+       frame the button was pressed, while the throw animation it is supposed
+       to come out of runs for 1.10s — so the pass was ten yards downfield
+       before the arm had come through, and the quarterback mimed a throw at
+       empty air behind it. The ball now leaves at RELEASE_AT through the clip,
+       which is where the hand passes the ear.
+
+       This is a real wind-up, not a cosmetic delay: the quarterback still has
+       the ball during it, so a defender who gets there first takes them down
+       before the pass gets out. That is the correct outcome, and it is what
+       makes pressure mean anything. */
+    s.pendingThrow = { slot: slot, target: target, t: 0, dur: THROW_WINDUP, thrower: carrier };
+    this.onEvent({ type: 'windup', slot: slot });
+  };
+
+  var THROW_CLIP = 1.10;                 // seconds, matches the baked Throw clip
+  var RELEASE_AT = 0.34;                 // fraction of the clip where the ball leaves
+  var THROW_WINDUP = THROW_CLIP * RELEASE_AT;
+
+  /* Fire the pass the wind-up was building to. */
+  Engine.prototype._releaseThrow = function () {
+    var s = this.state;
+    var pt = s.pendingThrow;
+    s.pendingThrow = null;
+    if (!pt) return;
+    var carrier = pt.thrower, target = pt.target;
+    // The play can move underneath a wind-up: a sack, a fumble of possession,
+    // or the target's flag coming off. Any of those and the pass never happens.
+    if (s.phase !== 'live' || s.carrier !== carrier || carrier.flagPulled) return;
+    if (!target || target.flagPulled) return;
+
+    var throwSpeed = 22;
+    /* Lead the receiver to where they will BE when the ball arrives. The lead
+       used to be a flat 0.35-0.57s regardless of distance, while a 15-yard
+       ball is in the air 0.68s and a deep one well over a second — so every
+       pass was thrown behind a running receiver, and the deeper it went the
+       further behind it landed. Solve for the intercept instead: guess the
+       flight time, move the receiver along it, re-time, twice more. */
+    var t = dist(carrier, target) / throwSpeed;
+    var px = target.x, py = target.y;
+    for (var it = 0; it < 3; it++) {
+      px = target.x + (target.vx || 0) * t;
+      py = target.y + (target.vy || 0) * t;
+      t = Math.hypot(px - carrier.x, py - carrier.y) / throwSpeed;
+    }
+    // A weaker arm misses the spot; a 99 is nearly exact.
+    var err = (1 - clamp(carrier.data.throw, 40, 99) / 110) * 2.2;
+    px += (Math.random() * 2 - 1) * err;
+    py += (Math.random() * 2 - 1) * err;
+    var predicted = { x: clamp(px, 0, FIELD_LEN), y: clamp(py, 0, FIELD_WID) };
     var d = dist(carrier, predicted);
     s.ball = {
       x: carrier.x, y: carrier.y, inAir: true,
       from: { x: carrier.x, y: carrier.y }, to: predicted,
-      t: 0, dur: d / throwSpeed, thrower: carrier, targetSlot: slot,
+      t: 0, dur: d / throwSpeed, thrower: carrier, targetSlot: pt.slot,
       arcH: Math.min(3.5, d * 0.09)
     };
     carrier.hasBall = false;
     s.carrier = null;
     s.thrownTo = target;
     s.stats[this.offenseTeam()].pass++;
-    this.onEvent({ type: 'throw', slot: slot });
+    this.onEvent({ type: 'throw', slot: pt.slot });
   };
 
   // Handoff / pitch for runs & tricks
@@ -313,6 +368,13 @@
     s.snapT += dt;
     s.playClock += dt;
     this._updateStamina(dt);
+    this._updateTimers(dt);
+
+    // Wind-up in flight: the arm is coming through, the ball is still in hand.
+    if (s.pendingThrow) {
+      s.pendingThrow.t += dt;
+      if (s.pendingThrow.t >= s.pendingThrow.dur) this._releaseThrow();
+    }
 
     var off = s.players.filter(function (p) { return p.team === this.offenseTeam(); }, this);
     var def = s.players.filter(function (p) { return p.team === this.defenseTeam(); }, this);
@@ -323,6 +385,14 @@
     // Move receivers along routes
     off.forEach(function (p) {
       if (p === s.carrier) return;
+      /* The ball is in the air and it is coming to you: go and get it. The
+         defence has always broken on the throw — _aiDefender seeks ball.to the
+         moment it is airborne — but the receiver it was thrown to just kept
+         running the route they were handed, so the only player NOT playing the
+         ball was the one it was aimed at. Any adjustment after the release
+         (a cut, a shove, coverage) left them stranded from the catch point and
+         the pass fell incomplete. */
+      if (s.ball && s.ball.inAir && s.thrownTo === p) { this._seek(p, s.ball.to, dt, 1.05); return; }
       if (p.slot === 'QB' && !s.autoHandoff) { this._dropback(p, dt); return; }
       this._runRoute(p, dt);
     }, this);
@@ -330,13 +400,13 @@
     // Move carrier (user-controlled if on offense, else AI)
     if (s.carrier) {
       if (this.demo) {
-        this._aiCarrier(s.carrier, dt);
+        this._aiQBOrCarrier(s.carrier, dt);
       } else if (this.userOnOffense() && (s.carrier.slot === 'QB' || s.carrier.isUser || this._isUserCarrier(s.carrier))) {
         this._moveByInput(s.carrier, dt);
       } else if (this.userOnOffense()) {
         this._moveByInput(s.carrier, dt); // user always drives the ball carrier
       } else {
-        this._aiCarrier(s.carrier, dt);
+        this._aiQBOrCarrier(s.carrier, dt);
       }
       s.ball.x = s.carrier.x; s.ball.y = s.carrier.y;
     }
@@ -373,7 +443,42 @@
      a play only lasts a few seconds so nobody bottoms out mid-down. */
   var STAM_DRAIN = 0.16;      // per second at full sprint
   var STAM_RECOVER = 0.10;    // per second at a standstill
-  var STAM_FLOOR = 0.35;      // worst-case speed multiplier
+  /* Raised from 0.35. The drain was written when "a play only lasts a few
+     seconds so nobody bottoms out mid-down" was true; now that the CPU
+     completes passes, a receiver can catch it deep and still be running eight
+     seconds later, empty, at a third of their pace. A gassed player should be
+     visibly slower, not reduced to walking a game of football to a standstill. */
+  var STAM_FLOOR = 0.55;      // worst-case speed multiplier
+
+  /* One place where every per-player clock ticks, for everyone, every frame.
+     These used to be scattered: jukeCd and jukeFx were decayed inside
+     _checkFlagPull, which only runs when there IS a ball carrier, so a juke
+     cooldown froze the instant the ball left the quarterback's hand and
+     resumed when somebody caught it — the cooldown measured possession, not
+     time. Defender stun was decayed inside _aiDefender, so it ran on a
+     different schedule again. */
+  Engine.prototype._updateTimers = function (dt) {
+    var s = this.state;
+    if (!s || !s.players) return;
+    for (var i = 0; i < s.players.length; i++) {
+      var p = s.players[i];
+      if (p.jukeCd > 0) p.jukeCd = Math.max(0, p.jukeCd - dt);
+      if (p.jukeFx > 0) p.jukeFx = Math.max(0, p.jukeFx - dt);
+      if (p.stun > 0) p.stun = Math.max(0, p.stun - dt);
+      /* The sidestep, spread over a few frames. It used to be a single
+         teleport: the carrier's x/y jumped 0.9yd between one frame and the
+         next, with vx/vy untouched, so the renderer saw a stationary player
+         who had changed places and the move read as a glitch rather than a
+         cut. */
+      if (p.jukeImpT > 0) {
+        var k = Math.min(dt, p.jukeImpT);
+        p.x = clamp(p.x + p.jukeIx * k, 0, FIELD_LEN);
+        p.y = clamp(p.y + p.jukeIy * k, 0, FIELD_WID);
+        p.vx = p.jukeIx; p.vy = p.jukeIy;      // so the body actually turns into it
+        p.jukeImpT = Math.max(0, p.jukeImpT - dt);
+      }
+    }
+  };
 
   Engine.prototype._updateStamina = function (dt) {
     var s = this.state;
@@ -407,7 +512,7 @@
     var target = { x: s.losX - 5 + Math.sin(qb.shuf * 1.4) * 0.5,
                    y: qb.y + Math.cos(qb.shuf * 1.1) * 0.6 };
     this._seek(qb, target, dt, 0.7);
-    if (s.snapT > 1.6 && !s.ball.inAir) this._aiThrow();
+    if (s.snapT > 1.6 && !s.ball.inAir && !s.pendingThrow) this._aiThrow();
   };
 
   Engine.prototype._runRoute = function (p, dt) {
@@ -660,6 +765,28 @@
     return true;
   };
 
+  /* A CPU quarterback still holding the ball should be reading the field, not
+     tucking it and running.
+
+     THE AI COULD NOT PASS AT ALL. _dropback is what calls _aiThrow, and the
+     receivers loop skips the ball carrier — `if (p === s.carrier) return` —
+     so _dropback was only ever reached by a quarterback who had already got
+     rid of the ball. Until they threw they were the carrier, and the carrier
+     went to _aiCarrier, which just runs at the end zone. A deadlock: the only
+     path to a pass required having already passed. Every CPU snap in every
+     mode was a quarterback scramble, and no throw event has ever fired.
+
+     Holding the ball forever is not the answer either, so after the pocket
+     collapses the quarterback tucks it and goes. */
+  Engine.prototype._aiQBOrCarrier = function (p, dt) {
+    var s = this.state;
+    if (p.slot === 'QB' && !s.autoHandoff && s.snapT < AI_SCRAMBLE_AT) {
+      this._dropback(p, dt);
+      return;
+    }
+    this._aiCarrier(p, dt);
+  };
+
   Engine.prototype._aiCarrier = function (p, dt) {
     // AI ball carrier: head toward end zone, avoid nearest defender
     var s = this.state;
@@ -681,22 +808,32 @@
     var off = s.players.filter(function (p) { return p.team === this.offenseTeam() && p.slot !== 'QB'; }, this);
     var def = s.players.filter(function (p) { return p.team === this.defenseTeam(); }, this);
     // pick most open receiver
-    var best = null, bestSep = -1;
+    var best = null, bestScore = -1, bestSep = 0;
     off.forEach(function (r) {
+      if (r.flagPulled) return;
       var sep = 99;
-      def.forEach(function (d) { sep = Math.min(sep, dist(r, d)); });
+      def.forEach(function (d) { if (!d.flagPulled) sep = Math.min(sep, dist(r, d)); });
       var downfield = r.x - s.losX;
       var score = sep + downfield * 0.2;
-      if (score > bestSep) { bestSep = score; best = r; }
+      if (score > bestScore) { bestScore = score; best = r; bestSep = sep; }
     });
-    if (best) this.throwTo(best.slot);
+    if (!best) return false;
+    /* And don't throw it just because the clock says 1.6s. Nobody open yet
+       means hold the ball and let them keep working — the pocket timer makes
+       the decision soon enough, and after that the quarterback tucks and runs.
+       Throwing on a stopwatch into blanket coverage is what made the CPU
+       complete barely a third of its passes. */
+    if (bestSep < AI_MIN_SEP && s.snapT < AI_FORCE_THROW_AT) return false;
+    this.throwTo(best.slot);
+    return true;
   };
 
   Engine.prototype._aiDefender = function (d, dt) {
     var s = this.state;
     // Caught flat-footed by a juke. Zero the velocity too — the renderer reads
     // it for stride and facing, so a stale one moonwalks them on the spot.
-    if (d.stun > 0) { d.stun -= dt; d.vx = 0; d.vy = 0; return; }
+    // (_updateTimers owns the countdown.)
+    if (d.stun > 0) { d.vx = 0; d.vy = 0; return; }
     if (d.blitz && (!s.carrier || s.carrier.slot === 'QB' || s.ball.inAir === false)) {
       // rush the passer / chase carrier
       var tgt = s.carrier || (s.thrownTo || { x: s.losX - 4, y: FIELD_WID / 2 });
@@ -819,17 +956,15 @@
     var dt = this._dt || 0.016;
     if (!c || (c.slot === 'QB' && s.ball && s.ball.inAir)) return;
 
-    // cool the juke down whether or not anyone is on us
-    if (c.jukeCd > 0) c.jukeCd = Math.max(0, c.jukeCd - dt);
-    // ...and let the renderer's juke cue expire, so a sidestep is a moment
-    // rather than a state the carrier is stuck in for the rest of the play.
-    if (c.jukeFx > 0) c.jukeFx = Math.max(0, c.jukeFx - dt);
-
     // closest defender within reach
     var grabber = null, best = 1e9;
     for (var i = 0; i < def.length; i++) {
       var d = def[i];
-      if (d.flagPulled) continue;
+      // A defender you just shook off cannot also be holding your flag. The
+      // stun used to stop only their movement AI while this loop happily kept
+      // picking them as the grabber, so the shove bought exactly nothing and
+      // the meter carried on filling through it.
+      if (d.flagPulled || d.stun > 0) continue;
       var range = 1.15 + d.data.pull / 400;
       var dd = dist(d, c);
       if (dd < range && dd < best) { best = dd; grabber = d; }
@@ -852,34 +987,70 @@
     c.grabT = (c.grabT || 0) + dt * rate;
     s.grabProgress = clamp(c.grabT / need, 0, 1);
 
-    // AI ball carriers try to juke out when the meter gets dangerous.
+    /* AI ball carriers try to juke out when the meter gets dangerous. The test
+       was `Math.random() < 0.05` PER FRAME, which is three attempts a second at
+       60fps and one a second at 20 — the AI's escape ability quietly scaled
+       with the player's frame rate. Same intent, expressed per second. */
     if (!this.userOnOffense() || this.demo) {
-      if (s.grabProgress > 0.45 && (c.jukeCd || 0) <= 0 && Math.random() < 0.05) this.juke();
+      if (s.grabProgress > 0.45 && (c.jukeCd || 0) <= 0 && Math.random() < AI_JUKE_PER_SEC * dt) this.juke();
     }
 
     if (c.grabT >= need) this._flagPull(grabber, c);
   };
 
-  /* Juke — break a defender's grip. Costs a cooldown so it can't be spammed. */
+  /* JUKE — break a defender's grip.
+
+     The old one was a trap when it missed and an exploit when it hit.
+
+     A whiff — pressing it with nobody holding you — still charged the full
+     cooldown, so the punishment for a mistimed press was being unable to juke
+     for the 1-2 seconds when it actually mattered. Now a whiff is a sidestep
+     that costs a short recovery, not the whole cooldown.
+
+     A hit reset the grab meter to zero outright. On Rookie, the default, the
+     cooldown (1.1s) is shorter than the time a defender needs to refill the
+     meter (~1.3s), so a carrier who simply pressed juke on cooldown could
+     never be pulled — measured at 18 jukes and no tackle across 20 seconds of
+     being held. Repeat jukes in the same play now break progressively less of
+     the meter and buy progressively less stun, so the move stays strong the
+     first time and stops being a lock. */
   Engine.prototype.juke = function () {
     var s = this.state;
     var c = s && s.carrier;
     if (!c || s.phase !== 'live') return false;
     if ((c.jukeCd || 0) > 0) return false;
-    c.jukeCd = this.difficulty.jukeCd;
-    c.grabT = 0; s.grabProgress = 0;
-    if (s.grabbedBy) {
-      // shove the defender off-balance so the break actually creates space
-      var g = s.grabbedBy;
-      g.grabbing = false; g.stun = 0.32;
-      var dx = c.x - g.x, dy = c.y - g.y, m = Math.hypot(dx, dy) || 1;
-      c.x = clamp(c.x + (-dy / m) * 0.9, 0, FIELD_LEN);   // sidestep, perpendicular
-      c.y = clamp(c.y + (dx / m) * 0.9, 0, FIELD_WID);
+
+    var held = s.grabbedBy;
+    // Diminishing returns, counted per play: 1st 100%, 2nd 53%, 3rd 36% ...
+    var n = (c.jukeCount || 0) + 1;
+    var eff = 1 / (1 + 0.9 * (n - 1));
+
+    if (held) {
+      c.jukeCount = n;
+      c.jukeCd = this.difficulty.jukeCd;
+      c.grabT = Math.max(0, (c.grabT || 0) * (1 - eff));
+      s.grabProgress = clamp(c.grabT / this.difficulty.pullTime, 0, 1);
+      held.grabbing = false;
+      held.stun = 0.55 * eff;              // long enough to actually get away
       s.grabbedBy = null;
+    } else {
+      // Nothing to break: a sidestep into space, cheap to attempt.
+      c.jukeCd = 0.35;
     }
+
+    // Sidestep away from whoever was on you, or across your own line of travel.
+    var dx, dy;
+    if (held) { dx = c.x - held.x; dy = c.y - held.y; }
+    else { dx = -(c.vy || 0); dy = (c.vx || 1); }
+    var m = Math.hypot(dx, dy) || 1;
+    var burst = 8.0 * (held ? eff : 0.6);
+    c.jukeIx = (-dy / m) * burst;          // perpendicular to the engagement
+    c.jukeIy = (dx / m) * burst;
+    c.jukeImpT = 0.20;                     // ~1.6yd of lateral break, over frames
+
     c.jukeFx = 0.35;                       // renderer/UX cue
-    this._flash('Juke!');
-    this.onEvent({ type: 'juke', player: c });
+    this._flash(held ? 'Juke!' : 'Sidestep');
+    this.onEvent({ type: 'juke', player: c, broke: !!held });
     return true;
   };
 
@@ -922,6 +1093,7 @@
   /* --------------------------- PLAY RESOLUTION --------------------------- */
   Engine.prototype._endPlay = function (spotX, noGain) {
     this.clearSlash();
+    this.state.pendingThrow = null;
     var s = this.state;
     if (s.phase === 'dead') return;
     s.phase = 'dead';
