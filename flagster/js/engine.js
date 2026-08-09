@@ -400,21 +400,20 @@
   Engine.prototype._dropback = function (qb, dt) {
     var s = this.state;
     if (!this.demo && this.userOnOffense() && qb === s.carrier) { this._moveByInput(qb, dt); return; }
-    // AI QB: drop back slightly then throw to open man
-    var target = { x: s.losX - 5, y: qb.y };
+    /* AI QB: drop back, then work the pocket. A fixed drop spot means arriving
+       and standing rigid until the throw, which on an extended play is one
+       more frozen player. */
+    qb.shuf = (qb.shuf || 0) + dt;
+    var target = { x: s.losX - 5 + Math.sin(qb.shuf * 1.4) * 0.5,
+                   y: qb.y + Math.cos(qb.shuf * 1.1) * 0.6 };
     this._seek(qb, target, dt, 0.7);
     if (s.snapT > 1.6 && !s.ball.inAir) this._aiThrow();
   };
 
   Engine.prototype._runRoute = function (p, dt) {
     var s = this.state;
-    if (!p.route || p.route === 'block') {
-      // Center may not block (rule). Others "block" = drift upfield slowly.
-      if (p.pos !== 'C') this._seek(p, { x: p.x + 1, y: p.y }, dt, 0.4);
-      return;
-    }
-    var wps = D.ROUTES[p.route];
-    if (!wps) return;
+    var wps = (p.route && p.route !== 'block') ? D.ROUTES[p.route] : null;
+    if (!wps) { this._release(p, dt); return; }
     // mirror y by which side of field the receiver started
     var side = p.startSide || (p.startSide = (p.y < FIELD_WID / 2 ? -1 : 1), p.origin = { x: p.x, y: p.y }, p.startSide);
     var origin = p.origin;
@@ -423,13 +422,86 @@
     var ty = origin.y + wp.y * side;
     ty = clamp(ty, 1, FIELD_WID - 1);
     var target = { x: tx, y: ty };
+
+    /* Route's been run and the play is still alive. Only the verticals used to
+       have an answer for this — go/post/corner/wheel re-anchor their origin and
+       keep pushing — so every other route (hitch, curl, slant, drag, out, in,
+       flat, swing) ended with the receiver arriving at the last waypoint and
+       standing perfectly still for the rest of the down. Latched, because
+       working open moves them off the waypoint and they'd otherwise snap
+       straight back to seeking it. */
+    if (p.routeDone) { this._workOpen(p, dt); return; }
+
+    var atEnd = p.wp >= wps.length - 1;
+    var dTgt = dist(p, target);
     this._seek(p, target, dt, 1.0);
-    if (dist(p, target) < 1.0 && p.wp < wps.length - 1) p.wp++;
-    else if (dist(p, target) < 0.8 && p.wp >= wps.length - 1) {
-      // continue straight for verticals
-      if (p.route === 'go' || p.route === 'post' || p.route === 'corner' || p.route === 'wheel') {
-        p.origin = { x: p.x, y: p.y }; // keep pushing
-      }
+    if (dTgt < 1.0 && !atEnd) p.wp++;
+    else if (dTgt < 0.8 && atEnd) {
+      if (VERTICAL[p.route]) p.origin = { x: p.x, y: p.y };   // keep pushing
+      else p.routeDone = true;
+    }
+  };
+
+  // Routes that have somewhere to go after their last waypoint: straight on.
+  var VERTICAL = { go: 1, post: 1, corner: 1, wheel: 1 };
+
+  /* Work open. A receiver whose route is finished doesn't stop — they slide off
+     coverage and come back toward the passer, which is both what the sport
+     looks like and what keeps the QB with somewhere to throw. The target is
+     always about three yards off the player's current spot, so it never
+     collapses onto them and _seek never damps it down to a standstill. */
+  Engine.prototype._workOpen = function (p, dt) {
+    var s = this.state;
+    var qb = s.carrier;
+    var nd = null, nDist = 1e9;
+    for (var i = 0; i < s.players.length; i++) {
+      var o = s.players[i];
+      if (o.team === p.team || o.flagPulled) continue;
+      var d = dist(o, p);
+      if (d < nDist) { nDist = d; nd = o; }
+    }
+    var ax = 0, ay = 0;
+    if (nd && nDist < 6) { ax += (p.x - nd.x); ay += (p.y - nd.y); }      // off coverage
+    if (qb && qb !== p) { ax += (qb.x - p.x) * 0.35; ay += (qb.y - p.y) * 0.15; }  // back to the ball
+    if (Math.hypot(ax, ay) < 0.4) {
+      // Everything cancelled out — keep working across rather than settling.
+      if (p.openSide == null) p.openSide = (p.y < FIELD_WID / 2 ? 1 : -1);
+      if (p.y < 3 || p.y > FIELD_WID - 3) p.openSide = -p.openSide;
+      ax = 0.3; ay = p.openSide * 2;
+    }
+    var m = Math.hypot(ax, ay) || 1;
+    this._seek(p, {
+      x: clamp(p.x + ax / m * 3, 1, FIELD_LEN - 1),
+      y: clamp(p.y + ay / m * 3, 1.5, FIELD_WID - 1.5)
+    }, dt, 0.75);
+  };
+
+  /* No route to run — the play assigned 'block', or it named a route that
+     isn't in D.ROUTES and the player would otherwise vanish from the sim.
+
+     Flag football forbids blocking, and the centre may not even stay in to
+     fake it (POS_INFO.C.noBlock). That rule used to be implemented as
+     literally nothing: no seek, no velocity reset, just `return`. So on every
+     run call — Draw, Keeper, Sweep, Reverse all assign C:'block' — the centre
+     stood as a statue for the entire play while nine players moved around
+     them. A player who cannot block RELEASES instead: the centre is an
+     eligible receiver, so they leak out as a check-down safety valve. */
+  Engine.prototype._release = function (p, dt) {
+    if (!p.relOrigin) p.relOrigin = { x: p.x, y: p.y };
+    if (p.relSide == null) p.relSide = (p.y < FIELD_WID / 2 ? -1 : 1);
+    if (p.pos === 'C') {
+      /* Release into a shallow crossing drift and KEEP working across, turning
+         back at the numbers. A single fixed check-down point just moves the
+         problem one seek downstream: they arrive, and plant. A check-down
+         receiver who has settled works back across to stay open, so the target
+         has to keep moving for as long as the play is alive. */
+      p.relT = (p.relT || 0) + dt;
+      var depth = p.relOrigin.x + Math.min(5.5, p.relT * 3.2);
+      var tgtY = clamp(p.relOrigin.y + p.relSide * 9, 2.5, FIELD_WID - 2.5);
+      if (Math.abs(p.y - tgtY) < 1.0) { p.relSide = -p.relSide; }   // reached it: come back
+      this._seek(p, { x: depth, y: tgtY }, dt, 0.9);
+    } else {
+      this._seek(p, { x: p.x + 1, y: p.y }, dt, 0.4);
     }
   };
 
@@ -441,7 +513,12 @@
       spd *= this.difficulty.defSpeed;
     }
     var dx = target.x - p.x, dy = target.y - p.y;
-    var m = Math.hypot(dx, dy) || 1;
+    var m = Math.hypot(dx, dy);
+    // Standing exactly on the target used to divide by the `|| 1` fallback and
+    // produce a hard zero — a player frozen mid-stride. Just short of it they
+    // overshot and buzzed. Ease through the last half-yard instead.
+    if (m < 1e-4) { p.vx = 0; p.vy = 0; return; }
+    if (m < 0.5) spd *= m / 0.5;
     p.vx = dx / m * spd; p.vy = dy / m * spd;
     p.x = clamp(p.x + p.vx * dt, 0, FIELD_LEN);
     p.y = clamp(p.y + p.vy * dt, 0, FIELD_WID);
@@ -617,7 +694,9 @@
 
   Engine.prototype._aiDefender = function (d, dt) {
     var s = this.state;
-    if (d.stun > 0) { d.stun -= dt; return; }   // caught flat-footed by a juke
+    // Caught flat-footed by a juke. Zero the velocity too — the renderer reads
+    // it for stride and facing, so a stale one moonwalks them on the spot.
+    if (d.stun > 0) { d.stun -= dt; d.vx = 0; d.vy = 0; return; }
     if (d.blitz && (!s.carrier || s.carrier.slot === 'QB' || s.ball.inAir === false)) {
       // rush the passer / chase carrier
       var tgt = s.carrier || (s.thrownTo || { x: s.losX - 4, y: FIELD_WID / 2 });
@@ -635,15 +714,48 @@
       return;
     }
     if (d.cover) {
-      // man coverage: shadow, stay goal-side
+      // man coverage: shadow, stay goal-side. Same shuffle as the zone — a
+      // defender matched exactly to a stationary receiver would otherwise
+      // freeze alongside them.
       var c = d.cover;
-      var target = { x: c.x + 0.6, y: c.y };
+      d.shuf = (d.shuf || 0) + dt;
+      var target = { x: c.x + 0.6 + Math.sin(d.shuf * 1.9) * 0.35,
+                     y: c.y + Math.cos(d.shuf * 1.5) * 0.45 };
       this._seek(d, target, dt, 0.98);
     } else if (d.zone) {
-      this._seek(d, { x: s.losX + d.zone.x, y: d.zone.y }, dt, 0.85);
+      /* A landmark is a fixed point, and a defender who reaches a fixed point
+         stops dead — which is both the last big source of frozen players and
+         not what zone coverage is. Two things keep them alive, and both are
+         real: the spot slides with the quarterback, and the defender matches
+         the nearest receiver working into the area, harder the closer they get. */
+      var qb = s.carrier;
+      var zx = s.losX + d.zone.x;
+      var zy = d.zone.y + (qb ? clamp((qb.y - FIELD_WID / 2) * 0.35, -3, 3) : 0);
+      var thr = null, td = 1e9;
+      for (var i = 0; i < s.players.length; i++) {
+        var o = s.players[i];
+        if (o.team === d.team || o.flagPulled) continue;
+        var dd = Math.hypot(o.x - zx, o.y - zy);
+        if (dd < td) { td = dd; thr = o; }
+      }
+      if (thr) {
+        var wgt = clamp(1 - td / 12, 0, 0.7);
+        zx = lerp(zx, thr.x, wgt); zy = lerp(zy, thr.y, wgt);
+      }
+      /* And never rigid. With no receiver in the area and the passer standing
+         still there is nothing left to track, and the defender would settle
+         onto the spot and hold it like a bollard. Coverage is a constant
+         shuffle, so the spot itself breathes — under a yard, too small to
+         weaken the zone, enough that nobody on the field is ever a statue. */
+      d.shuf = (d.shuf || 0) + dt;
+      zx += Math.sin(d.shuf * 1.7 + d.zone.x) * 0.55;
+      zy += Math.cos(d.shuf * 1.3 + d.zone.y) * 0.75;
+      this._seek(d, { x: zx, y: clamp(zy, 1.5, FIELD_WID - 1.5) }, dt, 0.85);
     } else {
-      // spy the QB
-      this._seek(d, { x: s.losX + 4, y: FIELD_WID / 2 }, dt, 0.6);
+      // Spy: mirror the passer instead of a fixed dot on the field, which the
+      // spy would simply arrive at and then stand on.
+      var t = s.carrier || { x: s.losX - 4, y: FIELD_WID / 2 };
+      this._seek(d, { x: t.x + 4, y: lerp(FIELD_WID / 2, t.y, 0.6) }, dt, 0.6);
     }
   };
 
