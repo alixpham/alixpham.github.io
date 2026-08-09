@@ -261,8 +261,10 @@
   }
 
   function makeBall(THREE) {
-    var geo = new THREE.SphereGeometry(0.2, 16, 12);
-    geo.scale(1.5, 1, 1);
+    // Regulation at 1 unit = 1 yard: 11in x 6.7in -> 0.306 x 0.186 units.
+    // Was 0.2r scaled 1.5 (0.60 x 0.40) — twice size, same as the field ball.
+    var geo = new THREE.SphereGeometry(0.095, 16, 12);
+    geo.scale(1.62, 1, 1);
     var ball = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: 0x7a4a20 }));
     ball.position.set(0, 1.4, 0.4);
     ball.visible = false;

@@ -168,6 +168,44 @@
     // Human scale: the rig is ~2.39yd tall, so 0.87 puts players at ~6'2".
     // (It was 1.45 — which rendered ~10ft-tall giants.)
     var PLAYER_SCALE = 0.87;
+
+    /* STRIDE MATCHING — why the players used to skate.
+
+       A clip with no root motion only looks planted if the support foot sweeps
+       backward at exactly the speed the ground moves under it. That rate is set
+       by the STANCE phase, not by the whole cycle:
+
+           natural speed = stanceSweep / (stanceFraction * clipDuration)
+
+       Measured off the built rig at the 0.87 scale this renderer applies — the
+       fore-aft travel of the planted foot relative to the root:
+
+           run   1.075 units, stance 30% of a 0.62s cycle -> 5.78 yd/s at 1x
+           walk  0.690 units, stance 50% of a 1.00s cycle -> 1.38 yd/s at 1x
+
+       The walk is the check on the arithmetic: a walk has no flight phase, so
+       stance is half the cycle and "sweep rate" and "distance per cycle" have
+       to give the same answer — and both give 1.38. A run does have a flight
+       phase, so distance per cycle is NOT the right basis: the body keeps
+       travelling while neither foot is down, and matching per-cycle distance
+       would cycle the legs about 1.7x too fast.
+
+       Playback used to be `clamp(speed / 6, 0.6, 1.8)`. The divisor was in the
+       right area for the stride the rig has NOW, but the rig's stride was 32%
+       shorter then (natural 4.4), so every stride slid forward, and the 0.6
+       floor did the same thing in reverse at walking pace — legs cycling for
+       1.6yd/s under a player barely moving. Keep these numbers in step with the
+       gait tables in tools/build-player-glb.mjs.
+
+       One honest limitation: a real runner's stance fraction shrinks as they
+       speed up, and a baked clip's cannot, so no single constant is right
+       everywhere. These are set for where the running actually happens —
+       6-7yd/s, where the run clip lands at ~1.1x and 3.6 steps/second. Below
+       ~4.3yd/s the run would drop under 0.75x and read as slow motion, so it
+       is held there and takes a little slip instead; slip is far less visible
+       at a jog than moon-walking is. */
+    var RUN_NATURAL = 5.78, WALK_NATURAL = 1.38;
+    var WALK_MAX = 2.4;              // hand over to the run cycle above this
     var PLAYER_LIFT = 0.10;    // rig dips slightly below its origin; sit feet on turf
     // A few skin tones rotated through by roster index for visual variety.
     var SKINS = ['#f2c9a0', '#e8b98f', '#d59a6a', '#a9714a', '#8a5a38', '#6f4526'];
@@ -317,13 +355,14 @@
 
       // ---- LOOP clip selection (skip while a one-shot is running) ----------
       if (!P._oneShot) {
-        var sp = clamp(speed / 6, 0.6, 1.8);
         if (ud.celebT > 0) {
           P.play('celebrate');
         } else if (live && backpedal) {
-          P.play('backpedal'); P.setSpeed(sp);
+          P.play('backpedal'); P.setSpeed(clamp(speed / RUN_NATURAL, 0.75, 2.4));
         } else if (live && moving) {
-          P.play('run'); P.setSpeed(sp);
+          // Walk the slow stuff and run the rest, each matched to its own clip.
+          if (speed < WALK_MAX) { P.play('walk'); P.setSpeed(clamp(speed / WALK_NATURAL, 0.5, 1.9)); }
+          else { P.play('run'); P.setSpeed(clamp(speed / RUN_NATURAL, 0.75, 2.4)); }
         } else {
           P.play('idle');                       // stand down between/at end of plays
         }
@@ -743,8 +782,12 @@
   }
 
   function makeBall(THREE) {
-    var geo = new THREE.SphereGeometry(0.19, 14, 10);
-    geo.scale(1.6, 1, 1);
+    /* Regulation, near enough. 1 unit = 1 yard, and an American football is
+       11in long by 6.7in through the middle — 0.306 x 0.186 units. This was
+       0.19r scaled 1.6, i.e. 0.61 x 0.38: dead on twice the size in every
+       direction, which is why it read as a rugby ball. */
+    var geo = new THREE.SphereGeometry(0.095, 14, 10);
+    geo.scale(1.62, 1, 1);
     return new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: 0x7a4a20 }));
   }
 
