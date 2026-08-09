@@ -684,17 +684,25 @@ clip('Idle', 2.4, [
    feet are off the ground between one leg's toe-off and the other's contact —
    the flight phase falls out of the timing rather than being posed. */
 {
+  /* Hip sweep opens up from the original 25/-28. That gave a stride of only
+     0.81 units at the scale the game renders, i.e. a natural ground speed of
+     2.6yd/s — so a player moving at a realistic 6.4yd/s needed the clip run at
+     2.4x just to keep the feet planted, which is ~8 steps a second and reads
+     as frantic and weightless even when it isn't sliding. A longer stride puts
+     the cadence back in the realistic 4-5 steps/sec range at game speeds.
+     solveHipY re-solves pelvis height from these angles, so ground contact
+     stays exact without hand-tuning. */
   const RUN_LEG = [
     //  phase   hip   knee  ankle
-    [0.00, 25, 20, -6],    // 1. initial contact — midfoot lands just ahead of the hips
-    [0.10, 2, 34, 9],      // 2. mid-stance — knee and ankle flex to absorb, hips lowest
-    [0.30, -28, 10, -34],  // 3. propulsion — hip/knee/ankle extend, the foot rolls onto the toes
-    [0.38, -14, 78, -12],  // 4. flight — the trailing knee starts to fold
-    [0.48, 8, 122, 6],     // 5a. recovery — heel snaps up under the glute
-    [0.62, 48, 92, 13],    // 5b. knee drive — hip flexors carry the knee forward, toes up
-    [0.78, 46, 52, 9],
-    [0.92, 34, 26, 0],     // 6. reach — the shin unfolds toward the next contact
-    [1.00, 25, 20, -6]
+    [0.00, 37, 22, -6],    // 1. initial contact — midfoot lands just ahead of the hips
+    [0.10, 4, 36, 9],      // 2. mid-stance — knee and ankle flex to absorb, hips lowest
+    [0.30, -41, 12, -34],  // 3. propulsion — hip/knee/ankle extend, the foot rolls onto the toes
+    [0.38, -20, 82, -12],  // 4. flight — the trailing knee starts to fold
+    [0.48, 10, 124, 6],    // 5a. recovery — heel snaps up under the glute
+    [0.62, 62, 94, 13],    // 5b. knee drive — hip flexors carry the knee forward, toes up
+    [0.78, 62, 54, 9],
+    [0.92, 48, 27, 0],     // 6. reach — the shin unfolds toward the next contact
+    [1.00, 37, 22, -6]
   ];
   const d = 0.62;
   clip('Run', d, [
