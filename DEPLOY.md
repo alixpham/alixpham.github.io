@@ -4,7 +4,7 @@ Flagster is served by GitHub Pages from the `master` branch at
 **https://alixpham.github.io/**. This file records the commit id behind each
 notable live deploy (newest first).
 
-Version tags (see `VERSION`): **v2.20.0** = `PENDING`,
+Version tags (see `VERSION`): **v2.20.0** = `05687b8205d7f9a98edd38235fb92a2382c6ff7d`,
 **v2.19.0** = `64c71c3ba8257d1c30aa3c990fde316ccd23e255`,
 **v2.18.0** = `30e093f8b094fba0bc67022ef909f475bba4c950`,
 **v2.17.0** = `343b2b4f0b234ea676b3d6e958074420ebd2cbe5`,
@@ -43,7 +43,7 @@ git proxy blocks tag pushes, so these are the authoritative version→commit rec
 
 | Date (UTC) | Commit | What shipped |
 | --- | --- | --- |
-| 2026-08-10 | `PENDING` | **v2.20.0** — the ball is part of the arm that holds it: parented to the forearm (or, for a passer, the throwing hand) instead of the chest, so the ball and the limb cannot come apart, with the arm pose rebuilt around it and the tuck dropped to waist height; and a hard guarantee that a pass stays on screen — the eased camera proposes a shot and is then corrected only as far as it takes to keep the ball inside the frame |
+| 2026-08-10 | `05687b8205d7f9a98edd38235fb92a2382c6ff7d` | **v2.20.0** — the ball is part of the arm that holds it: parented to the forearm (or, for a passer, the throwing hand) instead of the chest, so the ball and the limb cannot come apart, with the arm pose rebuilt around it and the tuck dropped to waist height; and a hard guarantee that a pass stays on screen — the eased camera proposes a shot and is then corrected only as far as it takes to keep the ball inside the frame |
 | 2026-08-10 | `64c71c3ba8257d1c30aa3c990fde316ccd23e255` | **v2.19.0** — you can always see the ball: a carry pose with an arm actually wrapped around it (it used to float at the armpit with the arm swinging through), a quarterback's ready position off the shoulder and into two hands, an occlusion ghost so a body in front of the ball no longer hides it, a real football texture, flight solved between release and catch height instead of ground-to-ground plus a fudge, a transfer tween so hand-offs and catches travel instead of teleporting, and a camera that keeps a sideline throw in frame |
 | 2026-08-10 | `30e093f8b094fba0bc67022ef909f475bba4c950` | **v2.18.0** — the skate fixed at its source: separation resolved in velocity instead of teleporting bodies apart, animation driven by real displacement rather than intent, the carrier turning into their own juke, and the ball moved outside the ribs (it was inside the torso mesh) onto the arm away from the defender |
 | 2026-08-10 | `343b2b4f0b234ea676b3d6e958074420ebd2cbe5` | **v2.17.0** — REALISM.md Phase 6 (clock, halves, penalties): two 20-minute halves with a continuously running clock, alternating-possession overtime, flag guarding, and real laterals — the last of the six phases |
