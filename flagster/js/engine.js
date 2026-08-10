@@ -23,6 +23,7 @@
   var PASS_CLOCK = 7;                    // seconds to get the ball out, or it's dead
   var RUSH_LINE = 7;                     // a rusher must start this far off the LOS
   var NO_RUN_ZONE = 5;                   // no running plays inside 5 of a goal line or midfield
+  var GRAVITY = 10.73;                   // yd/s^2 (9.81 m/s^2)
   var AI_JUKE_PER_SEC = 2.2;             // AI escape attempts per second, frame-rate free
   var AI_SCRAMBLE_AT = 3.4;              // seconds holding the ball before a QB tucks and runs
   var AI_MIN_SEP = 2.2;                  // yards of separation a CPU QB wants before throwing
@@ -272,7 +273,16 @@
     if (carrier.x > losX + 1.0 && !s.autoHandoff) { this._flash('No forward pass past the line!'); return; }
 
     // Lead the receiver
-    var throwSpeed = 22; // yards/sec
+    /* C1 — BALLISTICS. Every pass used to leave at a fixed 22yd/s in a straight
+       line with a cosmetic sin() bump capped at 3.5 yards, so a 5-yard flat and
+       a 40-yard bomb were thrown at identical velocity and arrived in the same
+       shape. Arm strength only ever showed up as a scatter term.
+
+       Now: launch speed comes from the arm, the angle is solved for the range,
+       and gravity does the rest. Hang time, loft and — when the arm can't cover
+       the distance — a genuine underthrow all fall out of it instead of being
+       sampled. */
+    var throwSpeed = 18 + (clamp(carrier.data.throw, 40, 99) - 40) / 59 * 12; // yards/sec
     var lead = 0.35 + (99 - carrier.data.throw) / 200;
     var predicted = { x: target.x + target.vx * lead, y: target.y + target.vy * lead };
     predicted.x = clamp(predicted.x, 0, FIELD_LEN);
@@ -322,17 +332,42 @@
       py = target.y + (target.vy || 0) * t;
       t = Math.hypot(px - carrier.x, py - carrier.y) / throwSpeed;
     }
-    // A weaker arm misses the spot; a 99 is nearly exact.
-    var err = (1 - clamp(carrier.data.throw, 40, 99) / 110) * 2.2;
+    /* A weaker arm misses the spot, and everyone misses more the further they
+       throw — accuracy is not a constant, which is what makes a deep ball a
+       risk rather than just a slower one. */
+    var err = (1 - clamp(carrier.data.throw, 40, 99) / 110) * (1.5 + t * throwSpeed * 0.06);
     px += (Math.random() * 2 - 1) * err;
     py += (Math.random() * 2 - 1) * err;
     var predicted = { x: clamp(px, 0, FIELD_LEN), y: clamp(py, 0, FIELD_WID) };
     var d = dist(carrier, predicted);
+    var dirx = d > 1e-4 ? (predicted.x - carrier.x) / d : 1;
+    var diry = d > 1e-4 ? (predicted.y - carrier.y) / d : 0;
+
+    /* Solve the launch angle for the range. sin(2t) = g*d/v^2 has a flat root
+       and a lofted one; take the flat one and then impose a floor that grows
+       with distance, so a deep ball is actually thrown up in the air and is
+       catchable rather than a flat rocket. */
+    var s2 = GRAVITY * d / (throwSpeed * throwSpeed);
+    var theta;
+    if (s2 >= 1) {
+      theta = Math.PI / 4;              // out of range: best he's got, falls short
+    } else {
+      theta = 0.5 * Math.asin(s2);
+      theta = Math.max(theta, Math.min(Math.PI / 4, d * 0.011));
+    }
+    var hv = throwSpeed * Math.cos(theta);        // horizontal component
+    var vz = throwSpeed * Math.sin(theta);        // vertical component
+    var flight = 2 * vz / GRAVITY;                // back to ground level
+    var reach = hv * flight;                      // how far it ACTUALLY goes
+    if (reach < d) {                              // underthrow — the arm fell short
+      predicted = { x: carrier.x + dirx * reach, y: carrier.y + diry * reach };
+    }
     s.ball = {
-      x: carrier.x, y: carrier.y, inAir: true,
+      x: carrier.x, y: carrier.y, z: 0, inAir: true,
       from: { x: carrier.x, y: carrier.y }, to: predicted,
-      t: 0, dur: d / throwSpeed, thrower: carrier, targetSlot: pt.slot,
-      arcH: Math.min(3.5, d * 0.09)
+      dirx: dirx, diry: diry, hv: hv, vz: vz,
+      t: 0, dur: flight, thrower: carrier, targetSlot: pt.slot,
+      arcH: vz * vz / (2 * GRAVITY)
     };
     carrier.hasBall = false;
     s.carrier = null;
@@ -1021,48 +1056,95 @@
   Engine.prototype._updateBall = function (dt) {
     var s = this.state, b = s.ball;
     b.t += dt;
-    var t = clamp(b.t / b.dur, 0, 1);
-    b.x = lerp(b.from.x, b.to.x, t);
-    b.y = lerp(b.from.y, b.to.y, t);
-    b.z = Math.sin(t * Math.PI) * b.arcH;
-    if (t >= 1) { this._resolveCatch(); }
+    b.x = clamp(b.from.x + b.dirx * b.hv * b.t, 0, FIELD_LEN);
+    b.y = clamp(b.from.y + b.diry * b.hv * b.t, 0, FIELD_WID);
+    b.z = Math.max(0, b.vz * b.t - 0.5 * GRAVITY * b.t * b.t);
+    if (b.t >= b.dur || (b.z <= 0 && b.t > 0.05)) { b.z = 0; this._resolveCatch(); }
   };
+
+  /* C2 — THE CATCH IS CONTESTED IN SPACE, NOT DECIDED BY A COIN FLIP.
+
+     This used to run once at arrival and settle the whole thing with a single
+     Math.random() against a probability assembled from ratings and distances.
+     A defender who was *right there* only shifted a number; nothing was
+     actually contested.
+
+     Now every player near the arrival point plays the ball, and the best play
+     on it wins. Each gets a score from how close they are, whether they're
+     facing it, how fast they're closing, and the right rating for their job —
+     hands for a receiver, the ability to break it up for a defender. Drops,
+     tips, break-ups and contested catches all fall out of the same comparison
+     instead of each needing a branch. */
+  var CATCH_RADIUS = 2.4;                 // yards from the ball you can play it
+  var CATCH_NEED = 0.58;                  // how good the play on it has to be
 
   Engine.prototype._resolveCatch = function () {
     var s = this.state, b = s.ball;
     var receiver = s.thrownTo;
     b.inAir = false;
-    var off = s.players.filter(function (p) { return p.team === this.offenseTeam(); }, this);
-    var def = s.players.filter(function (p) { return p.team === this.defenseTeam(); }, this);
-    // nearest defender to the catch point
     var pt = { x: b.x, y: b.y };
-    var nearDef = null, nd = 999;
-    def.forEach(function (d) { var dd = dist(d, pt); if (dd < nd) { nd = dd; nearDef = d; } });
-    var recDist = receiver ? dist(receiver, pt) : 99;
+    var off = this.offenseTeam();
 
-    // Catch probability
-    var base = receiver ? receiver.data.catch / 100 : 0;
-    var sepPenalty = clamp((2.2 - nd) * 0.22, 0, 0.55);
-    var reach = clamp(1 - recDist / 3.2, 0, 1);
-    var bonus = (!this.demo && receiver && receiver.team === this.userSide) ? this.difficulty.catchBonus : 0;
-    var pCatch = clamp(base * reach - sepPenalty + bonus, 0.03, 0.98);
+    var contenders = [];
+    for (var i = 0; i < s.players.length; i++) {
+      var p = s.players[i];
+      if (p.flagPulled) continue;
+      var d = dist(p, pt);
+      if (d > CATCH_RADIUS) continue;
+      var isOff = (p.team === off);
 
-    var roll = Math.random();
-    if (recDist > 3.5 || (receiver && receiver.slot === undefined)) {
-      this._incomplete('Incomplete', pt); return;
+      var reach = 1 - d / CATCH_RADIUS;                       // 0..1
+      var skill = isOff ? (p.data.catch / 100)
+                        : (p.data.pull * 0.7 + p.data.catch * 0.3) / 100;
+      // Facing the ball matters: you cannot catch what's behind your head.
+      var sp = Math.hypot(p.vx || 0, p.vy || 0);
+      var face = 1;
+      if (sp > 0.5) {
+        var tox = pt.x - p.x, toy = pt.y - p.y, tm = Math.hypot(tox, toy) || 1;
+        var dot = ((p.vx || 0) * tox + (p.vy || 0) * toy) / (sp * tm);
+        face = 0.62 + 0.38 * clamp((dot + 1) / 2, 0, 1);
+      }
+      // The intended receiver knows it's coming; everyone else is reacting.
+      var expectation = (p === receiver) ? 1.0 : (isOff ? 0.72 : 0.80);
+      var bonus = (!this.demo && isOff && p.team === this.userSide) ? this.difficulty.catchBonus : 0;
+      var score = reach * (0.45 + 0.55 * skill) * face * expectation
+                * (0.72 + 0.56 * Math.random()) + bonus;
+      contenders.push({ p: p, isOff: isOff, score: score, d: d });
     }
-    if (roll < pCatch) {
-      // caught
-      receiver.hasBall = true;
-      s.carrier = receiver;
-      s.ball.x = receiver.x; s.ball.y = receiver.y;
-      this._flash('Caught by ' + receiver.last + '!');
-      this.onEvent({ type: 'catch', player: receiver });
-    } else if (nd < 1.4 && roll < pCatch + (nearDef ? nearDef.data.pull / 400 : 0) * (this.difficulty ? this.difficulty.intScale : 1)) {
-      // interception
-      this._turnover('INTERCEPTED by ' + nearDef.last + '!', nearDef);
+
+    if (!contenders.length) { this._incomplete('Incomplete', pt); return; }
+    contenders.sort(function (a, c) { return c.score - a.score; });
+    var best = contenders[0];
+
+    // Contested: being closely challenged makes the play harder for whoever
+    // gets to it first, which is where drops and break-ups come from.
+    var rival = contenders[1];
+    var contest = rival ? clamp(rival.score / Math.max(0.01, best.score), 0, 1) * 0.35 : 0;
+    var need = CATCH_NEED + contest;
+
+    if (best.score < need) {
+      if (rival && !best.isOff) this._incomplete('Broken up by ' + best.p.last + '!', pt);
+      else if (!best.isOff) this._incomplete('Broken up by ' + best.p.last + '!', pt);
+      else this._incomplete(best.p === receiver ? 'Dropped by ' + best.p.last : 'Incomplete', pt);
+      return;
+    }
+
+    if (best.isOff) {
+      best.p.hasBall = true;
+      s.carrier = best.p;
+      s.thrownTo = best.p;
+      s.ball.x = best.p.x; s.ball.y = best.p.y; s.ball.z = 0;
+      this._flash('Caught by ' + best.p.last + '!');
+      this.onEvent({ type: 'catch', player: best.p });
     } else {
-      this._incomplete('Incomplete pass', pt);
+      var pick = best.p;
+      var scale = this.difficulty ? this.difficulty.intScale : 1;
+      // Even a clean read is dropped sometimes; intScale keeps difficulty honest.
+      if (Math.random() < clamp(0.55 * scale + 0.35, 0.2, 0.95)) {
+        this._turnover('INTERCEPTED by ' + pick.last + '!', pick);
+      } else {
+        this._incomplete('Broken up by ' + pick.last + '!', pt);
+      }
     }
   };
 

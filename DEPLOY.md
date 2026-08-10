@@ -4,7 +4,8 @@ Flagster is served by GitHub Pages from the `master` branch at
 **https://alixpham.github.io/**. This file records the commit id behind each
 notable live deploy (newest first).
 
-Version tags (see `VERSION`): **v2.13.0** = `a7cce463a7eb61968136cf96ccd065f2733f8ddb`,
+Version tags (see `VERSION`): **v2.14.0** = `61d9cf428a7f8c3b45018f86d896fa206e5c45cc`,
+**v2.13.0** = `06d78f79528a462b639b0dcba17c24c0d1114eca`,
 **v2.12.0** = `92a7c025f5561ac10a4189d933fcb9ad73f186cc`,
 **v2.11.0** = `176af3e40a171bf9df71f9a1e653fcc56ba8ef6f`,
 **v2.10.0** = `745131ce16f2307dbc53f477efa35ac676c598a7`,
@@ -36,7 +37,8 @@ git proxy blocks tag pushes, so these are the authoritative version→commit rec
 
 | Date (UTC) | Commit | What shipped |
 | --- | --- | --- |
-| 2026-08-09 | `a7cce463a7eb61968136cf96ccd065f2733f8ddb` | **v2.13.0** — REALISM.md Phase 2 (movement): acceleration and turn limits so players have mass, soft body separation, and pursuit that solves an intercept instead of chasing where the carrier used to be |
+| 2026-08-10 | `61d9cf428a7f8c3b45018f86d896fa206e5c45cc` | **v2.14.0** — REALISM.md Phase 3 (ball): real ballistics with gravity and hang time, a contested catch resolved in space instead of a coin flip, and the ball finally casts a shadow and spirals about its flight axis |
+| 2026-08-09 | `06d78f79528a462b639b0dcba17c24c0d1114eca` | **v2.13.0** — REALISM.md Phase 2 (movement): acceleration and turn limits so players have mass, soft body separation, and pursuit that solves an intercept instead of chasing where the carrier used to be |
 | 2026-08-09 | `92a7c025f5561ac10a4189d933fcb9ad73f186cc` | **v2.12.0** — REALISM.md Phase 1 (rules): 7-second pass clock, 7-yard rush line, the passer may not run, no-run zones, extra points as a real play, plus tools/simstats.mjs |
 | 2026-08-09 | `176af3e40a171bf9df71f9a1e653fcc56ba8ef6f` | **v2.11.0** — the ball is carried by the player instead of floating near them: tucked high and tight on the outside arm off the chest bone, and riding the throwing hand through a wind-up |
 | 2026-08-09 | `745131ce16f2307dbc53f477efa35ac676c598a7` | **v2.10.0** — no more skating: a player may face along their line of travel or along its reverse, never square across it, so legs always cycle in the direction the body is going |
