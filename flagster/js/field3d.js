@@ -175,10 +175,25 @@
     ball.visible = false;
     scene.add(ball);
 
+    /* C3 — the ball's shadow. Players cast one and the ball did not, and a
+       ball in flight over flat green with nothing under it is genuinely hard
+       to judge. This is a painted blob rather than a real shadow caster: it
+       costs nothing, and it works from any camera angle. */
+    var ballShadow = new THREE.Mesh(
+      new THREE.CircleGeometry(0.16, 16),
+      new THREE.MeshBasicMaterial({ color: 0x0d2b12, transparent: true, opacity: 0.34, depthWrite: false })
+    );
+    ballShadow.rotation.x = -Math.PI / 2;
+    ballShadow.renderOrder = 2;
+    ballShadow.visible = false;
+    scene.add(ballShadow);
+
     /* The ball is one shared mesh, re-parented to whoever has it. Anything
        under a player inherits the 0.87 the renderer scales them by, so the
        ball is scaled back up to keep the regulation size it is drawn at. */
     var ballHost = null;
+    var spin = 0;
+    var GRAV_R = 10.73;      // mirrors engine.js GRAVITY, for the nose angle
     function hostBall(node) {
       if (ballHost === node) return;
       if (node) node.add(ball); else scene.add(ball);
@@ -676,10 +691,29 @@
       // Football
       if (state.ball) {
         ball.visible = true;
+        ballShadow.visible = false;      // only the in-air branch turns it on
         if (state.ball.inAir) {
           hostBall(null);
-          ball.position.set(wx(state.ball.x), 1.0 + (state.ball.z || 0), wz(state.ball.y));
-          ball.rotation.z += 0.5; ball.rotation.x += 0.2;
+          var bz = state.ball.z || 0;
+          ball.position.set(wx(state.ball.x), 1.0 + bz, wz(state.ball.y));
+          /* Spin about the axis of FLIGHT, at a rate per SECOND. It used to be
+             `rotation.z += 0.5; rotation.x += 0.2` every frame — frame-rate
+             dependent, and a tumble rather than a spiral. A thrown ball points
+             where it is going and rotates around that line. */
+          var vz = (state.ball.vz || 0) - GRAV_R * (state.ball.t || 0);
+          var hv = state.ball.hv || 0;
+          var yaw = Math.atan2(-(state.ball.diry || 0), (state.ball.dirx || 1));
+          var pitch = Math.atan2(vz, hv || 1);
+          ball.rotation.set(0, yaw, 0);
+          ball.rotateZ(pitch);                    // nose follows the trajectory
+          spin = (spin + dt * 22) % (Math.PI * 2);
+          ball.rotateX(spin);                     // spiral about that axis
+          // Shadow tracks the ground point and fades/grows with height.
+          ballShadow.visible = true;
+          ballShadow.position.set(wx(state.ball.x), 0.02, wz(state.ball.y));
+          var k = clamp(bz / 6, 0, 1);
+          ballShadow.scale.setScalar(1 + k * 1.6);
+          ballShadow.material.opacity = 0.34 * (1 - 0.6 * k);
         } else if (state.pendingThrow && carryNode(state.pendingThrow.thrower, 'Socket_Hand_R')) {
           // Winding up: the ball rides the throwing hand, so it comes forward
           // with the arm and leaves from where the hand actually is.
@@ -715,7 +749,7 @@
           hostBall(null);
           ball.position.set(wx(state.ball.x), 1.0, wz(state.ball.y));
         }
-      } else { ball.visible = false; }
+      } else { ball.visible = false; ballShadow.visible = false; }
 
       // Consume engine transient anims (flag/td/incomplete) so they don't leak
       // (the 2D renderer normally advances/clears these; we skip 2D).
