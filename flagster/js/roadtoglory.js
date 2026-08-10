@@ -238,7 +238,7 @@
       home: D.nationById(userId), away: opp,
       homeJersey: D.jerseysFor(userId)[0], awayJersey: D.jerseysFor(opp.id)[1],
       userSide: 'home', startPossession: 'away',
-      quarters: 4, quarterLen: 120,
+      halves: 2, halfLen: 480,
       rtg: { player: me, side: isOffense ? 'off' : 'def' },
       onQuit: function () { hub(back, save); },
       onEvent: function (ev, s) {

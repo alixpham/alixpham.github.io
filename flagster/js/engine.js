@@ -66,8 +66,12 @@
       home: cfg.home, away: cfg.away,
       homeJersey: cfg.homeJersey, awayJersey: cfg.awayJersey,
       score: { home: 0, away: 0 },
-      quarter: 1, quarters: cfg.quarters || 4,
-      clock: cfg.quarterLen || 150,   // seconds per quarter
+      /* A6 — IFAF plays TWO HALVES, not four quarters. `quarters` is kept as
+         the field name so every caller and the HUD keep working, but it now
+         defaults to 2 periods of 20 minutes. */
+      quarter: 1, quarters: cfg.halves || cfg.quarters || 2,
+      halves: true,
+      clock: cfg.halfLen || cfg.quarterLen || 1200,
       possession: cfg.startPossession || 'away', // team with ball
       yardsToGoal: 45, down: 1, crossedMid: false,
       phase: 'playcall',
@@ -1219,7 +1223,11 @@
       contenders.push({ p: p, isOff: isOff, score: score, d: d });
     }
 
-    if (!contenders.length) { this._incomplete('Incomplete', pt); return; }
+    if (!contenders.length) {
+      // A pitch nobody gathered is a dead ball at the spot, not an incompletion.
+      if (b.lateral) { this._flash('Pitch goes loose'); this._endPlay(pt.x, true); return; }
+      this._incomplete('Incomplete', pt); return;
+    }
     contenders.sort(function (a, c) { return c.score - a.score; });
     var best = contenders[0];
 
@@ -1307,6 +1315,44 @@
     }
 
     if (c.grabT >= need) this._flagPull(grabber, c);
+  };
+
+  /* A8 — LATERALS. A pitch backwards is legal anywhere on the field and is a
+     staple of this sport; only the pre-baked 'reverse' trick play approximated
+     one, and it didn't model a pitch at all. Any carrier can flick it back to
+     a trailing team-mate: the ball genuinely travels, and a pitch with nobody
+     behind you simply isn't thrown. */
+  var PITCH_RANGE = 9;
+
+  Engine.prototype.pitch = function () {
+    var s = this.state;
+    var c = s && s.carrier;
+    if (!c || s.phase !== 'live' || (s.ball && s.ball.inAir) || s.pendingThrow) return false;
+    var back = null, bestD = 1e9;
+    for (var i = 0; i < s.players.length; i++) {
+      var p = s.players[i];
+      if (p === c || p.team !== c.team || p.flagPulled) continue;
+      // A lateral is a BACKWARDS pass; forward from a runner is not legal.
+      if (p.x >= c.x - 0.6) continue;
+      var d = dist(p, c);
+      if (d <= PITCH_RANGE && d < bestD) { bestD = d; back = p; }
+    }
+    if (!back) { this._flash('Nobody back there'); return false; }
+
+    var d2 = Math.max(0.5, bestD), speed = 16;
+    s.ball = {
+      x: c.x, y: c.y, z: 0.6, inAir: true, lateral: true,
+      from: { x: c.x, y: c.y }, to: { x: back.x, y: back.y },
+      dirx: (back.x - c.x) / d2, diry: (back.y - c.y) / d2,
+      hv: speed, vz: 1.2, t: 0, dur: d2 / speed,
+      thrower: c, targetSlot: back.slot, arcH: 0.4
+    };
+    c.hasBall = false;
+    s.carrier = null;
+    s.thrownTo = back;
+    this._flash('Pitch to ' + back.last + '!');
+    this.onEvent({ type: 'pitch', from: c, to: back });
+    return true;
   };
 
   /* JUKE — break a defender's grip.
@@ -1472,6 +1518,18 @@
     }
   };
 
+  /* A7 — FLAG GUARDING, the defining offensive foul of the sport: the carrier
+     shielding their flags from the defender. Modelled where it actually
+     happens — while someone has a grip on you and you are swatting them off.
+     Ten yards from the spot and a loss of down. */
+  Engine.prototype._flagGuard = function (c, d) {
+    var s = this.state;
+    this._flash(c.last + ' guarded the flag — 10 yards');
+    this.onEvent({ type: 'penalty', kind: 'flag-guard', player: c });
+    s.yardsToGoal = clamp(s.yardsToGoal + 10, 1, 50);
+    this._endPlay(GOAL_R - s.yardsToGoal, true);
+  };
+
   Engine.prototype._illegalRush = function (d) {
     var s = this.state;
     this._flash('Illegal rush on ' + d.last + ' — 5 yards');
@@ -1495,8 +1553,8 @@
        touched. Retreating into your own end zone is legal and you can run back
        out; it costs you two points only if your flag comes off back there,
        which _flagPull now handles. */
-    // Out of bounds
-    if (c.y <= 0.4 || c.y >= FIELD_WID - 0.4) { this._endPlay(c.x, false); }
+    // Out of bounds — also stops the clock inside two minutes
+    if (c.y <= 0.4 || c.y >= FIELD_WID - 0.4) { s.clockStops = true; this._endPlay(c.x, false); }
   };
 
   /* --------------------------- PLAY RESOLUTION --------------------------- */
@@ -1525,7 +1583,8 @@
     var s = this.state;
     // A conversion is one play: it either reached the end zone or it didn't.
     if (s.patActive) { this._endPAT(false); return; }
-    this._runClock(28 + Math.round(Math.random() * 8));
+    this.runPlayClock(s.snapT || 0, !!s.clockStops);
+    s.clockStops = false;
     if (s.gameOver) return;
 
     if (!s.crossedMid) {
@@ -1544,6 +1603,7 @@
   };
 
   Engine.prototype._incomplete = function (msg, pt) {
+    this.state.clockStops = true;        // incomplete stops it inside two minutes
     this._flash(msg);
     this.anim.push({ type: 'incomplete', x: pt.x, y: pt.y, t: 0, dur: 0.6 });
     var s = this.state;
@@ -1560,11 +1620,15 @@
     s.phase = 'dead';
     // Picked off on a conversion: the conversion simply failed.
     if (s.patActive) { setTimeout(function () { this._endPAT(false); }.bind(this), 1200); return; }
+    if (s.overtime) {
+      setTimeout(function () { if (!this._otPossessionOver()) this._nextSnap(); }.bind(this), 1200);
+      return;
+    }
     setTimeout(function () {
       s.possession = this.defenseTeam();
       s.yardsToGoal = clamp(50 - s.yardsToGoal, 8, 45);
       s.down = 1; s.crossedMid = false;
-      this._runClock(20);
+      this.runPlayClock(s.snapT || 0, false);
       this._nextSnap();
     }.bind(this), 1200);
   };
@@ -1572,7 +1636,13 @@
   Engine.prototype._turnoverOnDowns = function () {
     this._flash('Turnover on downs!');
     var s = this.state;
+    // This burned no clock whatever, so a change of downs was free time.
+    this.runPlayClock(s.snapT || 0, false);
     if (s.patActive) { setTimeout(function () { this._endPAT(false); }.bind(this), 1200); return; }
+    if (s.overtime) {
+      setTimeout(function () { if (!this._otPossessionOver()) this._nextSnap(); }.bind(this), 1200);
+      return;
+    }
     setTimeout(function () {
       s.possession = this.defenseTeam();
       s.yardsToGoal = clamp(50 - s.yardsToGoal, 8, 45);
@@ -1659,8 +1729,9 @@
     }
     this.onEvent({ type: 'patresult', good: !!good, points: s.patPoints });
     s.patActive = false; s.patTeam = null; s.patChoicePending = false;
-    this._runClock(15);
+    this.runPlayClock(s.snapT || 0, false);
     if (s.gameOver) return;
+    if (s.overtime) { if (this._otPossessionOver()) return; this._nextSnap(); return; }
     s.possession = team === 'home' ? 'away' : 'home';
     s.yardsToGoal = 45; s.down = 1; s.crossedMid = false;
     this._nextSnap();
@@ -1690,20 +1761,69 @@
   };
 
   /* ------------------------------- CLOCK --------------------------------- */
+  /* A6 — THE CLOCK.
+
+     It used to burn a flat 28 + rand*8 seconds per play whatever happened,
+     which is why a whole game was 23 plays. The clock runs CONTINUOUSLY in
+     this sport: the time a play actually took, plus the time taken to line up
+     again — and inside the last two minutes it stops on an incomplete pass, a
+     player going out of bounds, or a score, which is what makes a two-minute
+     drill possible at all. */
+  var HUDDLE = 40;                       // seconds between plays with the clock running
+  var LAST_TWO = 120;                    // when the clock starts stopping
+
+  Engine.prototype.runPlayClock = function (playSeconds, stopsClock) {
+    var s = this.state;
+    var burn = playSeconds || 0;
+    var inLastTwo = (s.clock <= LAST_TWO) && (s.quarter >= s.quarters || s.overtime);
+    if (!(inLastTwo && stopsClock)) burn += HUDDLE;
+    this._runClock(burn);
+  };
+
   Engine.prototype._runClock = function (sec) {
     var s = this.state;
+    if (s.overtime) return;              // OT is untimed: possessions, not a clock
     s.clock -= sec;
     while (s.clock <= 0) {
       if (s.quarter >= s.quarters) {
-        if (s.score.home === s.score.away) {
-          s.overtime = true; s.quarter++; s.clock = 90;
-          this._flash('OVERTIME!');
-        } else { s.clock = 0; this._gameOver(); return; }
-      } else {
-        s.quarter++; s.clock += (this.cfg.quarterLen || 150);
-        this._flash('End of Q' + (s.quarter - 1));
+        if (s.score.home === s.score.away) { this._startOvertime(); return; }
+        s.clock = 0; this._gameOver(); return;
       }
+      s.quarter++; s.clock += (this.cfg.halfLen || this.cfg.quarterLen || 1200);
+      this._flash('End of ' + (s.halves ? ('H' + (s.quarter - 1)) : ('Q' + (s.quarter - 1))));
     }
+  };
+
+  /* IFAF overtime: alternating possessions from the 5-yard line, no clock.
+     Flagster played a 90-second sudden-death period, which is not the rule and
+     is not how anyone experiences the end of a tied game. */
+  Engine.prototype._startOvertime = function () {
+    var s = this.state;
+    s.overtime = true;
+    s.clock = 0;
+    s.otRound = 1;
+    s.otFirst = s.possession;
+    s.otScoreAtRoundStart = { home: s.score.home, away: s.score.away };
+    s.quarter = s.quarters + 1;
+    this._flash('OVERTIME — alternating possessions from the 5');
+    this.onEvent({ type: 'overtime', round: 1 });
+  };
+
+  /* Called when a possession ends in overtime. Each side gets one; if they're
+     still level after both, go again. */
+  Engine.prototype._otPossessionOver = function () {
+    var s = this.state;
+    if (!s.overtime) return false;
+    var secondOfRound = (s.possession !== s.otFirst);
+    if (secondOfRound) {
+      if (s.score.home !== s.score.away) { this._gameOver(); return true; }
+      s.otRound++;
+      this.onEvent({ type: 'overtime', round: s.otRound });
+      this._flash('Overtime — round ' + s.otRound);
+    }
+    s.possession = (s.possession === 'home') ? 'away' : 'home';
+    s.yardsToGoal = 5; s.down = 1; s.crossedMid = true;
+    return false;
   };
 
   Engine.prototype._gameOver = function () {
@@ -2092,6 +2212,7 @@
       if (k === '3') self.action('r3'); if (k === '4') self.action('r4');
       if (k === 'q') self.action('switch');
       if (k === 'f') self.action('juke');
+      if (k === 'l') self.action('pitch');
       if (k === 'e') self.action('pull');
     };
     this._ku = function (e) {
@@ -2121,6 +2242,7 @@
         if (a === 'r3') this.throwTo('RB');
         if (a === 'r4') this.throwTo('C');
         if (a === 'juke') this.juke();
+        if (a === 'pitch') this.pitch();
       } else {
         if (a === 'switch' || a === 'primary') this.switchDefender();
         if (a === 'pull' || a === 'r1') this.pullAction();

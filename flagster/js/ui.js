@@ -108,6 +108,7 @@
       ['Throw to WR1 / WR2', '1  /  2'],
       ['Throw to RB / Center', '3  /  4'],
       ['Juke (break a grab)', 'F'],
+      ['Pitch back (lateral)', 'L'],
       ['Switch defender', 'Q'],
       ['Pull the flag (on D)', 'E']
     ];
@@ -117,6 +118,7 @@
       ['Snap the ball', 'SNAP button'],
       ['Throw', 'Tap a receiver on the field, or the WR1/WR2/RB/C button'],
       ['Juke (break a grab)', 'JUKE button'],
+      ['Pitch back (lateral)', 'PITCH button'],
       ['Sprint', 'Hold the ⚡ button'],
       ['Switch defender', 'Tap a team-mate (or SWITCH)'],
       ['Pull the flag (on D)', 'PULL button']
@@ -194,6 +196,7 @@
       home: cfg.home, away: cfg.away,
       homeJersey: cfg.homeJersey, awayJersey: cfg.awayJersey,
       userSide: cfg.userSide, quarters: cfg.quarters, quarterLen: cfg.quarterLen,
+      halves: cfg.halves, halfLen: cfg.halfLen,
       startPossession: cfg.startPossession || 'away', rtg: cfg.rtg,
       difficulty: cfg.difficulty, demo: cfg.demo
     });
@@ -410,7 +413,7 @@
     var clk = mm + ':' + (ss < 10 ? '0' : '') + ss;
     var down = ORD[Math.min(Math.max(s.down, 1) - 1, 3)];
     var ddTxt = down + ' & ' + (s.crossedMid && s.yardsToGoal <= 10 ? 'GOAL' : yardsToGo(s));
-    var period = s.overtime ? 'OT' : ('Q' + s.quarter);
+    var period = s.overtime ? ('OT' + (s.otRound || 1)) : ((s.halves ? 'H' : 'Q') + s.quarter);
 
     set(r.awayScore, 'as', String(s.score.away));
     set(r.homeScore, 'hs', String(s.score.home));
@@ -738,7 +741,7 @@
     this._offBtns = h('div', { class: 'btn-cluster' }, [
       actBtn('WR1', 'r1', 'r1'), actBtn('WR2', 'r2', 'r2'),
       actBtn('RB', 'r3', 'r3'), actBtn('C', 'r4', 'r4'),
-      actBtn('JUKE', 'juke', 'juke'), sprint
+      actBtn('JUKE', 'juke', 'juke'), actBtn('PITCH', 'pitch', 'pitch'), sprint
     ]);
     this._defBtns = h('div', { class: 'btn-cluster' }, [
       actBtn('SWITCH', 'sw', 'switch'), actBtn('PULL', 'pull', 'pull')

@@ -20,7 +20,7 @@
   }
 
   function start(back) {
-    var state = { user: null, opp: null, userJersey: 0, oppJersey: 0, quarters: 4, quarterLen: 150, difficulty: 'rookie' };
+    var state = { user: null, opp: null, userJersey: 0, oppJersey: 0, halves: 2, halfLen: 600, difficulty: 'rookie' };
 
     function screenTeamSelect() {
       var grid1 = h('div', { class: 'team-grid' });
@@ -70,8 +70,8 @@
       uRow = jerseyRow(state.user, state.userJersey, function (i) { state.userJersey = i; render(); });
       oRow = jerseyRow(state.opp, state.oppJersey, function (i) { state.oppJersey = i; render(); });
 
-      var lenSel = h('select', { class: 'fld', onChange: function (e) { state.quarterLen = parseInt(e.target.value, 10); } }, [
-        optEl('90', '2 min quarters (quick)'), optEl('150', '2.5 min quarters', true), optEl('240', '4 min quarters')
+      var lenSel = h('select', { class: 'fld', onChange: function (e) { state.halfLen = parseInt(e.target.value, 10); } }, [
+        optEl('300', '5 min halves (quick)'), optEl('600', '10 min halves', true), optEl('1200', '20 min halves (full IFAF)')
       ]);
       var diffSel = h('select', { class: 'fld', onChange: function (e) { state.difficulty = e.target.value; } }, [
         optEl('rookie', 'Rookie — easiest', true), optEl('pro', 'Pro'), optEl('allpro', 'All-Pro — hardest')
@@ -101,7 +101,7 @@
         home: state.user, away: state.opp,
         homeJersey: uJ, awayJersey: oJ,
         userSide: 'home', startPossession: 'away',
-        quarters: state.quarters, quarterLen: state.quarterLen,
+        halves: state.halves, halfLen: state.halfLen,
         difficulty: state.difficulty,
         onQuit: function () { back(); },
         onGameOver: function (res) { showResult(res); }

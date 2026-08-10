@@ -74,6 +74,7 @@ h1,h2,h3,h4{margin:.2em 0}
 .tile-sub{color:var(--muted);font-size:.9rem;font-weight:500}
 .menu-foot{display:flex;align-items:center;justify-content:center;gap:14px;margin-top:24px;flex-wrap:wrap}
 .platform-badge{color:var(--muted);font-size:.8rem;border:1px solid var(--line);padding:6px 12px;border-radius:20px}
+.act-btn.pitch{background:linear-gradient(180deg,#2f6f8f,#1d4a61)}
 .sit-val.urgent{color:#ff5252}
 .version-badge{display:block;margin-top:6px;color:var(--muted);font-size:.72rem;letter-spacing:.08em;opacity:.7;font-variant-numeric:tabular-nums}
 
