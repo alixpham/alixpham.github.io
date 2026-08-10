@@ -216,8 +216,33 @@
     var ballHost = null;
     var spin = 0;
     var GRAV_R = 10.73;      // mirrors engine.js GRAVITY, for the nose angle
+
+    /* THE BALL NEVER CUTS FROM ONE PAIR OF HANDS TO THE NEXT.
+
+       Possession changes in the engine are instantaneous — a hand-off swaps a
+       flag on two players, and a catch moves the ball to the receiver's own
+       coordinates, which can be a couple of yards from where it arrived. The
+       renderer used to follow that literally, so the ball teleported on every
+       exchange.
+
+       Rather than special-case each one, this tweens on the only thing they
+       have in common: the ball changing host. The old grip is remembered in
+       the OLD host's local space, not as a frozen world point, so a hand-off
+       leaves a quarterback's hands that are themselves still moving. */
+    var XFER = 0.16;                     // seconds for an exchange to complete
+    var xfer = { t: 0, dur: 0, node: null, local: new THREE.Vector3(), world: new THREE.Vector3() };
+    var xferPending = false;
+    var _wp = new THREE.Vector3(), _from = new THREE.Vector3();
+
     function hostBall(node) {
       if (ballHost === node) return;
+      // Remember where the ball is right now, so the new grip can be reached
+      // from here instead of jumped to.
+      ball.updateWorldMatrix(true, false);
+      xfer.world.setFromMatrixPosition(ball.matrixWorld);
+      xfer.node = ballHost;
+      if (ballHost) { xfer.local.copy(xfer.world); ballHost.worldToLocal(xfer.local); }
+      xferPending = true;
       if (node) node.add(ball); else scene.add(ball);
       /* Undo whatever the host is scaled by, so the ball stays regulation size
          in the world. Players are no longer uniformly scaled (E1), so this has
@@ -232,15 +257,132 @@
       }
       ballHost = node;
     }
+    /* Blend the ball from the grip it just left to the one it has now. Runs
+       after the frame has placed the ball wherever it belongs, and rewrites
+       that placement for the length of the exchange.
+
+       Nothing tweens a pass: a throw is a real flight solved by the engine and
+       must not be slowed by a quarter of a second of easing at the front of
+       it. A new down doesn't tween either — that is the ball being spotted,
+       not passed. */
+    function applyTransfer(state, dt) {
+      var live = (state.phase === 'live') && !(state.ball && state.ball.inAir);
+      if (xferPending) { xferPending = false; xfer.t = 0; xfer.dur = live ? XFER : 0; }
+      if (xfer.dur <= 0) return;
+      if (!live) { xfer.dur = 0; return; }
+      xfer.t += dt;
+      var k = xfer.t / xfer.dur;
+      if (k >= 1) { xfer.dur = 0; return; }
+      // Where the ball would be this frame, in the world.
+      ball.updateWorldMatrix(true, false);
+      _wp.setFromMatrixPosition(ball.matrixWorld);
+      // Where it came from — still tracking the old holder if they're moving.
+      if (xfer.node && xfer.node.parent) {
+        _from.copy(xfer.local); xfer.node.localToWorld(_from);
+      } else {
+        _from.copy(xfer.world);
+      }
+      var e = k * k * (3 - 2 * k);                 // smoothstep: ease both ends
+      _from.lerp(_wp, e);
+      if (ball.parent) { ball.parent.updateWorldMatrix(true, false); ball.parent.worldToLocal(_from); }
+      ball.position.copy(_from);
+    }
+
     // A named bone or socket on the player holding the ball, if the rigged
     // model is the one in play (the procedural fallback has neither).
-    function carryNode(gp, name) {
+    function entryOf(gp) {
       if (!gp || !playersRef) return null;
       var i = playersRef.indexOf(gp);
-      if (i < 0 || !pMeshes[i]) return null;
-      var P = pMeshes[i].P;
+      return (i < 0) ? null : (pMeshes[i] || null);
+    }
+    function carryNode(gp, name) {
+      var e = entryOf(gp);
+      var P = e && e.P;
       if (!P) return null;
       return (P.sockets && P.sockets[name]) || (P.nodes && P.nodes[name]) || null;
+    }
+
+    /* ---- CARRYING THE BALL ------------------------------------------------
+
+       The ball used to hang off the Chest bone at a fixed offset and NOTHING
+       ELSE. That is the whole of what was wrong with it: measured on the live
+       game it rode at 73-79% of the player's height with its inner half inside
+       the ribs, and the arm on that side went on swinging through it with the
+       run cycle. Nobody was holding it. A ball floating at the armpit with a
+       free arm passing through it reads as a ball stuck to the shoulder,
+       because there is no other way to read it.
+
+       So the fix is mostly not the ball's position — it moves barely a hand's
+       width, a little lower and a little further forward, and slightly less
+       outboard so the forearm can close over the front of it. The fix is that
+       an ARM now holds it. High and tight: the back point pinched in the crook
+       of the elbow, the ball's outer face along the forearm, the hand up at
+       the nose, the whole thing pinned against the ribs with the elbow flared
+       just enough to clear it. Parenting stays on the chest — the ribs are
+       what the ball is braced against, and that inherits the bob, the lean and
+       the turn for free.
+
+       The one big move is READY. A passer's ball was offset +0.13 ABOVE the
+       chest joint and out to one side, which is literally the shoulder; it
+       comes down to the sternum and gets both hands on it.
+
+       All of these are chest-bone local (metres, as the rig is authored) and
+       mirror with `side`: +1 carries on the player's LEFT. Tuned by rendering
+       the real rig from four angles and reading the bone positions back out;
+       in the live game the ball's centre then holds a steady 0.09yd below the
+       carrier's chest bone right through the stride. */
+    var CARRY = {
+      ball:     { pos: [0.24, -0.06, 0.06], rot: [0.10, 0.20, 1.00] },
+      upperArm: [0.12, -0.50, 0.34],       // hangs, rotated in, elbow flared out
+      lowerArm: [-2.20, 0, 0.05]           // ~126 degrees of elbow, forearm across
+    };
+    /* A passer still holding it has both hands on the ball at the sternum,
+       ready — not tucked at the hip where a runner carries it, and not welded
+       to a shoulder. Held a touch to the throwing side, as a real one is. */
+    var READY = {
+      ball:     { pos: [-0.07, -0.02, 0.20], rot: [0, 0, 1.10] },
+      upperArm: [0.30, -0.55, 0.10],
+      lowerArm: [-2.30, 0, 0.05]
+    };
+
+    /* WHICH ARM. Away from the nearest defender — the ball is carried on the
+       arm furthest from the hit, which is both the coaching point and the side
+       you can actually see it on from a camera sitting behind the play.
+
+       Chosen ONCE, when the player takes possession, and then held. It used to
+       be re-evaluated every frame, which was harmless while the ball was a
+       floating offset and is not now that an arm is wrapped around it: a
+       defender crossing the runner's face would have swapped the ball and the
+       whole arm to the other side of the body between one frame and the next.
+       A real carrier does switch arms, but that is a move with a body in it,
+       and doing it without one looks worse than not doing it. */
+    function carrySide(state, c) {
+      var side = (c.y < WID / 2) ? -1 : 1;         // default: away from midfield
+      var nd = 1e9, near = null;
+      for (var i = 0; i < state.players.length; i++) {
+        var o = state.players[i];
+        if (o.team === c.team || o.flagPulled) continue;
+        var od = Math.hypot(o.x - c.x, o.y - c.y);
+        if (od < nd) { nd = od; near = o; }
+      }
+      if (near && nd < 8) side = (near.y > c.y) ? -1 : 1;
+      return side;
+    }
+
+    var _q = new THREE.Quaternion(), _e = new THREE.Euler();
+    /* Blend one arm toward a posed rotation. Weight 0 leaves the clip alone and
+       1 takes it over completely, so a pose can fade in and out instead of
+       snapping — and slerping the bone means it composes with whatever the
+       mixer just wrote rather than fighting it. */
+    function poseArm(P, suffix, sign, pose, w) {
+      if (!P.nodes || w <= 0.001) return;
+      var up = P.nodes['UpperArm_' + suffix], lo = P.nodes['LowerArm_' + suffix];
+      if (!up || !lo) return;
+      var a = pose.upperArm, b = pose.lowerArm;
+      _q.setFromEuler(_e.set(a[0], a[1] * sign, a[2] * sign));
+      up.quaternion.slerp(_q, w);
+      _q.setFromEuler(_e.set(b[0], b[1] * sign, b[2] * sign));
+      lo.quaternion.slerp(_q, w);
     }
 
     // Flying-flag effect pool (spawned on flag pulls)
@@ -392,7 +534,8 @@
         var ring = makeRing(); scene.add(ring);
         pMeshes.push({
           P: P, holder: holder, ring: ring,
-          ud: { yaw: seedYaw, celebT: 0, _wasPulled: false, _threw: false, _caught: false, _juked: false, clip: 'idle' }
+          ud: { yaw: seedYaw, celebT: 0, _wasPulled: false, _threw: false, _caught: false, _juked: false,
+                clip: 'idle', carryKey: '', carrySide: 0, carryW: 0 }
         });
       });
       playersRef = players;
@@ -530,6 +673,34 @@
 
       P.update(dt);
 
+      /* ---- CARRY POSE (after the mixer, so it overrides the clip) ---------
+         The clip has already written every bone for this frame; the arm around
+         the ball is layered on top of it by slerping the two shoulder joints
+         part of the way toward the carry pose. `carryW` is what makes that a
+         blend rather than a switch — it fades out under any one-shot (the
+         throw, the catch, the juke all own the arms while they run) and back
+         in afterwards, and it fades through zero to change pose so a passer
+         tucking the ball and running doesn't snap between the two. */
+      var holdingIt = (carrier === gp && !gp.flagPulled);
+      if (holdingIt && !ud.carrySide) ud.carrySide = carrySide(state, gp);
+      if (!holdingIt) ud.carrySide = 0;
+      var wantKey = holdingIt
+        ? ((gp === state.passer && !state.handoffDone && !state.pendingThrow) ? 'ready' : 'carry') + ud.carrySide
+        : '';
+      // A one-shot is driving the arms itself; give way to it and come back.
+      var wantW = (holdingIt && !P._oneShot && wantKey === ud.carryKey) ? 1 : 0;
+      ud.carryW += (wantW - ud.carryW) * Math.min(1, dt * 9);
+      if (ud.carryW < 0.02 && wantKey !== ud.carryKey) { ud.carryKey = wantKey; ud.carryW = 0; }
+      if (ud.carryW > 0.001 && ud.carryKey) {
+        var mode = ud.carryKey.slice(0, 5), sd = ud.carrySide || 1;
+        if (mode === 'ready') {
+          poseArm(P, 'L', 1, READY, ud.carryW);
+          poseArm(P, 'R', -1, READY, ud.carryW);
+        } else {
+          poseArm(P, sd > 0 ? 'L' : 'R', sd, CARRY, ud.carryW);
+        }
+      }
+
       /* No floating nameplates during play. They were a world-space Sprite
          with depthTest off, which under the old distant camera was a harmless
          speck but under the chase cam is a label painted across whichever
@@ -613,14 +784,23 @@
       var minFx = GOAL_L - EZ + 2, maxFx = GOAL_R + EZ - 2;
       focusFx = clamp(focusFx, minFx, maxFx);
 
-      // Lateral follow is damped hard — matching the carrier's sideways cuts
-      // yard-for-yard swings the whole world sideways and reads as a camera
-      // fault rather than a juke. Half-weight, and clamped near the hashes.
-      var latTarget = clamp((focusFy - WID / 2) * 0.55, -5.0, 5.0);
-      if (camFz == null) camFz = latTarget;
-      camFz = lerp(camFz, latTarget, clamp(dt * 2.4, 0, 1));
+      /* Lateral follow is damped hard — matching the carrier's sideways cuts
+         yard-for-yard swings the whole world sideways and reads as a camera
+         fault rather than a juke. Half-weight, and clamped near the hashes.
 
-      camFx = lerp(camFx, focusFx, clamp(dt * 4.5, 0, 1));
+         A ball in the air is the exception. Those constants are tuned for a
+         runner, and a ball crossing the field at 22yd/s outran them: measured,
+         a throw toward a sideline put the ball 217 pixels outside a 1280-wide
+         frame. While it's airborne the camera tracks it properly — more of the
+         offset, further out, and eased twice as fast — because the one thing
+         the frame must always contain is the ball. */
+      var chasing = !!(state.ball && state.ball.inAir);
+      var latW = chasing ? 0.90 : 0.55, latMax = chasing ? 9.0 : 5.0;
+      var latTarget = clamp((focusFy - WID / 2) * latW, -latMax, latMax);
+      if (camFz == null) camFz = latTarget;
+      camFz = lerp(camFz, latTarget, clamp(dt * (chasing ? 6.0 : 2.4), 0, 1));
+
+      camFx = lerp(camFx, focusFx, clamp(dt * (chasing ? 7.0 : 4.5), 0, 1));
       var anchorX = wx(camFx);
 
       /* Keep the LENS inside the bowl, not just the focus. Backed up near your
@@ -789,8 +969,13 @@
         ballShadow.visible = false;      // only the in-air branch turns it on
         if (state.ball.inAir) {
           hostBall(null);
+          /* The engine now solves the flight between the height of the hand it
+             left and the height it gets caught at, so `z` is the real altitude
+             and is drawn as-is. It used to be a ground-to-ground parabola that
+             this line lifted by a flat 1.0 yards, which is why the ball dropped
+             out of the quarterback's hand the moment it was released. */
           var bz = state.ball.z || 0;
-          ball.position.set(wx(state.ball.x), 1.0 + bz, wz(state.ball.y));
+          ball.position.set(wx(state.ball.x), bz, wz(state.ball.y));
           /* Spin about the axis of FLIGHT, at a rate per SECOND. It used to be
              `rotation.z += 0.5; rotation.x += 0.2` every frame — frame-rate
              dependent, and a tumble rather than a spiral. A thrown ball points
@@ -802,7 +987,10 @@
           ball.rotation.set(0, yaw, 0);
           ball.rotateZ(pitch);                    // nose follows the trajectory
           spin = (spin + dt * 22) % (Math.PI * 2);
-          ball.rotateX(spin);                     // spiral about that axis
+          /* A pass spirals about the line of flight; a pitch is flicked
+             underhand and turns end over end. Same axis convention, different
+             axis — the tumble is about the ball's short axis. */
+          if (state.ball.lateral) ball.rotateY(spin); else ball.rotateX(spin);
           // Shadow tracks the ground point and fades/grows with height.
           ballShadow.visible = true;
           ballShadow.position.set(wx(state.ball.x), 0.02, wz(state.ball.y));
@@ -837,53 +1025,35 @@
              it on the chest bone instead and it inherits the whole body for
              free: the bob of the stride, the lean, the turn, the juke.
 
-             High and tight: nose up, tucked on the diagonal between the upper
-             arm and the ribs, on the OUTSIDE arm — away from the middle of the
-             field, which is the side a carrier actually keeps it and the side
-             the defenders aren't on. */
+             The offsets themselves are CARRY/READY, and the matching arm is
+             posed over the clip in syncPlayer. Both read the same carryKey off
+             the player's entry, so the ball and the arm holding it can never
+             disagree about which side of the body they are on. */
           var c = state.carrier;
           var chest = carryNode(c, 'Chest');
-          if (chest) {
-            /* WHICH ARM. Away from the nearest defender — the ball is carried
-               on the arm furthest from the hit, which is both the coaching
-               point and the side you can actually see it on. */
-            var side = (c.y < WID / 2) ? -1 : 1;
-            var near = null, nd = 1e9;
-            for (var ci = 0; ci < state.players.length; ci++) {
-              var o = state.players[ci];
-              if (o.team === c.team || o.flagPulled) continue;
-              var od = Math.hypot(o.x - c.x, o.y - c.y);
-              if (od < nd) { nd = od; near = o; }
-            }
-            if (near && nd < 8) side = (near.y > c.y) ? -1 : 1;
-
+          var ce = entryOf(c);
+          if (chest && ce) {
             hostBall(chest);
-            /* AND FAR ENOUGH OUT TO BE SEEN. This was x = 0.145 in chest-local
-               space, but the torso is about 0.23 half-width there — so the
-               ball was literally inside the player's chest and the body hid it
-               from every angle. It sits outside the ribs now.
-
-               A quarterback who still has it holds it up in two hands at the
-               throwing shoulder, ready, the way the coaching points describe
-               it — not tucked away at the hip where a runner carries it. */
-            var readying = (c === state.passer && !state.handoffDone && !state.pendingThrow);
-            if (readying) {
-              ball.position.set(side * 0.33, 0.13, 0.05);
-              ball.rotation.set(0.10, side * 0.45, side * 0.55);
-            } else {
-              ball.position.set(side * 0.29, -0.03, 0.03);
-              ball.rotation.set(0, side * 0.30, side * 1.05);
-            }
+            var ready = (ce.ud.carryKey || '').slice(0, 5) === 'ready';
+            var grip = ready ? READY : CARRY;
+            // A two-handed ready position is already sided (to the throwing
+            // hand); only the one-armed tuck mirrors with the carry side.
+            var side = ready ? 1 : (ce.ud.carrySide || 1);
+            ball.position.set(grip.ball.pos[0] * side, grip.ball.pos[1], grip.ball.pos[2]);
+            ball.rotation.set(grip.ball.rot[0], grip.ball.rot[1] * side, grip.ball.rot[2] * side);
           } else {
-            // Procedural fallback rig: no bones to hang it off, so approximate.
+            /* Procedural fallback rig: no bones to hang it off, so approximate.
+               Kept at rib height rather than the old 1.15, which put it level
+               with the shoulders of a 1.76yd player. */
             hostBall(null);
-            ball.position.set(wx(c.x) + Math.cos(-(c.ang || 0)) * 0.1, 1.15, wz(c.y) + 0.35);
+            ball.position.set(wx(c.x) + Math.cos(-(c.ang || 0)) * 0.1, 1.05, wz(c.y) + 0.35);
             ball.rotation.set(0, -(c.ang || 0), 0.4);
           }
         } else {
           hostBall(null);
           ball.position.set(wx(state.ball.x), 1.0, wz(state.ball.y));
         }
+        applyTransfer(state, dt);
       } else { ball.visible = false; ballShadow.visible = false; }
 
       // Consume engine transient anims (flag/td/incomplete) so they don't leak
@@ -905,6 +1075,9 @@
 
     function stop() {
       if (ro) ro.disconnect(); else global.removeEventListener('resize', resize);
+      // Put the ball back in the scene first: parented to a player's bone it
+      // would leave with that player's holder and miss the disposal sweep.
+      hostBall(null);
       slashInk.dispose();
       // Dispose Player3D instances (mixer + geometry/materials) and their rings.
       pMeshes.forEach(function (e) {
@@ -925,6 +1098,11 @@
 
     return {
       pick: pick, pickGround: pickGround,
+      /* Exposed for the headless verification sweep only: with the camera it can
+         project a world point to the screen and check the thing it is asserting
+         about is actually where it says, instead of re-deriving updateCamera()
+         and grading the renderer against a copy of the renderer. */
+      camera: camera, ball: ball,
       render: render, resize: resize, stop: stop };
   }
 
@@ -1037,14 +1215,70 @@
     return m;
   }
 
+  /* The painted leather: two white nose stripes and a lace panel. Measured
+     from the broadcast camera the ball is only 16-24 pixels long, and a plain
+     dark-brown ellipse that size disappears against turf and against dark
+     jerseys. The white is what a real ball has for exactly the same reason —
+     it is what makes the shape read as a football at a distance rather than a
+     smudge, and it turns the spiral into something you can see spinning. */
+  function ballTexture(THREE) {
+    var c = document.createElement('canvas'); c.width = 128; c.height = 64;
+    var x = c.getContext('2d');
+    x.fillStyle = '#8a4f22'; x.fillRect(0, 0, 128, 64);
+    // v runs pole-to-pole along the long axis, so the stripes are rows.
+    x.fillStyle = '#f4f0e6';
+    x.fillRect(0, 9, 128, 4);
+    x.fillRect(0, 51, 128, 4);
+    // Laces: a short run of ticks along one meridian, across the middle.
+    for (var i = 0; i < 6; i++) x.fillRect(30, 23 + i * 3.2, 9, 1.8);
+    x.fillRect(33, 22, 3, 21);
+    var tex = new THREE.CanvasTexture(c);
+    if ('colorSpace' in tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
   function makeBall(THREE) {
     /* Regulation, near enough. 1 unit = 1 yard, and an American football is
        11in long by 6.7in through the middle — 0.306 x 0.186 units. This was
        0.19r scaled 1.6, i.e. 0.61 x 0.38: dead on twice the size in every
-       direction, which is why it read as a rugby ball. */
-    var geo = new THREE.SphereGeometry(0.095, 14, 10);
+       direction, which is why it read as a rugby ball.
+
+       rotateZ before the stretch puts the sphere's poles on the LONG axis, so
+       the points of the ball are the poles and the texture's v runs nose to
+       nose — which is what lets the stripes sit where they do on a real one. */
+    var geo = new THREE.SphereGeometry(0.095, 18, 12);
+    geo.rotateZ(Math.PI / 2);
     geo.scale(1.62, 1, 1);
-    return new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: 0x7a4a20 }));
+    var ball = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({
+      map: ballTexture(THREE),
+      // A little emissive so the ball never goes to black silhouette in the
+      // shadow of the stand, which is where half the field is.
+      emissive: 0x2a1a0c
+    }));
+
+    /* THE GHOST — the ball you can see through a body.
+
+       Measured over a live drive, the carrier's own torso or a team-mate is
+       between the lens and the ball in five frames out of eight: the chase
+       camera sits behind the player carrying it, which is precisely the angle
+       that hides it. Everything else here is a real object lit by real lights,
+       and this is the one deliberate cheat.
+
+       It is a second copy of the ball drawn with depthFunc GreaterDepth, so it
+       renders ONLY on the fragments that FAIL the ordinary depth test — the
+       part of the ball something is in front of. Where the ball is in clear
+       view its own front faces are already at exactly that depth, the test is
+       "greater", equal is not greater, and the ghost draws nothing at all. It
+       costs one draw call and it cannot be seen when it isn't needed. */
+    var ghost = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+      // Warm and light: it has to separate from green turf and from a jersey
+      // in any of the nations' colours, at twenty pixels across.
+      color: 0xffd9a0, transparent: true, opacity: 0.78,
+      depthFunc: THREE.GreaterDepth, depthWrite: false, toneMapped: false
+    }));
+    ghost.renderOrder = 8;
+    ball.add(ghost);
+    return ball;
   }
 
 

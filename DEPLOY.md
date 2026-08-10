@@ -4,7 +4,8 @@ Flagster is served by GitHub Pages from the `master` branch at
 **https://alixpham.github.io/**. This file records the commit id behind each
 notable live deploy (newest first).
 
-Version tags (see `VERSION`): **v2.18.0** = `30e093f8b094fba0bc67022ef909f475bba4c950`,
+Version tags (see `VERSION`): **v2.19.0** = `PENDING`,
+**v2.18.0** = `30e093f8b094fba0bc67022ef909f475bba4c950`,
 **v2.17.0** = `343b2b4f0b234ea676b3d6e958074420ebd2cbe5`,
 **v2.16.0** = `f59df70bf4a0ea48d6717cceea9fc1c9c67a55df`,
 **v2.15.0** = `d07abdf02733e964732b082e54d2c29f55be2479`,
@@ -41,6 +42,7 @@ git proxy blocks tag pushes, so these are the authoritative version→commit rec
 
 | Date (UTC) | Commit | What shipped |
 | --- | --- | --- |
+| 2026-08-10 | `PENDING` | **v2.19.0** — you can always see the ball: a carry pose with an arm actually wrapped around it (it used to float at the armpit with the arm swinging through), a quarterback's ready position off the shoulder and into two hands, an occlusion ghost so a body in front of the ball no longer hides it, a real football texture, flight solved between release and catch height instead of ground-to-ground plus a fudge, a transfer tween so hand-offs and catches travel instead of teleporting, and a camera that keeps a sideline throw in frame |
 | 2026-08-10 | `30e093f8b094fba0bc67022ef909f475bba4c950` | **v2.18.0** — the skate fixed at its source: separation resolved in velocity instead of teleporting bodies apart, animation driven by real displacement rather than intent, the carrier turning into their own juke, and the ball moved outside the ribs (it was inside the torso mesh) onto the arm away from the defender |
 | 2026-08-10 | `343b2b4f0b234ea676b3d6e958074420ebd2cbe5` | **v2.17.0** — REALISM.md Phase 6 (clock, halves, penalties): two 20-minute halves with a continuously running clock, alternating-possession overtime, flag guarding, and real laterals — the last of the six phases |
 | 2026-08-10 | `f59df70bf4a0ea48d6717cceea9fc1c9c67a55df` | **v2.16.0** — REALISM.md Phase 5 (presentation): players are no longer ten copies of one body, the ball sits on the turf and is actually snapped, and the field has a spot and a down marker |
