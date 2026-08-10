@@ -162,6 +162,28 @@
       scene.add(makeEndZone(THREE, homeCols[0], 30));
     }
 
+    /* E3 — the field had no ball spot and no down marker: two of the things
+       you would see in any photograph of a game. Cheap, and they make the
+       yardage legible. */
+    var spotMark = new THREE.Mesh(
+      new THREE.RingGeometry(0.26, 0.42, 20),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.75, depthWrite: false }));
+    spotMark.rotation.x = -Math.PI / 2; spotMark.position.y = 0.03;
+    spotMark.visible = false; scene.add(spotMark);
+
+    var downMark = new THREE.Group();
+    (function () {
+      var post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.7, 8),
+        new THREE.MeshLambertMaterial({ color: 0xd8d8d8 }));
+      post.position.y = 0.85;
+      var board = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.62, 0.07),
+        new THREE.MeshLambertMaterial({ color: 0xff8c1a }));
+      board.position.y = 1.85;
+      downMark.add(post); downMark.add(board);
+      downMark.visible = false;
+      scene.add(downMark);
+    })();
+
     // Dynamic markers: line of scrimmage (blue), line-to-gain (yellow)
     var losLine = makeYardMarker(THREE, 0x3c82ff);
     var ltgLine = makeYardMarker(THREE, 0xffdc28);
@@ -197,7 +219,17 @@
     function hostBall(node) {
       if (ballHost === node) return;
       if (node) node.add(ball); else scene.add(ball);
-      ball.scale.setScalar(node ? 1 / PLAYER_SCALE : 1);
+      /* Undo whatever the host is scaled by, so the ball stays regulation size
+         in the world. Players are no longer uniformly scaled (E1), so this has
+         to read the actual world scale rather than assume PLAYER_SCALE. */
+      if (node) {
+        node.updateWorldMatrix(true, false);
+        var ws = new THREE.Vector3();
+        node.matrixWorld.decompose(new THREE.Vector3(), new THREE.Quaternion(), ws);
+        ball.scale.set(1 / (ws.x || 1), 1 / (ws.y || 1), 1 / (ws.z || 1));
+      } else {
+        ball.scale.setScalar(1);
+      }
       ballHost = node;
     }
     // A named bone or socket on the player holding the ball, if the rigged
@@ -287,6 +319,33 @@
       return ring;
     }
 
+    /* Height/build per player. Deterministic in the player's own id, so a
+       given athlete is the same size every time you see them. */
+    var BUILD = {
+      WR:   { h:  0.030, w: -0.035 },
+      CB:   { h:  0.022, w: -0.030 },
+      S:    { h:  0.018, w: -0.018 },
+      QB:   { h:  0.010, w:  0.000 },
+      MLB:  { h: -0.005, w:  0.035 },
+      RB:   { h: -0.018, w:  0.030 },
+      RUSH: { h: -0.010, w:  0.055 },
+      C:    { h: -0.028, w:  0.070 }
+    };
+    function bodyOf(gp, idx) {
+      var key = gp.pos || gp.slot || 'QB';
+      var d = BUILD[key] || BUILD.QB;
+      var spd = (gp.data && gp.data.speed) || 70;
+      // Faster players carry less: a little taller, a little leaner.
+      var lean = (spd - 70) / 60;                    // roughly -0.5 .. +0.5
+      // A stable per-player wobble so a squad isn't ten clones of two moulds.
+      var seed = 0, id = String((gp.data && gp.data.id) || gp.last || idx);
+      for (var i = 0; i < id.length; i++) seed = (seed * 31 + id.charCodeAt(i)) & 0xffff;
+      var jitter = ((seed % 1000) / 1000 - 0.5) * 0.030;
+      var h = PLAYER_SCALE * (1 + d.h + lean * 0.020 + jitter);
+      var w = PLAYER_SCALE * (1 + d.w - lean * 0.030 - jitter * 0.5);
+      return { h: h, w: w };
+    }
+
     function rebuildPlayers(players) {
       // Dispose old Player3D instances + their holders/rings.
       pMeshes.forEach(function (e) {
@@ -306,7 +365,18 @@
           number: (gp.num != null ? gp.num : ''),
           name: (gp.last || '')
         });
-        P.root.scale.setScalar(PLAYER_SCALE);
+        /* E1 — NOT EVERY PLAYER IS THE SAME PERSON. One rig, one height, one
+           build, for all ten on the field: a 99-speed receiver and a centre
+           were identical silhouettes, because PLAYER_SCALE was a single
+           constant applied to everybody.
+
+           Height comes off the position and the speed rating — receivers and
+           defensive backs run tall and light, the centre and the rusher are
+           shorter and thicker — with a small deterministic wobble per player
+           so no two are stamped from the same die. Width is scaled against
+           height so the taller ones read lean rather than merely bigger. */
+        var b = bodyOf(gp, idx);
+        P.root.scale.set(b.w, b.h, b.w);
         // Players cast shadows onto the turf so they sit ON the field.
         P.root.traverse(function (o) { if (o.isMesh) { o.castShadow = true; o.receiveShadow = false; } });
         if (P.setPlateScale) P.setPlateScale(0.55);   // small, broadcast-style tag
@@ -681,6 +751,15 @@
       var sl = engine && engine.slash;
       slashInk.set(sl && sl.owner ? [sl.owner].concat(sl.pts) : null, dt);
 
+      // Ball spot + down marker on the sideline, level with the spot.
+      if (state.losX != null && state.phase !== 'final') {
+        spotMark.visible = true;
+        spotMark.position.set(wx(state.ballSpot ? state.ballSpot.x : state.losX), 0.03,
+                              wz(state.ballSpot ? state.ballSpot.y : WID / 2));
+        downMark.visible = true;
+        downMark.position.set(wx(state.losX), 0, wz(WID) + 1.4);
+      } else { spotMark.visible = false; downMark.visible = false; }
+
       // Line of scrimmage & line-to-gain
       if (state.losX != null && state.phase !== 'final') {
         losLine.visible = true; losLine.position.x = wx(state.losX);
@@ -720,6 +799,20 @@
           hostBall(carryNode(state.pendingThrow.thrower, 'Socket_Hand_R'));
           ball.position.set(0, 0, 0.02);
           ball.rotation.set(0, Math.PI / 2, 0.25);
+        } else if (state.snapFly && state.carrier) {
+          // Mid-snap: the ball is on its way from the turf to the hands.
+          hostBall(null);
+          var k = clamp(state.snapFly.t / state.snapFly.dur, 0, 1);
+          var sf = state.snapFly.from;
+          ball.position.set(
+            wx(sf.x + (state.carrier.x - sf.x) * k), 0.12 + 0.9 * k,
+            wz(sf.y + (state.carrier.y - sf.y) * k));
+          ball.rotation.set(0, Math.atan2(-(state.carrier.y - sf.y), (state.carrier.x - sf.x)), 0.5);
+        } else if (state.ball.onGround) {
+          // E2 — sitting on the spot, waiting to be snapped.
+          hostBall(null);
+          ball.position.set(wx(state.ball.x), 0.11, wz(state.ball.y));
+          ball.rotation.set(0, 0, Math.PI / 2);       // resting on its side
         } else if (state.carrier) {
           /* CARRIED. This used to be a world-space guess — a fixed height of
              1.15 with an offset along fixed world axes — so the ball hung at a
