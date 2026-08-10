@@ -574,6 +574,20 @@
     var tx = origin.x + wp.x;
     var ty = origin.y + wp.y * side;
     ty = clamp(ty, 1, FIELD_WID - 1);
+    /* D4 — THE BREAK RESPONDS TO LEVERAGE. Routes were static waypoint lists
+       mirrored by which side the receiver lined up on: the same break at the
+       same spot whether the corner was sitting inside, outside, or nowhere.
+       A receiver breaks AWAY from where the defender is leaning, which is what
+       makes leverage (D2) worth holding in the first place. */
+    var lean = 0;
+    for (var li = 0; li < s.players.length; li++) {
+      var o = s.players[li];
+      if (o.team === p.team || o.flagPulled) continue;
+      if (dist(o, p) > 4.5) continue;
+      lean += (o.y > p.y ? -1 : 1);          // push the break off their leverage
+    }
+    if (lean) ty = clamp(ty + clamp(lean, -1, 1) * 1.1, 1, FIELD_WID - 1);
+
     var target = { x: tx, y: ty };
 
     /* Route's been run and the play is still alive. Only the verticals used to
@@ -916,29 +930,83 @@
     this._seek(p, { x: goalX, y: ty }, dt, 1.0);
   };
 
+  /* D3 — THE QUARTERBACK HAS A PROGRESSION.
+
+     This threw on a fixed timer to whoever had 2.2 yards of separation, and
+     never threw the ball away. Two consequences: the ball only ever went to a
+     genuinely open man, which is why nothing was ever intercepted, and there
+     was no such thing as a bad decision.
+
+     Now there is a read order, and pressure compresses it. Clean pocket: work
+     the progression and wait for real separation. Rusher bearing down, or the
+     seven-second clock running out: take what's there, which is sometimes a
+     window far too tight — and that is where interceptions come from. With
+     nothing at all and no time left, throw it away rather than eat the down. */
   Engine.prototype._aiThrow = function () {
     var s = this.state;
-    var off = s.players.filter(function (p) { return p.team === this.offenseTeam() && p.slot !== 'QB'; }, this);
+    var qb = s.carrier;
+    if (!qb) return false;
+    var off = s.players.filter(function (p) { return p.team === this.offenseTeam() && p !== qb; }, this);
     var def = s.players.filter(function (p) { return p.team === this.defenseTeam(); }, this);
-    // pick most open receiver
-    var best = null, bestScore = -1, bestSep = 0;
-    off.forEach(function (r) {
-      if (r.flagPulled) return;
-      var sep = 99;
-      def.forEach(function (d) { if (!d.flagPulled) sep = Math.min(sep, dist(r, d)); });
-      var downfield = r.x - s.losX;
-      var score = sep + downfield * 0.2;
-      if (score > bestScore) { bestScore = score; best = r; bestSep = sep; }
+
+    // How much heat is on: distance to the nearest defender who is coming.
+    var heat = 99;
+    for (var i = 0; i < def.length; i++) {
+      if (def[i].flagPulled) continue;
+      var dd = dist(def[i], qb);
+      if (dd < heat) heat = dd;
+    }
+    var pressured = heat < 3.2;
+    var late = s.snapT > PASS_CLOCK - 1.8;
+
+    // Read order: the play names one, otherwise nearest-to-deepest.
+    var order = (s.offPlay && s.offPlay.reads) || ['WR1', 'WR2', 'RB', 'C'];
+    var ranked = [];
+    order.forEach(function (slot) {
+      var r = off.filter(function (p) { return p.slot === slot; })[0];
+      if (r && !r.flagPulled) ranked.push(r);
     });
-    if (!best) return false;
-    /* And don't throw it just because the clock says 1.6s. Nobody open yet
-       means hold the ball and let them keep working — the pocket timer makes
-       the decision soon enough, and after that the quarterback tucks and runs.
-       Throwing on a stopwatch into blanket coverage is what made the CPU
-       complete barely a third of its passes. */
-    if (bestSep < AI_MIN_SEP && s.snapT < AI_FORCE_THROW_AT) return false;
-    this.throwTo(best.slot);
-    return true;
+    off.forEach(function (r) { if (!r.flagPulled && ranked.indexOf(r) < 0) ranked.push(r); });
+    if (!ranked.length) return false;
+
+    function sepOf(r) {
+      var sep = 99;
+      for (var k = 0; k < def.length; k++) {
+        if (def[k].flagPulled) continue;
+        var q = dist(r, def[k]);
+        if (q < sep) sep = q;
+      }
+      return sep;
+    }
+
+    // What counts as open shrinks as the pocket does.
+    var want = AI_MIN_SEP;
+    if (pressured) want = 1.70;
+    if (late) want = Math.min(want, 1.15);
+
+    // Work the read order and take the first man who is open enough.
+    for (var j = 0; j < ranked.length; j++) {
+      if (sepOf(ranked[j]) >= want) { this.throwTo(ranked[j].slot); return true; }
+    }
+
+    // Nobody open. Hold it unless we're out of road.
+    if (!pressured && !late && s.snapT < AI_FORCE_THROW_AT) return false;
+
+    // Out of road: force it to the best of a bad set, or throw it away.
+    var best = null, bestSep = -1;
+    ranked.forEach(function (r) { var q = sepOf(r); if (q > bestSep) { bestSep = q; best = r; } });
+    if (late && bestSep < 0.9) { this._throwAway(qb); return true; }
+    if (best) { this.throwTo(best.slot); return true; }
+    return false;
+  };
+
+  /* Out of bounds, deliberately. Costs the down, saves the sack, and cannot be
+     intercepted — which is exactly the trade a quarterback is making. */
+  Engine.prototype._throwAway = function (qb) {
+    var s = this.state;
+    this._flash('Thrown away');
+    this.onEvent({ type: 'throwaway' });
+    this._incomplete('Thrown away', { x: qb.x, y: qb.y < FIELD_WID / 2 ? 0.5 : FIELD_WID - 0.5 });
   };
 
   /* B3 — PURSUIT ANGLES.
@@ -995,10 +1063,20 @@
       this._seek(d, tgt, dt, 1.0);
       return;
     }
+    /* D1 — NOT EVERYONE BREAKS ON THE THROW.
+
+       The moment the ball was airborne all five defenders were sent at the
+       catch point, so zone discipline, trail technique and second-level help
+       all evaporated on every single pass. Only a defender who can plausibly
+       get there plays it: the man covering the target, or anyone close enough
+       to the arrival point to matter. Everybody else stays in coverage, which
+       is what leaves someone home when the ball goes somewhere else. */
     if (s.ball && s.ball.inAir) {
-      // break on the ball
-      this._seek(d, s.ball.to, dt, 1.05);
-      return;
+      var to = s.ball.to;
+      var covering = (d.cover && d.cover === s.thrownTo);
+      var reachable = Math.hypot(to.x - d.x, to.y - d.y) < BREAK_RADIUS;
+      if (covering || reachable) { this._seek(d, to, dt, 1.05); return; }
+      // otherwise fall through and keep playing your assignment
     }
     if (s.carrier && s.carrier !== s.passer) {
       // Pursue where the carrier is GOING, not where they are.
@@ -1008,13 +1086,15 @@
       return;
     }
     if (d.cover) {
-      // man coverage: shadow, stay goal-side. Same shuffle as the zone — a
-      // defender matched exactly to a stationary receiver would otherwise
-      // freeze alongside them.
+      /* Man coverage: shadow, stay goal-side, and hold LEVERAGE — sit a little
+         to the inside so the throw has to go to the sideline, where it is
+         harder and where the boundary helps. Coverage had no concept of a side
+         to defend before; a defender simply stood on the receiver. */
       var c = d.cover;
       d.shuf = (d.shuf || 0) + dt;
+      var inside = (c.y < FIELD_WID / 2) ? 1 : -1;      // toward the middle
       var target = { x: c.x + 0.6 + Math.sin(d.shuf * 1.9) * 0.35,
-                     y: c.y + Math.cos(d.shuf * 1.5) * 0.45 };
+                     y: c.y + inside * 0.75 + Math.cos(d.shuf * 1.5) * 0.45 };
       this._seek(d, target, dt, 0.98);
     } else if (d.zone) {
       /* A landmark is a fixed point, and a defender who reaches a fixed point
@@ -1076,7 +1156,8 @@
      tips, break-ups and contested catches all fall out of the same comparison
      instead of each needing a branch. */
   var CATCH_RADIUS = 2.4;                 // yards from the ball you can play it
-  var CATCH_NEED = 0.58;                  // how good the play on it has to be
+  var CATCH_NEED = 0.495;                  // how good the play on it has to be
+  var DEF_READ = 0.96;                    // a defender's expectation, vs 1.0 for the target
 
   Engine.prototype._resolveCatch = function () {
     var s = this.state, b = s.ball;
@@ -1105,8 +1186,23 @@
         face = 0.62 + 0.38 * clamp((dot + 1) / 2, 0, 1);
       }
       // The intended receiver knows it's coming; everyone else is reacting.
-      var expectation = (p === receiver) ? 1.0 : (isOff ? 0.72 : 0.80);
-      var bonus = (!this.demo && isOff && p.team === this.userSide) ? this.difficulty.catchBonus : 0;
+      /* A defender is reacting rather than expecting it, but not by as much as
+         0.80 implied — at that value one standing alone at the arrival point
+         still could not clear the bar, which is why nothing was ever picked
+         off. DEF_READ is what a defender's read is worth. */
+      var expectation = (p === receiver) ? 1.0 : (isOff ? 0.72 : DEF_READ);
+      /* THE UNDERCUT — where interceptions actually come from. A defender who
+         is covering the intended man and has got IN FRONT of them, between the
+         receiver and the thrower, has read the route and jumped it. Without
+         this a defender can only ever arrive alongside and contest, which is a
+         break-up; nothing was ever picked off. */
+      var undercut = 0;
+      if (!isOff && receiver && p.cover === receiver && b.from) {
+        var dp = Math.hypot(p.x - b.from.x, p.y - b.from.y);
+        var dr = Math.hypot(receiver.x - b.from.x, receiver.y - b.from.y);
+        if (dp < dr - 0.3) undercut = clamp((dr - dp) * 0.30, 0, 0.35);
+      }
+      var bonus = ((!this.demo && isOff && p.team === this.userSide) ? this.difficulty.catchBonus : 0) + undercut;
       var score = reach * (0.45 + 0.55 * skill) * face * expectation
                 * (0.72 + 0.56 * Math.random()) + bonus;
       contenders.push({ p: p, isOff: isOff, score: score, d: d });
@@ -1312,6 +1408,7 @@
      is a little under the flag-pull reach, so it never pushes a defender out
      of range of a grab they had earned. */
   var BODY_R = 0.45;
+  var BREAK_RADIUS = 9;                  // how near the catch you must be to leave coverage
   Engine.prototype._separate = function () {
     var ps = this.state.players;
     if (!ps) return;
