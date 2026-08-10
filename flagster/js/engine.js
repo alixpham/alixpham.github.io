@@ -170,7 +170,7 @@
       data: playerData, team: team, slot: slot,
       x: spot.x, y: spot.y, vx: 0, vy: 0, ang: 0,
       route: routeKey, wp: 0, flagPulled: false,
-      jukeCd: 0, jukeFx: 0, jukeCount: 0, stun: 0, jukeImpT: 0, stam: 1,
+      jukeCd: 0, jukeFx: 0, jukeCount: 0, stun: 0, stam: 1,
       cover: null, isUser: false, animPhase: 0,
       pos: playerData.pos, last: playerData.last, ovr: playerData.ovr, num: playerData.num
     };
@@ -436,6 +436,9 @@
     // Flag-pull checks (defender near carrier)
     if (s.carrier) this._checkFlagPull(def);
 
+    // Two bodies cannot occupy the same yard.
+    this._separate();
+
     // Rules that are checked every frame while the ball is live
     this._checkRules(dt, def);
     if (s.phase !== 'live') return;
@@ -481,18 +484,12 @@
       if (p.jukeCd > 0) p.jukeCd = Math.max(0, p.jukeCd - dt);
       if (p.jukeFx > 0) p.jukeFx = Math.max(0, p.jukeFx - dt);
       if (p.stun > 0) p.stun = Math.max(0, p.stun - dt);
-      /* The sidestep, spread over a few frames. It used to be a single
-         teleport: the carrier's x/y jumped 0.9yd between one frame and the
-         next, with vx/vy untouched, so the renderer saw a stationary player
-         who had changed places and the move read as a glitch rather than a
-         cut. */
-      if (p.jukeImpT > 0) {
-        var k = Math.min(dt, p.jukeImpT);
-        p.x = clamp(p.x + p.jukeIx * k, 0, FIELD_LEN);
-        p.y = clamp(p.y + p.jukeIy * k, 0, FIELD_WID);
-        p.vx = p.jukeIx; p.vy = p.jukeIy;      // so the body actually turns into it
-        p.jukeImpT = Math.max(0, p.jukeImpT - dt);
-      }
+      /* The sidestep used to be scripted here — first a teleport, then a
+         positional impulse integrated over a fifth of a second — because the
+         movement model had no momentum for a juke to work against. It does
+         now, so the juke is a change of MOMENTUM applied once at the moment of
+         the cut (see juke()), and the ordinary steering carries and then bleeds
+         it off. Nothing to drive per-frame any more. */
     }
   };
 
@@ -626,6 +623,71 @@
     }
   };
 
+  /* B1 — MOMENTUM.
+
+     _seek and _moveByInput used to assign velocity directly:
+
+         p.vx = dx / m * spd;  p.vy = dy / m * spd;
+
+     so every player went from a standstill to top speed in one frame and could
+     reverse at a sprint for free. Speed and agility barely mattered, because
+     nobody ever spent time accelerating — which is exactly where a fast player
+     separates — and a 90-degree cut cost nothing.
+
+     Everything now steers: changes to velocity are rate-limited, braking is
+     stronger than accelerating, turning is limited harder still, and a hard
+     turn sheds speed. Roughly half a second from rest to top speed for a good
+     athlete, which is about right. */
+  Engine.prototype._accelOf = function (p) {
+    var d = p.data || {};
+    var agi = d.agi == null ? 70 : d.agi, spd = d.speed == null ? 70 : d.speed;
+    return 8.5 + (agi - 55) / 44 * 5.0 + (spd - 55) / 44 * 2.0;   // yd/s^2
+  };
+
+  /* Steer toward a desired velocity and integrate. The one place velocity is
+     allowed to change. */
+  Engine.prototype._steer = function (p, dvx, dvy, dt) {
+    var vx = p.vx || 0, vy = p.vy || 0;
+    var A = this._accelOf(p);
+    var sp = Math.hypot(vx, vy);
+    var ddx = dvx - vx, ddy = dvy - vy;
+
+    if (sp > 0.05) {
+      // Split the wanted change into along-track (speed) and cross-track (turn).
+      var ux = vx / sp, uy = vy / sp;
+      var along = ddx * ux + ddy * uy;
+      var cx = ddx - along * ux, cy = ddy - along * uy;
+      var cm = Math.hypot(cx, cy);
+      var maxAlong = (along >= 0 ? A : A * 1.7) * dt;    // you stop faster than you start
+      var maxCross = A * 0.62 * dt;                      // turning is the hardest of the three
+      if (along > maxAlong) along = maxAlong;
+      else if (along < -maxAlong) along = -maxAlong;
+      if (cm > maxCross) { cx = cx / cm * maxCross; cy = cy / cm * maxCross; }
+      vx += along * ux + cx; vy += along * uy + cy;
+
+      // A hard change of direction costs speed — you cannot carry a sprint
+      // through a cut.
+      var nsp = Math.hypot(vx, vy);
+      if (nsp > 0.05) {
+        var dot = (vx * ux + vy * uy) / nsp;
+        var turn = Math.acos(clamp(dot, -1, 1));
+        if (turn > 0.30) {
+          var keep = 1 - Math.min(0.45, (turn - 0.30) * 0.9);
+          vx *= keep; vy *= keep;
+        }
+      }
+    } else {
+      var m = Math.hypot(ddx, ddy), lim = A * dt;
+      if (m > lim) { ddx = ddx / m * lim; ddy = ddy / m * lim; }
+      vx += ddx; vy += ddy;
+    }
+
+    p.vx = vx; p.vy = vy;
+    p.x = clamp(p.x + vx * dt, 0, FIELD_LEN);
+    p.y = clamp(p.y + vy * dt, 0, FIELD_WID);
+    if (Math.hypot(vx, vy) > 0.05) p.ang = Math.atan2(vy, vx);
+  };
+
   Engine.prototype._seek = function (p, target, dt, spdMul) {
     var spd = this.speedYds(p.data.speed) * (spdMul || 1) * this.staminaScale(p);
     // Give a human ball carrier a fighting chance: CPU defenders run at a
@@ -638,12 +700,9 @@
     // Standing exactly on the target used to divide by the `|| 1` fallback and
     // produce a hard zero — a player frozen mid-stride. Just short of it they
     // overshot and buzzed. Ease through the last half-yard instead.
-    if (m < 1e-4) { p.vx = 0; p.vy = 0; return; }
+    if (m < 1e-4) { this._steer(p, 0, 0, dt); return; }
     if (m < 0.5) spd *= m / 0.5;
-    p.vx = dx / m * spd; p.vy = dy / m * spd;
-    p.x = clamp(p.x + p.vx * dt, 0, FIELD_LEN);
-    p.y = clamp(p.y + p.vy * dt, 0, FIELD_WID);
-    if (m > 0.05) p.ang = Math.atan2(dy, dx);
+    this._steer(p, dx / m * spd, dy / m * spd, dt);
   };
 
   /* Input is given in SCREEN space (dx = right, dy = down). The camera sits
@@ -677,13 +736,13 @@
       fy = (dx / m) * sgn;               // screen right -> across the field
     } else {
       var step = this._slashHeading(p);
-      if (!step) { p.vx = 0; p.vy = 0; return; }
+      if (!step) { this._steer(p, 0, 0, dt); return; }   // coast down, don't stop dead
       fx = step.fx; fy = step.fy;
     }
 
-    p.vx = fx * spd; p.vy = fy * spd;
-    p.x = clamp(p.x + p.vx * dt, 0, FIELD_LEN);
-    p.y = clamp(p.y + p.vy * dt, 0, FIELD_WID);
+    // Same momentum as everyone else — the human doesn't get to teleport
+    // between velocities either.
+    this._steer(p, fx * spd, fy * spd, dt);
     p.ang = Math.atan2(fy, fx);
   };
 
@@ -847,6 +906,44 @@
     return true;
   };
 
+  /* B3 — PURSUIT ANGLES.
+
+     _aiDefender used to seek the carrier's CURRENT position, so a defender
+     chasing someone moving away was always aimed at where they had just been
+     and could never close. Real pursuit solves an intercept: where will they be
+     when I can get there, given how fast I am? Same quadratic every missile
+     guidance problem uses.
+
+     This is what contains the run now that the rusher lines up seven yards off
+     the ball where the rule puts them. */
+  Engine.prototype._interceptPoint = function (chaser, target, chaserSpeed) {
+    var rx = target.x - chaser.x, ry = target.y - chaser.y;
+    var vx = target.vx || 0, vy = target.vy || 0;
+    var a = vx * vx + vy * vy - chaserSpeed * chaserSpeed;
+    var b = 2 * (rx * vx + ry * vy);
+    var c = rx * rx + ry * ry;
+    var t;
+    if (Math.abs(a) < 1e-4) {
+      t = (Math.abs(b) < 1e-6) ? 0 : -c / b;
+    } else {
+      var disc = b * b - 4 * a * c;
+      if (disc < 0) t = 0;                       // can't be caught: run at them anyway
+      else {
+        var sq = Math.sqrt(disc);
+        var t1 = (-b + sq) / (2 * a), t2 = (-b - sq) / (2 * a);
+        var best = Infinity;
+        if (t1 > 0 && t1 < best) best = t1;
+        if (t2 > 0 && t2 < best) best = t2;
+        t = (best === Infinity) ? 0 : best;
+      }
+    }
+    t = clamp(t, 0, 2.5);
+    return {
+      x: clamp(target.x + vx * t, 0, FIELD_LEN),
+      y: clamp(target.y + vy * t, 0, FIELD_WID)
+    };
+  };
+
   Engine.prototype._aiDefender = function (d, dt) {
     var s = this.state;
     // Caught flat-footed by a juke. Zero the velocity too — the renderer reads
@@ -856,6 +953,10 @@
     if (d.blitz && (!s.carrier || s.carrier.slot === 'QB' || s.ball.inAir === false)) {
       // rush the passer / chase carrier
       var tgt = s.carrier || (s.thrownTo || { x: s.losX - 4, y: FIELD_WID / 2 });
+      if (tgt === s.carrier && tgt !== s.passer) {
+        var bspd = this.speedYds(d.data.speed) * this.staminaScale(d);
+        tgt = this._interceptPoint(d, tgt, bspd);
+      }
       this._seek(d, tgt, dt, 1.0);
       return;
     }
@@ -864,9 +965,11 @@
       this._seek(d, s.ball.to, dt, 1.05);
       return;
     }
-    if (s.carrier && s.carrier.slot !== 'QB') {
-      // pursue the ball carrier
-      this._seek(d, s.carrier, dt, 1.0);
+    if (s.carrier && s.carrier !== s.passer) {
+      // Pursue where the carrier is GOING, not where they are.
+      var spd = this.speedYds(d.data.speed) * this.staminaScale(d) *
+                ((!this.demo && this.difficulty && d.team !== this.userSide) ? this.difficulty.defSpeed : 1);
+      this._seek(d, this._interceptPoint(d, s.carrier, spd), dt, 1.0);
       return;
     }
     if (d.cover) {
@@ -1057,15 +1160,26 @@
       c.jukeCd = 0.35;
     }
 
-    // Sidestep away from whoever was on you, or across your own line of travel.
+    /* A real weight shift: shove momentum sideways, across the engagement, and
+       let the movement model deal with the consequences. The carrier now has
+       lateral velocity they have to steer out of, which is what a cut costs —
+       and because a hard turn sheds speed, breaking one way genuinely gives
+       something up to gain the separation. */
     var dx, dy;
     if (held) { dx = c.x - held.x; dy = c.y - held.y; }
     else { dx = -(c.vy || 0); dy = (c.vx || 1); }
     var m = Math.hypot(dx, dy) || 1;
-    var burst = 8.0 * (held ? eff : 0.6);
-    c.jukeIx = (-dy / m) * burst;          // perpendicular to the engagement
-    c.jukeIy = (dx / m) * burst;
-    c.jukeImpT = 0.20;                     // ~1.6yd of lateral break, over frames
+    var burst = 7.0 * (held ? eff : 0.5);
+    c.vx = (c.vx || 0) + (-dy / m) * burst;   // perpendicular to the engagement
+    c.vy = (c.vy || 0) + (dx / m) * burst;
+    /* A cut REDIRECTS momentum, it does not manufacture it. Without this cap
+       the sideways shove simply adds to the carrier's speed and the juke turns
+       into a free burst of pace — measured as yards-per-run jumping from 8.0
+       back to 11.1. Capping at their own top speed means breaking sideways is
+       paid for out of going forwards, which is what a cut is. */
+    var maxSp = this.speedYds(c.data.speed) * this.staminaScale(c);
+    var sp = Math.hypot(c.vx, c.vy);
+    if (sp > maxSp) { c.vx = c.vx / sp * maxSp; c.vy = c.vy / sp * maxSp; }
 
     c.jukeFx = 0.35;                       // renderer/UX cue
     this._flash(held ? 'Juke!' : 'Sidestep');
@@ -1104,6 +1218,39 @@
      A2 (second half) — a defender who did not line up 7 yards back may not
      cross the line while the passer still has the ball. Illegal rush: five
      yards and replay the down. */
+  /* B2 — SOFT SEPARATION.
+
+     There was no collision code anywhere in the repo, so a defender and a
+     receiver could stand in the same yard and render as one merged figure.
+
+     Blocking is illegal in flag football, so this deliberately is NOT a
+     blocking system: it is positional only, applied equally to both bodies,
+     with no momentum transfer and no effect on velocity. You cannot lean on
+     someone to move them — you can only fail to stand inside them. The radius
+     is a little under the flag-pull reach, so it never pushes a defender out
+     of range of a grab they had earned. */
+  var BODY_R = 0.45;
+  Engine.prototype._separate = function () {
+    var ps = this.state.players;
+    if (!ps) return;
+    for (var i = 0; i < ps.length; i++) {
+      var a = ps[i];
+      if (a.flagPulled) continue;
+      for (var j = i + 1; j < ps.length; j++) {
+        var b = ps[j];
+        if (b.flagPulled) continue;
+        var dx = b.x - a.x, dy = b.y - a.y;
+        var d2 = dx * dx + dy * dy;
+        var min = BODY_R * 2;
+        if (d2 >= min * min || d2 < 1e-8) continue;
+        var d = Math.sqrt(d2);
+        var push = (min - d) * 0.5, ux = dx / d, uy = dy / d;
+        a.x = clamp(a.x - ux * push, 0, FIELD_LEN); a.y = clamp(a.y - uy * push, 0, FIELD_WID);
+        b.x = clamp(b.x + ux * push, 0, FIELD_LEN); b.y = clamp(b.y + uy * push, 0, FIELD_WID);
+      }
+    }
+  };
+
   Engine.prototype._checkRules = function (dt, def) {
     var s = this.state;
     var c = s.carrier;
