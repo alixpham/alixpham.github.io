@@ -205,7 +205,7 @@
       homeJersey: D.jerseysFor(homeNation.id)[0], awayJersey: D.jerseysFor(awayNation.id)[1],
       userSide: userIsHome ? 'home' : 'away',
       startPossession: userIsHome ? 'away' : 'home',
-      quarters: 4, quarterLen: 120,
+      halves: 2, halfLen: 480,
       onQuit: function () { hub(back, save); },
       onGameOver: function (res) {
         var us_ = res.userSide === 'home' ? res.score.home : res.score.away;
@@ -432,7 +432,7 @@
       home: homeNation, away: awayNation,
       homeJersey: D.jerseysFor(homeNation.id)[0], awayJersey: D.jerseysFor(awayNation.id)[1],
       userSide: userIsHome ? 'home' : 'away', startPossession: userIsHome ? 'away' : 'home',
-      quarters: 4, quarterLen: 120,
+      halves: 2, halfLen: 480,
       onQuit: function () { playoffHub(back, save); },
       onGameOver: function (res) {
         var uS = res.userSide === 'home' ? res.score.home : res.score.away;

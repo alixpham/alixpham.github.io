@@ -103,7 +103,7 @@ function playGame(gameIdx) {
   e.newGame({
     home, away,
     homeJersey: D.jerseysFor(home.id)[0], awayJersey: D.jerseysFor(away.id)[1],
-    userSide: 'home', quarters: 4, quarterLen: 150,
+    userSide: 'home',                       // periods left at the engine default (2 x 20min)
     demo: true, difficulty: DIFFICULTY
   });
   // setTimeout is stubbed out, so the engine's post-score continuations never
@@ -180,7 +180,10 @@ const box = {
   gainsOfThreeOrFewer: pct(all.filter(r => r.gained <= 3).length, all.length),
   timeToThrow: avg(thrown.map(r => r.thrownAt)),
   avgPlayLength: avg(all.map(r => r.dur)),
-  playsThatNeverResolved: all.filter(r => r.timedOut).length
+  playsThatNeverResolved: all.filter(r => r.timedOut).length,
+  regulationPlaysPerGame: +((all.filter(r => !r.ot && !r.pat).length) / GAMES).toFixed(1),
+  overtimePlays: all.filter(r => r.ot).length,
+  patPlays: all.filter(r => r.pat).length
 };
 
 if (AS_JSON) { console.log(JSON.stringify(box, null, 2)); process.exit(0); }
@@ -203,6 +206,9 @@ console.log(row('Touchdowns per play', box.touchdownsPerPlay + '%', TARGET.touch
 console.log(row('Gains of 3 yards or fewer', box.gainsOfThreeOrFewer + '%', TARGET.gainsOfThreeOrFewer));
 console.log(row('Time to throw', box.timeToThrow + 's', TARGET.timeToThrow));
 console.log(row('Plays per game', box.playsPerGame, TARGET.playsPerGame));
+console.log(row('  of which regulation', box.regulationPlaysPerGame, '45-60'));
+console.log(row('  overtime plays (total)', box.overtimePlays, ''));
+console.log(row('  conversion plays (total)', box.patPlays, ''));
 console.log(row('Avg play length', box.avgPlayLength + 's', ''));
 if (box.playsThatNeverResolved) console.log(row('NEVER RESOLVED', box.playsThatNeverResolved, '<- bug'));
 console.log('');
