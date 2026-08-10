@@ -299,6 +299,12 @@
         h('span', { class: 'sit-label', text: 'BALL ON' }),
         h('span', { class: 'sit-val js-ballon', text: '—' })
       ]),
+      // The 7-second pass clock. It decides every passing down in this sport,
+      // so it belongs on the screen, not just in the engine.
+      h('div', { class: 'sit-row js-pass-row hidden' }, [
+        h('span', { class: 'sit-label', text: 'PASS CLOCK' }),
+        h('span', { class: 'sit-val js-passclock', text: '7.0' })
+      ]),
       map
     ]);
     var bars = [];
@@ -331,6 +337,8 @@
       pc: playClock, pcNum: playClock.querySelector('.pc-num'),
       sitDd: situation.querySelector('.js-dd'),
       sitBallOn: situation.querySelector('.js-ballon'),
+      passRow: situation.querySelector('.js-pass-row'),
+      passClock: situation.querySelector('.js-passclock'),
       stripBallOn: strip.querySelector('.js-strip-ballon'),
       stripToGo: strip.querySelector('.js-strip-togo'),
       map: map, bars: bars, last: {}
@@ -413,6 +421,20 @@
     set(r.stripBallOn, 'bo2', ballOnText(s));
     set(r.stripToGo, 'tg', String(yardsToGo(s)));
 
+    /* Pass clock: only while the original passer still has it, which is
+       exactly when the rule is live. */
+    var passLive = (s.phase === 'live' && s.carrier && s.carrier === s.passer && !s.handoffDone);
+    if (last.passLive !== passLive) {
+      last.passLive = passLive;
+      r.passRow.classList.toggle('hidden', !passLive);
+    }
+    if (passLive) {
+      var left = Math.max(0, 7 - (s.snapT || 0));
+      var txt = left.toFixed(1);
+      set(r.passClock, 'pcl', txt);
+      r.passClock.classList.toggle('urgent', left <= 2.5);
+    }
+
     // Possession highlight
     var awayBall = (s.possession === 'away');
     if (last.poss !== awayBall) {
@@ -465,6 +487,7 @@
     if (s.phase !== this._lastPhase) {
       this._lastPhase = s.phase;
       if (s.phase === 'playcall') this._showPlaycall();
+      else if (s.phase === 'patchoice') this._showPATChoice();
       else this.playcallEl.classList.add('hidden');
       if (s.phase === 'presnap' || s.phase === 'live') this._showTouch();
       else if (s.phase !== 'playcall') this.touch.classList.add('hidden');
@@ -486,6 +509,32 @@
 
   GameShell.prototype._presnapHint = function () {
     if (this._hintShown) return; this._hintShown = true;
+  };
+
+  /* After a touchdown: one point from the 5, or two from the 10. There is no
+     kicking in flag football, so both are a real snap against a real defence —
+     which makes this the first genuine risk decision the game asks for. */
+  GameShell.prototype._showPATChoice = function () {
+    var self = this, eng = this.engine;
+    var el = this.playcallEl;
+    clear(el); el.classList.remove('hidden');
+    function pick(points) {
+      el.classList.add('hidden');
+      eng.choosePAT(points);
+    }
+    el.appendChild(h('div', { class: 'playcall-inner' }, [
+      h('div', { class: 'playcall-title', text: '🏈 Touchdown — go for how many?' }),
+      h('div', { class: 'play-grid pat' }, [
+        h('button', { class: 'play-card', onClick: function () { pick(1); } }, [
+          h('span', { class: 'play-icon', text: '1️⃣' }),
+          h('span', { class: 'play-name', text: '1 point — from the 5' })
+        ]),
+        h('button', { class: 'play-card', onClick: function () { pick(2); } }, [
+          h('span', { class: 'play-icon', text: '2️⃣' }),
+          h('span', { class: 'play-name', text: '2 points — from the 10' })
+        ])
+      ])
+    ]));
   };
 
   GameShell.prototype._showPlaycall = function () {
@@ -518,7 +567,10 @@
       ];
       var grid = h('div', { class: 'play-grid' });
       groups.forEach(function (g) {
-        var plays = D.PLAYS.filter(function (p) { return p.type === g.key; });
+        // No-run zones: running is illegal inside 5 of a goal line or
+        // midfield, so those plays must not be offerable, not merely unwise.
+        var legal = eng.legalPlays ? eng.legalPlays() : D.PLAYS;
+        var plays = legal.filter(function (p) { return p.type === g.key; });
         var col = h('div', { class: 'play-col' }, [h('div', { class: 'play-col-h', text: g.label })]);
         plays.forEach(function (p) {
           col.appendChild(h('button', { class: 'play-card', onClick: function () {

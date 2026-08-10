@@ -19,6 +19,10 @@
   var SLASH_REACH = 1.1;                 // yards
   var SLASH_MAX = 80;                    // waypoints; a scribble can't run forever
   var PLAY_CLOCK = 25;                   // seconds on the play clock pre-snap
+  /* IFAF rules the arcade build never modelled. */
+  var PASS_CLOCK = 7;                    // seconds to get the ball out, or it's dead
+  var RUSH_LINE = 7;                     // a rusher must start this far off the LOS
+  var NO_RUN_ZONE = 5;                   // no running plays inside 5 of a goal line or midfield
   var AI_JUKE_PER_SEC = 2.2;             // AI escape attempts per second, frame-rate free
   var AI_SCRAMBLE_AT = 3.4;              // seconds holding the ball before a QB tucks and runs
   var AI_MIN_SEP = 2.2;                  // yards of separation a CPU QB wants before throwing
@@ -119,7 +123,9 @@
 
     // Defense mirrors across the LOS
     var defSpots = {
-      RUSH:{ x: losX + 1.5, y: cy },
+      // A rusher must start 7 yards off the ball (IFAF). This used to be 1.5,
+      // which put a free runner in the quarterback's lap on every single snap.
+      RUSH:{ x: losX + RUSH_LINE, y: cy },
       MLB: { x: losX + 6, y: cy },
       CB:  { x: losX + 3, y: 4 },
       CB2: { x: losX + 3, y: FIELD_WID - 4 },
@@ -200,8 +206,11 @@
     var play = s.defPlay || D.DEF_PLAYS[0];
     def.forEach(function (d) { d.cover = null; d.blitz = false; d.zone = null; });
 
+    /* Rushing is a CALL, not a constant. `rusher.blitz = true` used to run
+       unconditionally, so Prevent Deep — a coverage whose entire point is not
+       to rush — still sent a free runner. Only calls that actually rush do. */
     var rusher = def.filter(function (d) { return d.slot === 'RUSH'; })[0];
-    if (rusher) rusher.blitz = true;
+    if (rusher && play.blitz > 0) rusher.blitz = true;
 
     if (play.id === 'blitz') {
       def.filter(function (d) { return d.slot === 'MLB'; }).forEach(function (d) { d.blitz = true; });
@@ -229,6 +238,9 @@
     var off = s.players.filter(function (p) { return p.team === this.offenseTeam(); }, this);
     var qb = off.filter(function (p) { return p.slot === 'QB'; })[0];
     s.carrier = qb;
+    // Who the original passer is, for the 7-second clock and the rule that
+    // they may not carry it across the line.
+    s.passer = qb;
     qb.hasBall = true;
     s.ball = { x: qb.x, y: qb.y, inAir: false, target: null, from: null, to: null, t: 0, dur: 0 };
     s.phase = 'live';
@@ -423,6 +435,10 @@
 
     // Flag-pull checks (defender near carrier)
     if (s.carrier) this._checkFlagPull(def);
+
+    // Rules that are checked every frame while the ball is live
+    this._checkRules(dt, def);
+    if (s.phase !== 'live') return;
 
     // Out of bounds / scoring / end zone checks
     this._checkBoundaries();
@@ -780,7 +796,10 @@
      collapses the quarterback tucks it and goes. */
   Engine.prototype._aiQBOrCarrier = function (p, dt) {
     var s = this.state;
-    if (p.slot === 'QB' && !s.autoHandoff && s.snapT < AI_SCRAMBLE_AT) {
+    if (p === s.passer && !s.handoffDone) {
+      /* The passer never becomes a runner. They work the pocket for the whole
+         seven seconds and throw it away rather than tuck it — carrying it past
+         the line is a dead ball, so "tuck and run" was never a legal out. */
       this._dropback(p, dt);
       return;
     }
@@ -1072,6 +1091,59 @@
     this._endPlay(spotX, false);
   };
 
+  /* THE RULES THAT MAKE IT FLAG FOOTBALL RATHER THAN ARCADE TACKLE.
+
+     A1 — the 7 second pass clock. IFAF gives the passer 7 seconds to get rid
+     of it; if it doesn't come out the play is dead and it's a loss of down.
+     This is the rule that makes the sport a timed read instead of a scramble
+     drill, and nothing modelled it.
+
+     A3 — the original passer may not advance the ball past the line of
+     scrimmage. They may scramble laterally and behind it all they like.
+
+     A2 (second half) — a defender who did not line up 7 yards back may not
+     cross the line while the passer still has the ball. Illegal rush: five
+     yards and replay the down. */
+  Engine.prototype._checkRules = function (dt, def) {
+    var s = this.state;
+    var c = s.carrier;
+    if (!c) return;
+    var passer = s.passer;
+
+    if (c === passer && !s.handoffDone) {
+      // A1 — out of time
+      if (s.snapT >= PASS_CLOCK) {
+        this._flash('Seven seconds — dead ball!');
+        this.onEvent({ type: 'passclock' });
+        this._endPlay(s.losX, true);
+        return;
+      }
+      // A3 — the passer crossing the line kills the play at the line
+      if (c.x > s.losX + 0.35) {
+        c.x = s.losX;
+        this._flash('Passer past the line — dead ball!');
+        this.onEvent({ type: 'passerpastline' });
+        this._endPlay(s.losX, true);
+        return;
+      }
+      // A2 — anyone rushing who didn't earn the right to
+      for (var i = 0; i < def.length; i++) {
+        var d = def[i];
+        if (d.blitz || d.flagPulled) continue;
+        if (d.x < s.losX - 0.5) { this._illegalRush(d); return; }
+      }
+    }
+  };
+
+  Engine.prototype._illegalRush = function (d) {
+    var s = this.state;
+    this._flash('Illegal rush on ' + d.last + ' — 5 yards');
+    this.onEvent({ type: 'penalty', kind: 'illegal-rush', player: d });
+    s.penaltyReplay = true;                       // same down, ball moved on
+    s.yardsToGoal = clamp(s.yardsToGoal - 5, 1, 50);
+    this._endPlay(GOAL_R - s.yardsToGoal, true);
+  };
+
   Engine.prototype._checkBoundaries = function () {
     var s = this.state;
     var c = s.carrier;
@@ -1114,6 +1186,8 @@
 
   Engine.prototype._advanceDown = function (gained, reachedMid) {
     var s = this.state;
+    // A conversion is one play: it either reached the end zone or it didn't.
+    if (s.patActive) { this._endPAT(false); return; }
     this._runClock(28 + Math.round(Math.random() * 8));
     if (s.gameOver) return;
 
@@ -1147,6 +1221,8 @@
     var s = this.state;
     this.onEvent({ type: 'turnover' });
     s.phase = 'dead';
+    // Picked off on a conversion: the conversion simply failed.
+    if (s.patActive) { setTimeout(function () { this._endPAT(false); }.bind(this), 1200); return; }
     setTimeout(function () {
       s.possession = this.defenseTeam();
       s.yardsToGoal = clamp(50 - s.yardsToGoal, 8, 45);
@@ -1159,6 +1235,7 @@
   Engine.prototype._turnoverOnDowns = function () {
     this._flash('Turnover on downs!');
     var s = this.state;
+    if (s.patActive) { setTimeout(function () { this._endPAT(false); }.bind(this), 1200); return; }
     setTimeout(function () {
       s.possession = this.defenseTeam();
       s.yardsToGoal = clamp(50 - s.yardsToGoal, 8, 45);
@@ -1172,26 +1249,89 @@
     var off = this.offenseTeam();
     this.clearSlash();            // scoring plays skip _endPlay, which usually does this
     s.phase = 'dead';
+    if (s.patActive) {            // crossing the line on a conversion is the conversion
+      this.onEvent({ type: 'touchdown', team: off, pat: true });
+      setTimeout(function () { this._endPAT(true); }.bind(this), 900);
+      return;
+    }
     s.score[off] += 6;
     s.stats[off].td++;
     this._flash('TOUCHDOWN ' + s[off].abbr + '!  🎉');
     this.anim.push({ type: 'td', t: 0, dur: 1.4 });
     this.onEvent({ type: 'touchdown', team: off });
-    setTimeout(function () {
-      // auto extra point (kick-style) success ~ 92%
-      if (Math.random() < 0.92) { s.score[off] += 1; this._flash('Extra point good!'); }
-      else this._flash('Extra point missed!');
-      this._runClock(15);
-      setTimeout(function () {
-        s.possession = this.defenseTeam();
-        s.yardsToGoal = 45; s.down = 1; s.crossedMid = false;
-        this._nextSnap();
-      }.bind(this), 900);
-    }.bind(this), 1500);
+    setTimeout(function () { this._startPAT(off); }.bind(this), 1500);
+  };
+
+  /* A5 — THE EXTRA POINT IS A PLAY.
+
+     There is no kicking of any kind in flag football, and this used to be
+     resolved with `Math.random() < 0.92`. It's a real snap: from the 5 for one
+     point, or from the 10 for two, against a defence, and it is the first
+     genuinely interesting risk decision in the game. */
+  Engine.prototype._startPAT = function (team) {
+    var s = this.state;
+    if (s.gameOver) return;
+    s.patActive = true;
+    s.patTeam = team;
+    s.possession = team;
+    s.down = 1;
+    s.crossedMid = true;                 // no line-to-gain logic on a conversion
+    s.offPlay = null; s.defPlay = null;
+    var userChooses = !this.demo && team === this.userSide;
+    if (userChooses) {
+      // Ask; the UI calls choosePAT(). Until then the play doesn't start.
+      s.patChoicePending = true;
+      s.phase = 'patchoice';
+      this.onEvent({ type: 'patchoice', team: team });
+    } else {
+      this.choosePAT(this._cpuPATChoice(team));
+    }
+  };
+
+  /* Down two late? Go for two. Otherwise take the point. */
+  Engine.prototype._cpuPATChoice = function (team) {
+    var s = this.state;
+    var other = team === 'home' ? 'away' : 'home';
+    var margin = s.score[team] - s.score[other];
+    var late = (s.quarter >= s.quarters);
+    if (late && (margin === -2 || margin === -8 || margin === 1)) return 2;
+    return (Math.random() < 0.12) ? 2 : 1;
+  };
+
+  Engine.prototype.choosePAT = function (points) {
+    var s = this.state;
+    if (!s.patActive) return false;
+    s.patPoints = (points === 2) ? 2 : 1;
+    s.patChoicePending = false;
+    s.yardsToGoal = (s.patPoints === 2) ? 10 : 5;
+    s.phase = 'playcall';
+    this._flash('Going for ' + s.patPoints + ' from the ' + s.yardsToGoal);
+    this.onEvent({ type: 'patstart', points: s.patPoints });
+    return true;
+  };
+
+  /* Conversion over, either way. Hand the ball to the other side. */
+  Engine.prototype._endPAT = function (good) {
+    var s = this.state;
+    var team = s.patTeam;
+    if (good) {
+      s.score[team] += s.patPoints;
+      this._flash(s.patPoints + '-point conversion GOOD!');
+    } else {
+      this._flash('Conversion no good');
+    }
+    this.onEvent({ type: 'patresult', good: !!good, points: s.patPoints });
+    s.patActive = false; s.patTeam = null; s.patChoicePending = false;
+    this._runClock(15);
+    if (s.gameOver) return;
+    s.possession = team === 'home' ? 'away' : 'home';
+    s.yardsToGoal = 45; s.down = 1; s.crossedMid = false;
+    this._nextSnap();
   };
 
   Engine.prototype._safety = function () {
     var s = this.state;
+    if (s.patActive) { this._endPAT(false); return; }
     var def = this.defenseTeam();
     this.clearSlash();            // scoring plays skip _endPlay, which usually does this
     s.score[def] += 2;
@@ -1253,10 +1393,33 @@
   };
 
   /* Demo mode: the CPU calls a play for BOTH sides. */
+  /* A4 — no-run zones. Running is prohibited in the 5 yards before either goal
+     line and the 5 before midfield, precisely so a team can't power it over
+     the line to gain. Returns the plays that are legal from this spot. */
+  Engine.prototype.legalPlays = function () {
+    var s = this.state;
+    var all = D.PLAYS;
+    if (!s) return all;
+    var ytg = s.yardsToGoal;
+    var toLine = s.crossedMid ? ytg : (ytg - 25);      // yards to the line to gain
+    /* Inside 5 of the end zone you're attacking, or either side of the line to
+       gain. The own-goal bound is strict rather than inclusive so that the
+       standard spot — yardsToGoal 45, exactly 5 out from your own line — is
+       still a legal place to hand the ball off; otherwise nearly every drive
+       would open unable to run. */
+    var inNoRun = (ytg <= NO_RUN_ZONE) || (Math.abs(toLine) <= NO_RUN_ZONE) || (ytg > 50 - NO_RUN_ZONE);
+    if (!inNoRun) return all;
+    var pass = all.filter(function (p) { return /pass/.test(p.type); });
+    return pass.length ? pass : all;
+  };
+
+  Engine.prototype.inNoRunZone = function () { return this.legalPlays().length !== D.PLAYS.length; };
+
   Engine.prototype.autoCall = function () {
     var s = this.state;
     if (!s || s.phase !== 'playcall') return;
-    s.offPlay = D.PLAYS[Math.floor(Math.random() * D.PLAYS.length)];
+    var legal = this.legalPlays();
+    s.offPlay = legal[Math.floor(Math.random() * legal.length)];
     s.defPlay = D.DEF_PLAYS[Math.floor(Math.random() * D.DEF_PLAYS.length)];
     this.setupFormation();
   };

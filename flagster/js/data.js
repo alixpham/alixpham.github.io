@@ -244,7 +244,11 @@
     // Runs
     { id: 'rb-draw', name: 'RB Draw', type: 'run', icon: '🏃', carrier: 'RB',
       routes: { WR1: 'go', WR2: 'go', RB: 'block', C: 'block' } },
-    { id: 'qb-sneak', name: 'QB Keeper', type: 'run', icon: '💨', carrier: 'QB',
+    /* 'QB Keeper' lived here as a designed run with carrier:'QB'. In IFAF the
+       original passer may not advance the ball past the line of scrimmage, so
+       a quarterback-run play is not a play — it's a dead ball by design.
+       Replaced with a pitch, which is legal and is a staple of the sport. */
+    { id: 'qb-pitch', name: 'QB Pitch', type: 'run', icon: '💨', carrier: 'RB',
       routes: { WR1: 'drag', WR2: 'drag', RB: 'flat', C: 'block' } },
     { id: 'sweep', name: 'Sweep', type: 'run', icon: '↻', carrier: 'RB',
       routes: { WR1: 'block', WR2: 'go', RB: 'swing', C: 'block' } },
