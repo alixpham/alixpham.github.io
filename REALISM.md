@@ -4,6 +4,47 @@ An investigation of where Flagster diverges from real IFAF 5v5 flag football,
 and a prioritised plan to close the gap. Written against **v2.11.0**
 (`f408a5f`).
 
+---
+
+## STATUS — all six phases shipped (v2.12.0 … v2.17.0)
+
+| Phase | Shipped | What landed |
+| --- | --- | --- |
+| 1 — Rules (A1–A5) | v2.12.0 | 7-second pass clock, 7-yard rush line + illegal rush, passer may not run, no-run zones, extra points as a real play. Plus `tools/simstats.mjs`. |
+| 2 — Movement (B1–B3) | v2.13.0 | Acceleration/turn limits, soft body separation, pursuit intercepts. The juke's scripted impulse retired for a real weight shift. |
+| 3 — Ball (C1–C3) | v2.14.0 | Gravity and launch angle, contested catch resolved in space, ball shadow and a real spiral. |
+| 4 — AI (D1–D4) | v2.15.0 | Coverage no longer empties on the throw, leverage, QB progression under pressure, leverage-aware breaks — and the undercut, which is what finally produced interceptions. |
+| 5 — Presentation (E1–E3) | v2.16.0 | Body variance by position and ratings, a real snap off the turf, ball spot and down marker. **E3 partial** — benches, coaches, officials, chain crew and a non-static crowd were left. |
+| 6 — Clock (A6–A8) | v2.17.0 | Two 20-minute halves, continuously running clock with last-two-minute stoppages, alternating-possession overtime, flag guarding, real laterals. |
+
+### Where the numbers ended up
+
+Measured with `node tools/simstats.mjs --games 6 --difficulty pro`. The
+absolute values are not comparable with the table below, which came from a
+different harness — but simstats is a consistent instrument and these are
+measured against the same targets.
+
+| Metric | v2.11.0 | v2.17.0 | Real 5v5 |
+| --- | --- | --- | --- |
+| Plays per game | 23 | **62** | 45–60 |
+| Pass plays never thrown | 26.7% | **3.9%** | ~2–4% |
+| Interception rate | 3.5% | **3.3%** | ~3–5% |
+| Yards per pass play | 2.06 | 5.05 | ~7–9 |
+| Completion % | 51.8% | 46.5% | ~55–65% |
+| Yards per run | 7.25 | 6.38 | ~4–5 |
+| Touchdowns per play | 22.2% | 14.2% | ~5–8% |
+| Time to throw | 2.38 s | 2.07 s | ~2.5–3.5 s |
+
+**Still out, and worth being honest about.** Touchdowns per play is about
+double where it should be and yards per run is a couple of yards high. They
+are the same problem: five defenders with no blocking to beat still lose
+contain once a back is into open space. Completion sits under its band on
+purpose — the quarterback forces throws under pressure now, which is what pays
+for the interceptions — but the two together suggest the next pass should be
+at pursuit and leverage again rather than at another rule.
+
+---
+
 Every claim below is either a line of code or a measurement. The measurements
 come from running the real `engine.js` headless, CPU-vs-CPU on Pro, for 8 full
 games (185 plays), and from driving the real page in headless Chromium.
