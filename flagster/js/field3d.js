@@ -403,7 +403,15 @@
       var P = entry.P, ud = entry.ud, holder = entry.holder;
       holder.position.set(wx(gp.x), PLAYER_LIFT, wz(gp.y));
 
-      var vx = gp.vx || 0, vy = gp.vy || 0;
+      /* Animate what the body actually DID, not what it meant to do. The
+         engine publishes rvx/rvy — real displacement over the frame — and
+         falls back to intent before the first step. Facing, stride rate and
+         the run/walk/backpedal choice all read from it, so a player who gets
+         moved by anything other than their own steering turns and strides
+         into that too, instead of sliding across the turf under a forward
+         run cycle. */
+      var vx = (gp.rvx != null ? gp.rvx : (gp.vx || 0));
+      var vy = (gp.rvy != null ? gp.rvy : (gp.vy || 0));
       var speed = Math.hypot(vx, vy);
       // Only treat players as "moving" while the ball is live — between plays
       // (playcall/presnap/dead/final) residual velocity must NOT keep them running.
@@ -433,13 +441,14 @@
         // off their own line before they'd be running sideways.
         yawT = alongMotion(Math.atan2(state.ball.y - gp.y, state.ball.x - gp.x), vx, vy, speed, 0.50);
       } else if (carrier === gp) {
-        /* ...but not mid-juke. The sidestep drives the carrier hard across
-           their own line for a fifth of a second, and facing into it would
-           spin the body square to the cut. The Juke clip already carries the
-           lateral weight shift — hips rotating about Z, the trail leg
-           abducting — so the body holds its line and the clip does the step,
-           which is what a juke actually is. */
-        if (moving && !juking) yawT = Math.atan2(vy, vx);   // ball carrier faces motion
+        /* Face where you are actually going, INCLUDING through a juke. Holding
+           the line through the cut looked right in a still frame and wrong in
+           motion: the juke drives real lateral momentum now (Phase 2), and a
+           body pointing downfield while travelling sideways is the skate.
+           Measured at 17.5% of juke frames more than 25 degrees off. The Juke
+           clip's own weight shift still plays over the top; the turn rate just
+           below is doubled through the cut so the hips snap into it. */
+        if (moving) yawT = Math.atan2(vy, vx);   // ball carrier faces motion
       } else if (isOff) {
         if (moving) yawT = Math.atan2(vy, vx);        // receivers/QB face motion
       } else {
@@ -462,6 +471,13 @@
          moves away from where they're pointing, and with the run clip on top
          of that they moonwalked. Anyone travelling backwards backpedals. */
       var face = P._yaw;
+      /* Publish the facing the player is ACTUALLY rendered at (P.face eases
+         toward yawT, so the target is not the answer). Nothing in the game
+         reads it; it is here so the headless sweep can measure the angle
+         between where a body points and where it travels — the definition of
+         skating — from outside, instead of re-deriving it and grading the
+         renderer against a copy of the renderer. */
+      gp.faceYaw = face;
       var fwdDot = moving ? (Math.cos(face) * vx + Math.sin(face) * vy) : 0;
       var backpedal = moving && fwdDot < -0.4;
 
@@ -828,10 +844,36 @@
           var c = state.carrier;
           var chest = carryNode(c, 'Chest');
           if (chest) {
+            /* WHICH ARM. Away from the nearest defender — the ball is carried
+               on the arm furthest from the hit, which is both the coaching
+               point and the side you can actually see it on. */
             var side = (c.y < WID / 2) ? -1 : 1;
+            var near = null, nd = 1e9;
+            for (var ci = 0; ci < state.players.length; ci++) {
+              var o = state.players[ci];
+              if (o.team === c.team || o.flagPulled) continue;
+              var od = Math.hypot(o.x - c.x, o.y - c.y);
+              if (od < nd) { nd = od; near = o; }
+            }
+            if (near && nd < 8) side = (near.y > c.y) ? -1 : 1;
+
             hostBall(chest);
-            ball.position.set(side * 0.145, -0.06, 0.045);
-            ball.rotation.set(0, side * 0.30, side * 1.05);
+            /* AND FAR ENOUGH OUT TO BE SEEN. This was x = 0.145 in chest-local
+               space, but the torso is about 0.23 half-width there — so the
+               ball was literally inside the player's chest and the body hid it
+               from every angle. It sits outside the ribs now.
+
+               A quarterback who still has it holds it up in two hands at the
+               throwing shoulder, ready, the way the coaching points describe
+               it — not tucked away at the hip where a runner carries it. */
+            var readying = (c === state.passer && !state.handoffDone && !state.pendingThrow);
+            if (readying) {
+              ball.position.set(side * 0.33, 0.13, 0.05);
+              ball.rotation.set(0.10, side * 0.45, side * 0.55);
+            } else {
+              ball.position.set(side * 0.29, -0.03, 0.03);
+              ball.rotation.set(0, side * 0.30, side * 1.05);
+            }
           } else {
             // Procedural fallback rig: no bones to hang it off, so approximate.
             hostBall(null);
