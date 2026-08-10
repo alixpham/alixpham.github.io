@@ -4,7 +4,8 @@ Flagster is served by GitHub Pages from the `master` branch at
 **https://alixpham.github.io/**. This file records the commit id behind each
 notable live deploy (newest first).
 
-Version tags (see `VERSION`): **v2.15.0** = `33babd2f45ec13069b7efe45726c68db798bf0bd`,
+Version tags (see `VERSION`): **v2.16.0** = `PENDINGSHA`,
+**v2.15.0** = `d07abdf02733e964732b082e54d2c29f55be2479`,
 **v2.14.0** = `138824a64a86bab02547157ec66af9677c1b74dd`,
 **v2.13.0** = `06d78f79528a462b639b0dcba17c24c0d1114eca`,
 **v2.12.0** = `92a7c025f5561ac10a4189d933fcb9ad73f186cc`,
@@ -38,7 +39,8 @@ git proxy blocks tag pushes, so these are the authoritative version→commit rec
 
 | Date (UTC) | Commit | What shipped |
 | --- | --- | --- |
-| 2026-08-10 | `33babd2f45ec13069b7efe45726c68db798bf0bd` | **v2.15.0** — REALISM.md Phase 4 (AI): coverage no longer empties on every throw, defenders hold leverage and can undercut a route, and the quarterback works a progression under pressure — interceptions off zero and into the 3-5% the sport runs at |
+| 2026-08-10 | `PENDINGSHA` | **v2.16.0** — REALISM.md Phase 5 (presentation): players are no longer ten copies of one body, the ball sits on the turf and is actually snapped, and the field has a spot and a down marker |
+| 2026-08-10 | `d07abdf02733e964732b082e54d2c29f55be2479` | **v2.15.0** — REALISM.md Phase 4 (AI): coverage no longer empties on every throw, defenders hold leverage and can undercut a route, and the quarterback works a progression under pressure — interceptions off zero and into the 3-5% the sport runs at |
 | 2026-08-10 | `138824a64a86bab02547157ec66af9677c1b74dd` | **v2.14.0** — REALISM.md Phase 3 (ball): real ballistics with gravity and hang time, a contested catch resolved in space instead of a coin flip, and the ball finally casts a shadow and spirals about its flight axis |
 | 2026-08-09 | `06d78f79528a462b639b0dcba17c24c0d1114eca` | **v2.13.0** — REALISM.md Phase 2 (movement): acceleration and turn limits so players have mass, soft body separation, and pursuit that solves an intercept instead of chasing where the carrier used to be |
 | 2026-08-09 | `92a7c025f5561ac10a4189d933fcb9ad73f186cc` | **v2.12.0** — REALISM.md Phase 1 (rules): 7-second pass clock, 7-yard rush line, the passer may not run, no-run zones, extra points as a real play, plus tools/simstats.mjs |

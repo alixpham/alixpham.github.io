@@ -140,8 +140,12 @@
 
     s.players = players;
     s.losX = losX;
+    /* E2 — there is a ball on the ground before the snap. It used to
+       materialise in the quarterback's hands when snap() ran; pre-snap the
+       field was simply empty of it. */
+    s.ballSpot = { x: losX, y: cy };
     s.lineToGain = s.crossedMid ? GOAL_R : MIDFIELD;
-    s.ball = null;
+    s.ball = { x: losX, y: cy, z: 0, inAir: false, onGround: true };
     s.carrier = null;
     s.snapT = 0;
 
@@ -243,7 +247,10 @@
     // they may not carry it across the line.
     s.passer = qb;
     qb.hasBall = true;
-    s.ball = { x: qb.x, y: qb.y, inAir: false, target: null, from: null, to: null, t: 0, dur: 0 };
+    s.ball = { x: qb.x, y: qb.y, z: 0, inAir: false, target: null, from: null, to: null, t: 0, dur: 0 };
+    // The snap is a real travel from the spot to the quarterback's hands.
+    s.snapFly = { from: { x: s.ballSpot ? s.ballSpot.x : qb.x, y: s.ballSpot ? s.ballSpot.y : qb.y },
+                  t: 0, dur: 0.22 };
     s.phase = 'live';
     s.snapT = 0;
     s.playClock = 0;
@@ -418,6 +425,10 @@
     this._updateTimers(dt);
 
     // Wind-up in flight: the arm is coming through, the ball is still in hand.
+    if (s.snapFly) {
+      s.snapFly.t += dt;
+      if (s.snapFly.t >= s.snapFly.dur) s.snapFly = null;
+    }
     if (s.pendingThrow) {
       s.pendingThrow.t += dt;
       if (s.pendingThrow.t >= s.pendingThrow.dur) this._releaseThrow();
