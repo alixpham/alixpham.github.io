@@ -37,7 +37,7 @@
          root.rotation.y = Math.PI / 2 - yaw
    * Clip names in the .glb are capitalised (Idle/Run/.../FlagPulled). play()
      and oneShot() accept the game's lower-camel vocabulary
-     (idle/run/walk/backpedal/throw/catch/dive/flagPull/celebrate/juke) as well
+     (idle/run/walk/backpedal/throw/catch/dive/flagGrab/flagPulled/celebrate/juke) as well
      as the canonical names, so no call sites need to change.
    ============================================================================ */
 (function (global) {
@@ -51,8 +51,12 @@
   // Clip vocabulary: the game's names -> the names baked into the .glb.
   var CLIP_ALIAS = {
     idle: 'Idle', run: 'Run', walk: 'Walk', backpedal: 'Backpedal',
-    throw: 'Throw', catch: 'Catch', dive: 'Dive', flagpull: 'FlagPulled',
-    flagpulled: 'FlagPulled', celebrate: 'Celebrate', juke: 'Juke'
+    throw: 'Throw', catch: 'Catch', dive: 'Dive',
+    // Two different clips, two different players: FlagGrab is the DEFENDER
+    // reaching out and ripping the flag off; FlagPulled is the ball carrier's
+    // reaction to losing it.
+    flaggrab: 'FlagGrab', flagpull: 'FlagPulled', flagpulled: 'FlagPulled',
+    celebrate: 'Celebrate', juke: 'Juke'
   };
   var LOOPING = { Idle: 1, Run: 1, Walk: 1, Backpedal: 1, Celebrate: 1 };
 
@@ -384,7 +388,7 @@
     build: build,
     model: MODEL,
     url: MODEL_URL,
-    clipNames: ['Idle', 'Run', 'Walk', 'Backpedal', 'Throw', 'Catch', 'Dive', 'FlagPulled', 'Celebrate', 'Juke'],
+    clipNames: ['Idle', 'Run', 'Walk', 'Backpedal', 'Throw', 'Catch', 'Dive', 'FlagGrab', 'FlagPulled', 'Celebrate', 'Juke'],
     materialNames: ['jersey', 'trim', 'skin', 'hair', 'shorts', 'socks', 'shoes', 'belt', 'flag'],
     socketNames: ['Socket_Hand_L', 'Socket_Hand_R', 'Socket_Flag_L', 'Socket_Flag_R'],
     heightMetres: AUTHOR_HEIGHT_M,

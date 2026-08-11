@@ -525,7 +525,13 @@
     };
 
     // Play a one-shot then automatically crossfade back to a base loop.
+    /* The rigged model draws a distinction the procedural rig doesn't have:
+       'flagGrab' is the DEFENDER ripping the flag off, 'flagPulled' is the
+       carrier's reaction. This rig has one clip for the whole event, so both
+       names resolve to it rather than silently playing nothing. */
+    var CLIP_ALIAS = { flagGrab: 'flagPull', flagPulled: 'flagPull' };
     api.oneShot = function (name, returnTo, fade) {
+      name = (!actions[name] && CLIP_ALIAS[name]) ? CLIP_ALIAS[name] : name;
       if (!actions[name]) return;
       api._returnTo = returnTo || 'idle';
       var a = actions[name];

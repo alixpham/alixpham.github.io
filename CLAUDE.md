@@ -23,6 +23,8 @@ flagster/js/            boot3d (ESM bootstrap), engine, ui, field3d, hero3d,
 flagster/lib/three/     vendored Three.js r185 (ESM) + jsm addons
 flagster/lib/flagplayer.glb   rigged, skinned, team-tintable player
 tools/build-player-glb.mjs    regenerates flagplayer.glb (no deps, no Blender)
+tools/measure-clip.mjs        reads a baked clip back out as joint angles
+tools/simstats.mjs            headless CPU-vs-CPU box score
 VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
                         through this environment's proxy, so these are the
                         authoritative record)
@@ -39,17 +41,30 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   render far too dark. Re-tune lights when touching a scene.
 - Rig faces **+Z**; heading maps as `root.rotation.y = Math.PI/2 - yaw`.
   Limb clips rotate about **X** (sagittal = fore/aft stride).
-- 1 world unit = **1 yard**. Field is 70 x 25, centred on the origin.
+- 1 world unit = **1 yard**. Field is 70 x 30 (NFL Flag regulation), centred
+  on the origin.
 - Input arrives in **screen space** and must be rotated into field space via
-  `engine.viewSign()` — the camera sits behind the user's team and flips with
-  possession.
+  `engine.viewSign()`.
 - `Player3D.build()` delegates to the rigged `PlayerModel` when loaded and falls
   back to the procedural rig otherwise. Both expose the same API.
+- **Never hand-type an euler triple at a shoulder.** Elevation + horizontal
+  adduction + axial rotation don't decompose into XYZ in any order you can hold
+  in your head; author the three anatomical angles and let `armQ()` solve it.
+  Check the result with `node tools/measure-clip.mjs <Clip>` — it also reports
+  feet through the turf and planted feet that skate.
+- The camera sits behind whoever HAS THE BALL, and the offence always attacks
+  +x, so it never turns round; `engine.viewSign()` is the seam that says which
+  way is downfield and now always returns 1.
 
 ## Workflow
 
 - Develop on `claude/flagster-website-build-*`, PR into `master`, squash-merge.
 - Bump `VERSION` and add a row to `DEPLOY.md` for each release.
+- **A clean console does not mean the 3D renderer is running.** engine.js
+  swallows `externalRender` throws and silently hands over to the 2D canvas
+  after five of them, so a broken scene looks like a working game with a
+  different art style. When verifying, check `shell.field3d` is still non-null
+  and wrap `engine.externalRender` to catch what it threw.
 - **Verify before claiming done:** drive the real thing in headless Chromium
   (`/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, args
   `--use-gl=swiftshader --enable-unsafe-swwebgl --ignore-gpu-blocklist`),
