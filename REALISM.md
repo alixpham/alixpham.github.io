@@ -45,7 +45,7 @@ at pursuit and leverage again rather than at another rule.
 
 ---
 
-## v2.21.0 — the passing game, and the throw it comes out of
+## v2.22.0 — the throw, and the rules around it
 
 **A pass had stopped being catchable at all.** Measured over 32 CPU-vs-CPU
 games at Pro, the completion rate at v2.20.0 was **1.75%** and a pass play was
@@ -57,15 +57,18 @@ distance. Every pass flew **2.8 yards past** the spot the receiver had been sent
 to. The receivers were fine: they arrived within 0.24 yards of their aim point
 and stood there while the ball went over their heads. The catch radius is 2.4.
 
-The angle is now solved for the range the ball actually has, by bisecting the
-real range function on its flat branch. The artificial "loft floor" that used to
-paper over it is gone — the exact solve lofts a deep ball on its own (21° at
-thirty yards) and keeps a five-yard out flat. Arm strength also now reaches the
-ballistics at all: it was computed in `throwTo()` and then shadowed by a local
-`var throwSpeed = 22` in `_releaseThrow()`, so every arm in the league threw at
-the same velocity.
+**Two sessions found this at the same time**, and v2.21.0 shipped the fix from
+the other one: the same physics as a closed-form quadratic rather than a
+bisection, with the same conclusion about the artificial "loft floor" — that it
+has to go, because every angle above the flat root lands past the target by
+definition. The numbers below therefore credit v2.21.0 with the passing game;
+what this release adds on top of it is the throw itself, arm strength actually
+reaching the ballistics (it was computed in `throwTo()` and then shadowed by a
+local `var throwSpeed = 22` in `_releaseThrow()`, so every arm in the league
+threw at the same velocity), release and catch heights measured off the rig
+rather than guessed, and the rules.
 
-| Metric | v2.20.0 | v2.21.0 | Real 5v5 |
+| Metric | v2.20.0 | v2.22.0 | Real 5v5 |
 | --- | --- | --- | --- |
 | Yards per pass play | 0.34 | **7.44** | ~7–9 |
 | Completion % | 1.75% | **46.3%** | ~55–65% |
