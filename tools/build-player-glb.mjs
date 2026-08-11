@@ -514,6 +514,9 @@ function euler(x, y, z) {
   ];
 }
 const rot = (node, times, eulers) => ({ node, path: 'rotation', times, values: eulers.map(e => euler(e[0], e[1], e[2])) });
+/* Same track, but keyed with quaternions that were solved rather than typed —
+   see armQ below. */
+const rotq = (node, times, quats) => ({ node, path: 'rotation', times, values: quats });
 const pos = (node, times, vecs) => ({ node, path: 'translation', times, values: vecs });
 /* Hips translation shorthand — only Y ever moves, so clips stay in place. */
 const hipY = (times, ys) => pos('Hips', times, ys.map(y => [0, y, 0]));
@@ -598,6 +601,140 @@ function soleHeight(hipDeg, kneeDeg, ankleDeg) {
   const cos = Math.cos(f), sin = Math.sin(f);
   const pt = z => ankleY + (-SOLE * cos + z * sin);
   return Math.min(pt(SOLE_BACK), pt(SOLE_FWD));
+}
+
+/* --- The shoulder, authored the way a throwing study reports it -------------
+   Everything above is sagittal, where one euler angle IS the joint angle. A
+   throw is not: the humerus elevates, sweeps across the chest AND spins about
+   its own long axis, and those three do not decompose into an XYZ euler in any
+   order you can hold in your head. Typing euler triples at it is exactly how
+   the first throw ended up releasing the ball while the hand was still behind
+   the ear — the numbers looked like a wind-up and the geometry wasn't one.
+
+   So the arm is authored in the three angles the literature actually measures,
+   and the rotation is SOLVED. All three are relative to the trunk, which is
+   what makes them comparable to published values even while the torso rotates
+   sixty degrees underneath them (UpperArm's parent chain up to Chest carries
+   no rest rotation, so its local rotation IS its rotation in the chest frame):
+
+     elev    humeral elevation away from hanging straight down the trunk.
+             90 = level with the shoulder; collegiate QBs cock at ~112.
+     horiz   where that elevation points, around the trunk. 0 = straight out
+             to the side, + = swept across the chest (horizontal adduction),
+             - = held behind the frontal plane.
+     er      axial rotation of the humerus, read off the forearm as a pointer:
+             0 = forearm anterior, +90 = forearm at the sky, -90 = forearm
+             down. Max external rotation in a football throw is ~134.
+
+   The forearm is still a plain hinge — `elbow(deg)` on LowerArm — and the
+   solve accounts for it: the elbow folds about the humerus's own local X, so
+   fixing where that axis ends up is what fixes ER.                          */
+function armQ(side, elevDeg, horizDeg, erDeg) {
+  const lat = side === 'R' ? -1 : 1;                 // the arm's outward side, in chest space
+  const e = elevDeg * D, hz = horizDeg * D, er = erDeg * D;
+  // Humerus, pointing from shoulder to elbow.
+  const h = [lat * Math.sin(e) * Math.cos(hz), -Math.cos(e), Math.sin(e) * Math.sin(hz)];
+  // Reference frame perpendicular to the humerus: u0 is "up the trunk", which
+  // is where a fully externally-rotated forearm points; r0 is anterior, ER = 0.
+  const du = h[1];                                   // dot(h, trunk up)
+  let u0 = [-h[0] * du, 1 - h[1] * du, -h[2] * du];
+  const uL = Math.hypot(u0[0], u0[1], u0[2]);
+  if (uL < 1e-4) throw new Error('armQ: humerus is parallel to the trunk axis');
+  u0 = u0.map(v => v / uL);
+  const cr = [h[2], 0, -h[0]];                       // cross(trunk up, h)
+  const cL = Math.hypot(cr[0], cr[1], cr[2]) || 1;
+  const r0 = cr.map(v => (-lat * v) / cL);
+  // The bone's own axes: -Y down the humerus, +Z the direction the forearm
+  // folds toward, +X completing a right-handed frame.
+  const Y = [-h[0], -h[1], -h[2]];
+  const Z = [
+    Math.cos(er) * r0[0] + Math.sin(er) * u0[0],
+    Math.cos(er) * r0[1] + Math.sin(er) * u0[1],
+    Math.cos(er) * r0[2] + Math.sin(er) * u0[2]
+  ];
+  const X = [Y[1] * Z[2] - Y[2] * Z[1], Y[2] * Z[0] - Y[0] * Z[2], Y[0] * Z[1] - Y[1] * Z[0]];
+  return quatFromAxes(X, Y, Z);
+}
+
+/* Orthonormal basis (as columns) -> quaternion. */
+function quatFromAxes(X, Y, Z) {
+  const m00 = X[0], m10 = X[1], m20 = X[2];
+  const m01 = Y[0], m11 = Y[1], m21 = Y[2];
+  const m02 = Z[0], m12 = Z[1], m22 = Z[2];
+  const tr = m00 + m11 + m22;
+  let S;
+  if (tr > 0) {
+    S = Math.sqrt(tr + 1) * 2;
+    return [(m21 - m12) / S, (m02 - m20) / S, (m10 - m01) / S, 0.25 * S];
+  }
+  if (m00 > m11 && m00 > m22) {
+    S = Math.sqrt(1 + m00 - m11 - m22) * 2;
+    return [0.25 * S, (m01 + m10) / S, (m02 + m20) / S, (m21 - m12) / S];
+  }
+  if (m11 > m22) {
+    S = Math.sqrt(1 + m11 - m00 - m22) * 2;
+    return [(m01 + m10) / S, 0.25 * S, (m12 + m21) / S, (m02 - m20) / S];
+  }
+  S = Math.sqrt(1 + m22 - m00 - m11) * 2;
+  return [(m02 + m20) / S, (m12 + m21) / S, 0.25 * S, (m10 - m01) / S];
+}
+
+/* --- A planted foot, solved rather than keyed -------------------------------
+   A stride is authored as "the front foot is HERE and the knee is bent THIS
+   much", because that is the part a viewer reads: the foot must stay where it
+   landed while the hips rotate over it. Keying hip flexion directly and then
+   flexing the knee under it drags the plant backwards through the turf, which
+   is the skate this repo has spent its whole life removing from the run.
+   Fore/aft of the ankle, measured from the hip joint, is
+       z = THIGH*sin(hip) + SHIN*sin(hip - knee)
+   which is monotonic in hip over the range a leg can reach, so bisect it.    */
+function plantHip(zTarget, kneeDeg) {
+  const at = t => THIGH * Math.sin(t) + SHIN * Math.sin(t - kneeDeg * D);
+  let lo = -1.3, hi = 1.4;
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    if (at(mid) < zTarget) lo = mid; else hi = mid;
+  }
+  return ((lo + hi) / 2) / D;
+}
+
+/* Pelvis height for a NON-cyclic pose: drop it until the lower of the two
+   soles is exactly on the turf. Same solve as solveHipY, without the cycle. */
+function standHipY(legL, legR) {
+  return 1.000 - Math.min(soleHeight(...legL), soleHeight(...legR));
+}
+
+/* Solving pelvis height AT the keys is not the same as it being right BETWEEN
+   them: leg angle interpolates linearly and leg LENGTH does not, so a long,
+   lazy segment sags a couple of centimetres through the turf in the middle.
+   Sample the leg angles on a fine grid, solve there, and hand back a hips track
+   dense enough that the error is under a millimetre. (Legs rotate about one
+   axis, and slerp between two rotations about a shared axis is exactly the
+   angle-interpolated one, so linear interpolation of the angles here is not an
+   approximation of the playback — it is the playback.)
+
+   `lift` is optional and is the one thing this cannot know: how far off the
+   ground the whole body is. A celebration hop leaves the turf, and the
+   kinematics of a tucked leg can't tell you that — so it is added ON TOP of
+   the solved height rather than replacing it, which keeps the feet exactly on
+   the ground at the bottom of every hop. */
+function groundedHips(times, legL, legR, lift, step = 0.02) {
+  const lerpLeg = (A, B, u) => A.map((v, i) => v + (B[i] - v) * u);
+  const up = k => (lift ? lift[k] : 0);
+  const T = [], Y = [];
+  for (let k = 0; k < times.length - 1; k++) {
+    const span = times[k + 1] - times[k];
+    const n = Math.max(1, Math.round(span / step));
+    for (let i = 0; i < n; i++) {
+      const u = i / n;
+      T.push(times[k] + span * u);
+      Y.push(standHipY(lerpLeg(legL[k], legL[k + 1], u), lerpLeg(legR[k], legR[k + 1], u))
+        + up(k) + (up(k + 1) - up(k)) * u);
+    }
+  }
+  T.push(times[times.length - 1]);
+  Y.push(standHipY(legL[legL.length - 1], legR[legR.length - 1]) + up(times.length - 1));
+  return pos('Hips', T, Y.map(y => [0, y, 0]));
 }
 
 function solveHipY(dur, rows, lift = 0, stanceEnd = 0.5) {
@@ -776,32 +913,122 @@ clip('Idle', 2.4, [
 }
 
 /* ----------------------------------------------------------------- Throw */
-/* A right-handed quarterback: torso coils away, the upper arm abducts to
-   shoulder height with the forearm cocked back, then the elbow drives forward
-   and the forearm whips through a high three-quarter release. Note the arm is
-   posed with Z abduction + X elevation rather than a big X backswing — with a
-   fully abducted arm an X rotation only twists it (gimbal), so the drive has to
-   come from decreasing abduction while X sweeps forward. */
-clip('Throw', 1.10, [
-  hipY([0, 0.42, 0.66, 1.1], [0.995, 0.986, 0.998, 0.998]),
-  rot('Hips', [0, 0.42, 0.66, 1.1], [[0, -0.22, 0], [0, -0.36, 0], [0, 0.20, 0], [0, 0.06, 0]]),
-  rot('Spine', [0, 0.42, 0.66, 1.1], [[0.08, -0.30, 0], [0.06, -0.44, 0], [0.14, 0.36, 0], [0.10, 0.12, 0]]),
-  rot('Chest', [0, 0.42, 0.66, 1.1], [[0.02, -0.26, 0], [0.02, -0.42, 0], [0.06, 0.36, 0], [0.03, 0.10, 0]]),
-  rot('Head', [0, 0.42, 0.66, 1.1], [[-0.05, 0.26, 0], [-0.05, 0.38, 0], [-0.05, -0.16, 0], [-0.05, 0, 0]]),
-  rot('UpperArm_R', [0, 0.34, 0.52, 0.66, 0.78, 0.92, 1.10],
-    [[0.12, 0, -0.20], [-0.20, -0.35, -1.20], [-0.05, -0.55, -1.55],
-     [-1.20, -0.15, -1.15], [-2.10, 0.30, -0.75], [-1.30, 0.35, -0.45], [0.12, 0, -0.18]]),
-  rot('LowerArm_R', [0, 0.34, 0.52, 0.66, 0.78, 0.92, 1.10],
-    [[-1.1, 0, 0], [-1.6, 0, 0], [-1.95, 0, 0], [-1.6, 0, 0], [-0.45, 0, 0], [-0.75, 0, 0], [-1.1, 0, 0]]),
-  // left arm points at the target then tucks
-  rot('UpperArm_L', [0, 0.45, 0.70, 1.10], [[0.10, 0, 0.18], [-1.15, 0.30, 0.35], [-0.55, 0.20, 0.30], [0.12, 0, 0.18]]),
-  rot('LowerArm_L', [0, 0.45, 0.70, 1.10], [[-1, 0, 0], [-0.35, 0, 0], [-0.9, 0, 0], [-1.05, 0, 0]]),
-  rot('UpperLeg_L', [0, 0.42, 0.66, 1.10], [[0.06, 0, 0.03], [-0.30, 0, 0.05], [-0.45, 0, 0.05], [-0.12, 0, 0.03]]),
-  rot('LowerLeg_L', [0, 0.42, 0.66, 1.10], [[0.24, 0, 0], [0.3, 0, 0], [0.18, 0, 0], [0.22, 0, 0]]),
-  rot('UpperLeg_R', [0, 0.42, 0.66, 1.10], [[0.06, 0, -0.03], [0.22, 0, -0.06], [0.34, 0, -0.06], [0.10, 0, -0.03]]),
-  rot('LowerLeg_R', [0, 0.42, 0.66, 1.10], [[0.24, 0, 0], [0.42, 0, 0], [0.55, 0, 0], [0.26, 0, 0]]),
-  rot('Foot_R', [0, 0.66, 1.10], [[0.08, 0, 0], [0.28, 0, 0], [0.10, 0, 0]])
-]);
+/* THE QUARTERBACK THROW.
+
+   Posed against the measured kinematics of collegiate quarterbacks (Bohnert,
+   "A complete kinematic, kinetic and electromyographical analysis of the
+   football throw in collegiate quarterbacks"; and the IJSPT inertial
+   kinematic-sequencing study of the football pass), because the previous pass
+   at this clip was authored by eye and measuring it said so. At the instant
+   the engine actually let go of the ball, tools/measure-clip.mjs read the old
+   clip as: hand 0.41m BEHIND the chest, trunk still 67 degrees closed, elbow
+   at 95 degrees and shoulder external rotation of 9. The quarterback threw the
+   ball out of the back of his own shoulder while facing away from the target,
+   and the arm's fastest moment arrived 0.18s after the ball had already gone.
+
+   The events below are the standard phases of an overhead throw, and the times
+   are the ones the game actually plays to: the engine releases the pass at
+   RELEASE_AT (0.34) of this 1.10s clip = 0.374s, so maximum external rotation
+   is placed at 0.33 and the whole arm-acceleration phase is the 44ms between
+   them. That is not a rounding error, it is the real number — MER to release
+   is 40-50ms in a thrower, which is why a throw reads as a whip and not a
+   push. Everything downstream of the release is deceleration and recovery, and
+   the last key returns to the Idle pose exactly so the crossfade out is clean.
+
+     0.000  set          ball in the throwing hand at the near shoulder, off
+                         hand on it. Matches field3d's READY grip bone-for-bone
+                         so the carry pose it is blending out of doesn't fight.
+     0.120  separation   off hand leaves the ball, lead leg picks up, torso
+                         coils to its deepest point
+     0.220  foot contact trunk 40 closed, pelvis already 28 ahead of it — the
+                         separation the trunk then unwinds through
+     0.330  MER          shoulder 112 elevated / 134 externally rotated, elbow
+                         100, lumbar extended, lead leg braced
+     0.374  RELEASE      elbow through to 31, ER down to 56, trunk just past
+                         square, separation collapsed to 11, lead knee 44
+     0.470  max IR       arm decelerating across the body, trunk over the front
+                         leg, back leg pulled through
+     0.620  follow       hand finishes past the opposite hip, trunk at its 21
+                         degrees of left rotation
+     0.850  recover
+     1.100  set          == Idle
+
+   The lead foot is authored by WHERE IT IS, not by hip angle, and the hip is
+   solved (plantHip) so it stays planted while the hips rotate over it; pelvis
+   height is solved too (groundedHips) so neither sole leaves or enters the
+   turf, between the keys as well as on them.
+
+   Check any edit with:  node tools/measure-clip.mjs Throw                  */
+{
+  /* Set/idle arm poses, kept as eulers because that is how their two owners —
+     field3d's READY grip and the Idle clip — are written. */
+  const SET_R = euler(0.34, 0.30, -0.16), SET_L = euler(0.22, -0.95, 0.10);
+  const IDLE_R = euler(shoulder(6), 0, -0.19), IDLE_L = euler(shoulder(6), 0, 0.19);
+
+  const K = [
+    // t     pelvis trunk  lean tilt |    lead foot: [z, knee, ankle]  |  back leg: [hip, knee, ankle]
+    // |     throwing arm: [elev, horiz, ER, elbow]   |  off arm: [elev, horiz, ER, elbow]
+    { t: 0.000, pel: -14, trk: -30, lean:  6, tilt: -2, lead: [0.20, 30,  8], back: [-16, 24,   6], armq: SET_R, elb: 111.7, offq: SET_L, oelb: 117.5 },
+    { t: 0.120, pel: -22, trk: -40, lean:  3, tilt:  0, lead: [0.06, 60, 16], back: [-20, 26,   2], arm: [ 64, -14,  24,  98], off: [ 58,  42,  18,  92] },
+    { t: 0.220, pel: -12, trk: -40, lean:  0, tilt:  3, lead: [0.32, 30,  4], back: [-28, 22, -10], arm: [ 96, -26,  72,  98], off: [ 78,  30,  10,  55] },
+    { t: 0.330, pel:   6, trk: -12, lean:-20, tilt:  7, lead: [0.32, 34,  0], back: [-26, 26, -20], arm: [112,  -8, 134, 100], off: [ 68,  16,   0,  45] },
+    { t: 0.374, pel:  16, trk:   5, lean:  8, tilt:  9, lead: [0.32, 44, -4], back: [-28, 26, -30], arm: [108,  14,  56,  31], off: [ 44,   0, -20,  72] },
+    { t: 0.470, pel:  18, trk:  18, lean: 21, tilt:  7, lead: [0.32, 46, -6], back: [ -6, 78, -16], arm: [ 72,  46, -42,  54], off: [ 22, -22, -40,  96] },
+    { t: 0.620, pel:  14, trk:  21, lean: 18, tilt:  4, lead: [0.30, 40, -2], back: [ 14, 84,  -6], arm: [ 34,  64, -56,  76], off: [ 16, -28, -30,  88] },
+    // The recovery is keyed at 0.72/0.96 as well as its endpoints. Not for the
+    // pose — for the ground: pelvis height is solved AT a key and interpolated
+    // between them, so a long lazy segment lets the linear middle sag a couple
+    // of centimetres through the turf. Shorter segments, smaller error.
+    { t: 0.720, pel:  11, trk:  17, lean: 16, tilt:  3, lead: [0.27, 38,  1], back: [ 10, 66,  -2], arm: [ 26,  46, -32,  70], off: [ 14, -18, -22,  74] },
+    { t: 0.850, pel:   6, trk:  10, lean: 11, tilt:  1, lead: [0.22, 34,  4], back: [  4, 52,   6], arm: [ 18,  26, -18,  62], off: [ 12,  -6, -10,  58] },
+    // The back foot lands here and the front one lifts: the gather back to a
+    // balanced stance is a STEP, so that the last 140ms don't drag a planted
+    // foot 18cm backwards under a standing man.
+    { t: 0.960, pel:   3, trk:   5, lean:  8, tilt:  0, lead: [0.13, 44, 12], back: [ 14, 30,  10], arm: [ 15,  27,   8,  54], off: [ 11,  -2,   0,  51] },
+    { t: 1.100, pel:   0, trk:   0, lean:  5, tilt:  0, lead: [0.04, 28, 11], back: [ 16, 28,  11], armq: IDLE_R, elb: 48, offq: IDLE_L, oelb: 48 }
+  ];
+
+  const T = K.map(k => k.t);
+  // The lead leg's hip angle falls out of where its foot has to be.
+  const legL = K.map(k => [plantHip(k.lead[0], k.lead[1]), k.lead[1], k.lead[2]]);
+  const legR = K.map(k => k.back);
+  // Rows carry either the three solved shoulder angles or a ready-made pose.
+  const shoulderQ = (k, side) => (side === 'R')
+    ? (k.armq || armQ('R', k.arm[0], k.arm[1], k.arm[2]))
+    : (k.offq || armQ('L', k.off[0], k.off[1], k.off[2]));
+  const flexOf = k => (k.elb != null ? k.elb : k.arm[3]);
+  const offFlexOf = k => (k.oelb != null ? k.oelb : k.off[3]);
+
+  clip('Throw', 1.10, [
+    groundedHips(T, legL, legR),
+    rot('Hips', T, K.map(k => [0, k.pel * D, 0])),
+    // Trunk rotation, flexion and side-bend split between the two spine joints
+    // so neither one has to bend further than a spine bends.
+    rot('Spine', T, K.map(k => [k.lean * 0.55 * D, (k.trk - k.pel) * 0.5 * D, -k.tilt * 0.55 * D])),
+    rot('Chest', T, K.map(k => [k.lean * 0.45 * D, (k.trk - k.pel) * 0.5 * D, -k.tilt * 0.45 * D])),
+    /* EYES STAY ON THE TARGET. The head is a child of the chest, so it
+       inherits everything the trunk does — and the trunk here coils 40 degrees
+       away and then arches 20 degrees backwards through maximum external
+       rotation. Left alone the quarterback spends the cocking phase looking
+       over his own shoulder and then straight up at the sky. The neck gives
+       most of both back: yaw against the coil, pitch against the arch. */
+    rot('Head', T, K.map(k => [
+      -0.05 - k.lean * 0.70 * D,
+      Math.max(-55, Math.min(55, -k.trk * 0.85)) * D, 0])),
+    rotq('UpperArm_R', T, K.map(k => shoulderQ(k, 'R'))),
+    rot('LowerArm_R', T, K.map(k => [elbow(flexOf(k)), 0, -0.05])),
+    rotq('UpperArm_L', T, K.map(k => shoulderQ(k, 'L'))),
+    rot('LowerArm_L', T, K.map(k => [elbow(offFlexOf(k)), 0, 0.05])),
+    rot('UpperLeg_L', T, legL.map(l => [hip(l[0]), 0, 0.03])),
+    rot('LowerLeg_L', T, legL.map(l => [knee(l[1]), 0, 0])),
+    rot('Foot_L', T, legL.map(l => [ankle(l[2]), 0, 0])),
+    rot('UpperLeg_R', T, legR.map(l => [hip(l[0]), 0, -0.03])),
+    rot('LowerLeg_R', T, legR.map(l => [knee(l[1]), 0, 0])),
+    rot('Foot_R', T, legR.map(l => [ankle(l[2]), 0, 0])),
+    rot('Flag_L', T, K.map(k => [-0.004 * k.lean, 0, 0.05])),
+    rot('Flag_R', T, K.map(k => [-0.004 * k.lean, 0, -0.05]))
+  ]);
+}
 
 /* ----------------------------------------------------------------- Catch */
 clip('Catch', 0.90, [
@@ -835,10 +1062,78 @@ clip('Dive', 1.20, [
   rot('LowerLeg_R', [0, 0.35, 1.20], [[0.55, 0, 0], [0.35, 0, 0], [0.85, 0, 0]])
 ]);
 
+/* -------------------------------------------------------------- FlagGrab */
+/* THE DEFENDER'S HALF OF A FLAG PULL, which the rig never had.
+
+   FlagPulled below is the BALL CARRIER's reaction — jerked to a stop, hands
+   up. There was nothing for the player who actually made the play: a defender
+   ran up to a runner, the whistle went, and the flag came off by itself. In a
+   sport whose entire defensive act is reaching out and taking a strip of cloth
+   off somebody's hip, that is the one animation that has to exist.
+
+   Two beats. First the REACH: hips sink, both arms drive forward and down to
+   the height of the other man's waist, elbows extending so the hands arrive
+   ahead of the body — 'horiz' near 80 is straight out in front, which is where
+   the flag is. Then the RIP: the near hand closes and snaps up and away while
+   the trunk rotates out of it, finishing with the flag held high, which is
+   both what a defender does and a clear read at chase-camera distance.       */
+{
+  /* Both feet are authored by WHERE THEY ARE and held there — a defender
+     sinking into a grab bends at the knees over two planted feet, and keying
+     hip angles instead slid the back foot a third of a metre backwards through
+     the turf while the man stood still. The pelvis then drops out of the knee
+     flexion on its own, which is the whole point of solving it. */
+  const G = [
+    // t      pelvis trunk lean tilt | lead foot: [z, knee, ankle] | back foot | reaching arm (R)       | off arm (L)
+    { t: 0.00, pel:  0, trk:   0, lean:  8, tilt:  0, L: [0.10, 30, 10], R: [-0.10, 30, 10], arm: [ 16,  20,  10,  55], off: [ 16,  20,  10,  55] },
+    { t: 0.14, pel: -2, trk:  -4, lean: 22, tilt:  0, L: [0.10, 42, 13], R: [-0.10, 42, 12], arm: [ 48,  72,  20,  62], off: [ 44,  70,  16,  66] },
+    { t: 0.28, pel: -3, trk:  -6, lean: 34, tilt:  0, L: [0.10, 50, 15], R: [-0.10, 50, 13], arm: [ 62,  80,  10,  22], off: [ 58,  78,   8,  28] },
+    { t: 0.40, pel:  0, trk:   2, lean: 30, tilt: -2, L: [0.10, 46, 14], R: [-0.10, 46, 12], arm: [ 58,  62,  -6,  34], off: [ 52,  60,   0,  40] },
+    { t: 0.55, pel:  8, trk:  16, lean: 12, tilt: -4, L: [0.10, 36, 12], R: [-0.10, 36, 11], arm: [118,   4, -30,  66], off: [ 30, -20, -20,  80] },
+    { t: 0.72, pel:  5, trk:  10, lean:  2, tilt: -2, L: [0.10, 30, 11], R: [-0.10, 30, 11], arm: [150,  -6, -10,  42], off: [ 20,  -8,  -6,  62] },
+    // Ends with the flag still held up, because what follows it is Celebrate,
+    // whose arms are also up: dropping to a rest pose here would put a fast
+    // arm-swing down and straight back up either side of the crossfade.
+    { t: 0.90, pel:  0, trk:   0, lean:  5, tilt:  0, L: [0.10, 30, 11], R: [-0.10, 30, 11], arm: [146,  -2,  -6,  44], off: [ 18,   4,   4,  56] }
+  ];
+  const T = G.map(k => k.t);
+  const legL = G.map(k => [plantHip(k.L[0], k.L[1]), k.L[1], k.L[2]]);
+  const legR = G.map(k => [plantHip(k.R[0], k.R[1]), k.R[1], k.R[2]]);
+  clip('FlagGrab', 0.90, [
+    groundedHips(T, legL, legR),
+    rot('Hips', T, G.map(k => [0, k.pel * D, 0])),
+    rot('Spine', T, G.map(k => [k.lean * 0.55 * D, (k.trk - k.pel) * 0.5 * D, -k.tilt * 0.55 * D])),
+    rot('Chest', T, G.map(k => [k.lean * 0.45 * D, (k.trk - k.pel) * 0.5 * D, -k.tilt * 0.45 * D])),
+    // Eyes on the flag on the way down, then up off it.
+    rot('Head', T, G.map(k => [(-0.05 - k.lean * 0.010) , -k.trk * 0.5 * D, 0])),
+    rotq('UpperArm_R', T, G.map(k => armQ('R', k.arm[0], k.arm[1], k.arm[2]))),
+    rot('LowerArm_R', T, G.map(k => [elbow(k.arm[3]), 0, -0.05])),
+    rotq('UpperArm_L', T, G.map(k => armQ('L', k.off[0], k.off[1], k.off[2]))),
+    rot('LowerArm_L', T, G.map(k => [elbow(k.off[3]), 0, 0.05])),
+    rot('UpperLeg_L', T, legL.map(l => [hip(l[0]), 0, 0.03])),
+    rot('LowerLeg_L', T, legL.map(l => [knee(l[1]), 0, 0])),
+    rot('Foot_L', T, legL.map(l => [ankle(l[2]), 0, 0])),
+    rot('UpperLeg_R', T, legR.map(l => [hip(l[0]), 0, -0.03])),
+    rot('LowerLeg_R', T, legR.map(l => [knee(l[1]), 0, 0])),
+    rot('Foot_R', T, legR.map(l => [ankle(l[2]), 0, 0])),
+    rot('Flag_L', T, G.map(k => [-0.004 * k.lean, 0, 0.05])),
+    rot('Flag_R', T, G.map(k => [-0.004 * k.lean, 0, -0.05]))
+  ]);
+}
+
 /* ------------------------------------------------------------ FlagPulled */
 /* Reaction of the ball carrier: jerked to a stop, hands up, body slumps. */
+/* The pelvis height here was hand-keyed and drove the feet 8.6cm through the
+   turf halfway through — which nobody ever saw, because until now `flagPulled`
+   was never set and this clip never played. Legs are in the same solved form
+   as Throw and FlagGrab: angles in degrees, ground worked out from them. */
+{
+  const T = [0, 0.18, 0.45, 1.10];
+  //              hip  knee ankle
+  const legL = [[ 20,  17,  2], [ 34,  12,  6], [ 14,  32, -2], [ 12,  26,  0]];
+  const legR = [[-17,  32, -4], [-26,  40, -8], [ -6,  23,  2], [ -3,  20,  4]];
 clip('FlagPulled', 1.10, [
-  hipY([0, 0.18, 0.45, 1.10], [1.000, 1.020, 0.930, 0.952]),
+  groundedHips(T, legL, legR),
   rot('Hips', [0, 0.18, 0.45, 1.10], [[0, 0, 0], [-0.10, 0.10, 0], [0.16, 0.22, 0], [0.10, 0.16, 0]]),
   rot('Spine', [0, 0.18, 0.45, 1.10], [[0.10, 0, 0], [-0.22, -0.12, 0], [0.34, -0.20, 0], [0.26, -0.14, 0]]),
   rot('Chest', [0, 0.18, 0.45, 1.10], [[0.04, 0, 0], [-0.14, 0, 0], [0.18, 0, 0], [0.14, 0, 0]]),
@@ -847,33 +1142,48 @@ clip('FlagPulled', 1.10, [
   rot('LowerArm_L', [0, 0.18, 0.45, 1.10], [[-1, 0, 0], [-0.55, 0, 0], [-1.1, 0, 0], [-1.25, 0, 0]]),
   rot('UpperArm_R', [0, 0.18, 0.45, 1.10], [[0.10, 0, -0.18], [-1.30, 0, -0.55], [-0.55, 0, -0.45], [-0.20, 0, -0.35]]),
   rot('LowerArm_R', [0, 0.18, 0.45, 1.10], [[-1, 0, 0], [-0.55, 0, 0], [-1.1, 0, 0], [-1.25, 0, 0]]),
-  rot('UpperLeg_L', [0, 0.18, 0.45, 1.10], [[-0.35, 0, 0.04], [-0.60, 0, 0.06], [-0.25, 0, 0.05], [-0.20, 0, 0.04]]),
-  rot('LowerLeg_L', [0, 0.18, 0.45, 1.10], [[0.3, 0, 0], [0.2, 0, 0], [0.55, 0, 0], [0.45, 0, 0]]),
-  rot('UpperLeg_R', [0, 0.18, 0.45, 1.10], [[0.30, 0, -0.04], [0.45, 0, -0.06], [0.10, 0, -0.05], [0.05, 0, -0.04]]),
-  rot('LowerLeg_R', [0, 0.18, 0.45, 1.10], [[0.55, 0, 0], [0.7, 0, 0], [0.4, 0, 0], [0.35, 0, 0]]),
+  rot('UpperLeg_L', T, legL.map(l => [hip(l[0]), 0, 0.05])),
+  rot('LowerLeg_L', T, legL.map(l => [knee(l[1]), 0, 0])),
+  rot('Foot_L', T, legL.map(l => [ankle(l[2]), 0, 0])),
+  rot('UpperLeg_R', T, legR.map(l => [hip(l[0]), 0, -0.05])),
+  rot('LowerLeg_R', T, legR.map(l => [knee(l[1]), 0, 0])),
+  rot('Foot_R', T, legR.map(l => [ankle(l[2]), 0, 0])),
   // the flag rips away and flies
   rot('Flag_L', [0, 0.18, 0.45, 1.10], [[0, 0, 0.05], [-0.9, 0.4, 0.5], [-1.6, 0.9, 0.9], [-1.9, 1.2, 1.1]]),
   rot('Flag_R', [0, 1.10], [[0, 0, -0.05], [0.25, 0, -0.10]])
 ]);
+}
 
 /* ------------------------------------------------------------- Celebrate */
+/* Little hops. The pelvis height was hand-keyed and sank 4cm into the turf at
+   the bottom of each one — again unseen until now, because the celebration was
+   triggered off the flag pull that never fired. The landing height is solved
+   from the legs and the HOP is added on top of it, which is the one part the
+   kinematics cannot know: for half of this clip nothing is holding him up. */
+{
+  const T = [0, 0.25, 0.5, 0.75, 1.0];
+  //             hip  knee ankle
+  const DOWN = [-3, 13, -6], UP = [20, 43, -23];
+  const leg = [DOWN, UP, DOWN, UP, DOWN];
+  const HOP = [0, 0.085, 0, 0.085, 0];
 clip('Celebrate', 1.00, [
-  hipY([0, 0.25, 0.5, 0.75, 1.0], [1.000, 1.090, 1.000, 1.090, 1.000]),
+  groundedHips(T, leg, leg, HOP),
   rot('Spine', [0, 0.5, 1.0], [[0.02, 0.16, 0], [0.02, -0.16, 0], [0.02, 0.16, 0]]),
   rot('Head', [0, 0.5, 1.0], [[-0.18, 0.10, 0], [-0.18, -0.10, 0], [-0.18, 0.10, 0]]),
   rot('UpperArm_L', [0, 0.5, 1.0], [[-2.75, 0, 0.30], [-2.55, 0, 0.55], [-2.75, 0, 0.30]]),
   rot('LowerArm_L', [0, 0.5, 1.0], [[-0.35, 0, 0], [-0.1, 0, 0], [-0.35, 0, 0]]),
   rot('UpperArm_R', [0, 0.5, 1.0], [[-2.75, 0, -0.30], [-2.55, 0, -0.55], [-2.75, 0, -0.30]]),
   rot('LowerArm_R', [0, 0.5, 1.0], [[-0.35, 0, 0], [-0.1, 0, 0], [-0.35, 0, 0]]),
-  rot('UpperLeg_L', [0, 0.25, 0.5, 0.75, 1.0], [[0.05, 0, 0.03], [-0.35, 0, 0.05], [0.05, 0, 0.03], [-0.35, 0, 0.05], [0.05, 0, 0.03]]),
-  rot('LowerLeg_L', [0, 0.25, 0.5, 0.75, 1.0], [[0.22, 0, 0], [0.75, 0, 0], [0.22, 0, 0], [0.75, 0, 0], [0.22, 0, 0]]),
-  rot('UpperLeg_R', [0, 0.25, 0.5, 0.75, 1.0], [[0.05, 0, -0.03], [-0.35, 0, -0.05], [0.05, 0, -0.03], [-0.35, 0, -0.05], [0.05, 0, -0.03]]),
-  rot('LowerLeg_R', [0, 0.25, 0.5, 0.75, 1.0], [[0.22, 0, 0], [0.75, 0, 0], [0.22, 0, 0], [0.75, 0, 0], [0.22, 0, 0]]),
-  rot('Foot_L', [0, 0.25, 0.5, 0.75, 1.0], [[0.10, 0, 0], [0.40, 0, 0], [0.10, 0, 0], [0.40, 0, 0], [0.10, 0, 0]]),
-  rot('Foot_R', [0, 0.25, 0.5, 0.75, 1.0], [[0.10, 0, 0], [0.40, 0, 0], [0.10, 0, 0], [0.40, 0, 0], [0.10, 0, 0]]),
+  rot('UpperLeg_L', T, leg.map(l => [hip(l[0]), 0, 0.03])),
+  rot('LowerLeg_L', T, leg.map(l => [knee(l[1]), 0, 0])),
+  rot('Foot_L', T, leg.map(l => [ankle(l[2]), 0, 0])),
+  rot('UpperLeg_R', T, leg.map(l => [hip(l[0]), 0, -0.03])),
+  rot('LowerLeg_R', T, leg.map(l => [knee(l[1]), 0, 0])),
+  rot('Foot_R', T, leg.map(l => [ankle(l[2]), 0, 0])),
   rot('Flag_L', [0, 0.25, 0.5, 0.75, 1.0], [[0.25, 0, 0.08], [-0.30, 0, 0.08], [0.25, 0, 0.08], [-0.30, 0, 0.08], [0.25, 0, 0.08]]),
   rot('Flag_R', [0, 0.25, 0.5, 0.75, 1.0], [[0.25, 0, -0.08], [-0.30, 0, -0.08], [0.25, 0, -0.08], [-0.30, 0, -0.08], [0.25, 0, -0.08]])
 ]);
+}
 
 /* ------------------------------------------------------------------ Juke */
 clip('Juke', 0.80, [

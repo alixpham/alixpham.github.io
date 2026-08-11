@@ -25,7 +25,7 @@
 
   // Field constants (yards) — mirror engine.js
   var F = (global.FLAGSTER && global.FLAGSTER.Engine && global.FLAGSTER.Engine.FIELD) ||
-          { LEN: 70, WID: 25, EZ: 10, GOAL_L: 10, GOAL_R: 60, MID: 35 };
+          { LEN: 70, WID: 30, EZ: 10, GOAL_L: 10, GOAL_R: 60, MID: 35 };
   var LEN = F.LEN, WID = F.WID, EZ = F.EZ, GOAL_L = F.GOAL_L, GOAL_R = F.GOAL_R, MID = F.MID;
 
   /* Face where you're going — or where you're coming FROM. Never square across it.
@@ -72,7 +72,7 @@
 
   // Field(yards) -> world(units). Field centered on origin, ground plane y=0.
   function wx(fx) { return fx - LEN / 2; }   // -35 .. +35   (offense attacks +x)
-  function wz(fy) { return fy - WID / 2; }   // -12.5 .. +12.5
+  function wz(fy) { return fy - WID / 2; }   // -15 .. +15
 
   function toColor(THREE, hex) { try { return new THREE.Color(hex); } catch (e) { return new THREE.Color(0x888888); } }
 
@@ -409,6 +409,43 @@
       if (grip.offUpperArm) poseArm(P, off, -side, grip.offUpperArm, grip.offLowerArm, w);
     }
 
+    /* ---- GOING FOR THE FLAG ------------------------------------------------
+       A grab is a STATE, not an event: the defender has hold of the carrier
+       and the meter fills for as long as they can stay there, which is
+       anywhere from half a second to indefinitely if the runner is shifty
+       enough. A one-shot cannot express that — so the reach is a pose layered
+       over whatever the legs are doing, exactly like the ball carry, and the
+       one-shot FlagGrab clip only plays for the rip at the end.
+
+       Both arms drive out in front at the height of the other man's waist.
+       The defence already faces whatever it is chasing (see the facing block
+       in syncPlayer), so straight ahead IS at the flag.
+
+       These are quaternions rather than eulers because that is the only honest
+       way to write an arm that is elevated, swept across the body and rotated
+       about its own axis all at once — the same solve the Throw and FlagGrab
+       clips are authored through, run once:
+           right arm  elevation 62, horizontal 80, ER 10, elbow 22
+           left  arm  elevation 58, horizontal 78, ER  8, elbow 28
+       (tools/build-player-glb.mjs, armQ). */
+    var REACH = {
+      R: { up: [-0.3642, 0.4917, -0.3642, 0.7022], lo: [-0.384, 0, -0.05] },
+      L: { up: [-0.3306, -0.5017, 0.3546, 0.7164], lo: [-0.489, 0, 0.05] }
+    };
+    var _rq = new THREE.Quaternion();
+    function poseReach(P, w) {
+      if (!P.nodes || w <= 0.001) return;
+      ['R', 'L'].forEach(function (side) {
+        var up = P.nodes['UpperArm_' + side], lo = P.nodes['LowerArm_' + side];
+        if (!up || !lo) return;
+        var r = REACH[side];
+        _rq.set(r.up[0], r.up[1], r.up[2], r.up[3]);
+        up.quaternion.slerp(_rq, w);
+        _q.setFromEuler(_e.set(r.lo[0], r.lo[1], r.lo[2]));
+        lo.quaternion.slerp(_q, w);
+      });
+    }
+
     // Flying-flag effect pool (spawned on flag pulls)
     var flags = makeFlagPool(THREE, 10);
     scene.add(flags.group);
@@ -559,8 +596,9 @@
         var ring = makeRing(); scene.add(ring);
         pMeshes.push({
           P: P, holder: holder, ring: ring,
-          ud: { yaw: seedYaw, celebT: 0, _wasPulled: false, _threw: false, _caught: false, _juked: false,
-                clip: 'idle', carryKey: '', carrySide: 0, carryW: 0 }
+          ud: { yaw: seedYaw, celebT: 0, _wasPulled: false, _pulled: false, _threw: false,
+                _caught: false, _juked: false,
+                clip: 'idle', carryKey: '', carrySide: 0, carryW: 0, grabW: 0 }
         });
       });
       playersRef = players;
@@ -602,7 +640,19 @@
       // ---- FACING: pick a target yaw (field-angle space) by role ----------
       var yawT = ud.yaw;
       if (throwing) {
-        var to = (state.ball && state.ball.to) || state.thrownTo;
+        /* TURN AND THROW, IN THAT ORDER. This used to read only ball.to and
+           state.thrownTo, and neither of those exists until the ball is
+           already airborne — so through the entire wind-up the quarterback
+           kept whatever facing the dropback left him with (usually pointing
+           back at his own goal line, because a backpedal faces its direction
+           of travel), and only began turning downfield AFTER the pass had
+           left. The whole clip — the coil, the stride, the release — played
+           at ninety degrees to where the ball was going.
+
+           pendingThrow.target is known the instant the wind-up starts, which
+           is what makes the throw a throw at somebody. */
+        var to = (state.pendingThrow && state.pendingThrow.target) ||
+                 (state.ball && state.ball.to) || state.thrownTo;
         if (to) yawT = Math.atan2(to.y - gp.y, to.x - gp.x);
       } else if (reaching) {
         // Turn to the ball, but a receiver at full stride can only look so far
@@ -631,7 +681,11 @@
       ud.yaw = yawT;
       // A juke is a sidestep: the body deliberately leaves the line of travel
       // for a beat, so snap through it instead of easing.
-      P.face(yawT, juking ? dt * 2.2 : dt);
+      /* A juke is a sidestep and a throw is a turn-and-fire; both have to beat
+         the default easing or the body arrives after the event it belongs to.
+         The wind-up is 374ms long and a quarterback coming out of a dropback
+         can be most of a half-turn away from his receiver. */
+      P.face(yawT, (juking || throwing) ? dt * 2.2 : dt);
 
       /* Backpedal = actual facing roughly opposite to velocity. This was gated
          to the defence, but it isn't a defensive motion, it's a direction of
@@ -651,7 +705,11 @@
 
       // ---- ONE-SHOT events (fire once per event) ---------------------------
       // Throw: QB releasing the ball.
-      if (throwing && !ud._threw) { P.oneShot('throw', 'idle'); ud._threw = true; }
+      /* The Throw clip's first frame IS the READY grip, bone for bone, so the
+         carry pose has nothing left to contribute and every frame it survives
+         it drags the wind-up back toward a static hold. It used to fade over
+         ~0.3s, which is four fifths of the way to the release. Drop it. */
+      if (throwing && !ud._threw) { P.oneShot('throw', 'idle'); ud._threw = true; ud.carryW = 0; }
       if (!throwing) ud._threw = false;
 
       // Juke: the carrier breaks a grip with a sidestep.
@@ -664,22 +722,24 @@
         P.oneShot('catch', 'run'); ud._caught = true;
       }
 
-      // Flag pull: the carrier whose flag just got pulled + puller celebrates.
+      // Flag pull, the carrier's half: jerked to a stop, hands up, flag gone.
       if (gp.flagPulled && !ud._wasPulled) {
-        P.oneShot('flagPull', 'idle');
+        P.oneShot('flagPull', 'idle');            // -> FlagPulled, the reaction
         flags.burst(holder.position.x, 0.9, holder.position.z, cols0(gp));
         ud._wasPulled = true;
-        // tag nearest defender to celebrate
-        var nd = 1e9, ne = null;
-        for (var pi = 0; pi < pMeshes.length; pi++) {
-          var op = state.players[pi];
-          if (!op || op.team === gp.team) continue;     // defenders only
-          var ddx = op.x - gp.x, ddy = op.y - gp.y, dd = ddx * ddx + ddy * ddy;
-          if (dd < nd) { nd = dd; ne = pMeshes[pi]; }
-        }
-        if (ne) ne.ud.celebT = 1.0;
+        ud.carryW = 0;
       }
       if (!gp.flagPulled) ud._wasPulled = false;
+
+      /* Flag pull, the defender's half: the rip. Who made the play used to be
+         guessed here by scanning for the nearest opponent to the man who went
+         down; the engine names them (pullFx), so take the name. */
+      if ((gp.pullFx || 0) > 0 && !ud._pulled) {
+        P.oneShot('flagGrab', 'celebrate');
+        ud._pulled = true;
+        ud.celebT = 1.6;                          // hold the celebration after it
+      }
+      if (!(gp.pullFx > 0)) ud._pulled = false;
 
       // ---- LOOP clip selection (skip while a one-shot is running) ----------
       if (!P._oneShot) {
@@ -706,7 +766,14 @@
          throw, the catch, the juke all own the arms while they run) and back
          in afterwards, and it fades through zero to change pose so a passer
          tucking the ball and running doesn't snap between the two. */
-      var holdingIt = (carrier === gp && !gp.flagPulled);
+      /* `state.carrier` IS who has the ball, so that is the whole test. The
+         `&& !gp.flagPulled` that used to be here was dead — nothing ever set
+         flagPulled — and the moment the engine started setting it, it became
+         wrong: it dropped the carry grip on the same frame the flag came off,
+         which unparents the ball from the hand and pops it to a world-space
+         fallback position beside the player. Losing your flag does not make
+         the ball leave your hands; the whistle does, a beat later. */
+      var holdingIt = (carrier === gp);
       var readying = holdingIt && gp === state.passer && !state.handoffDone && !state.pendingThrow;
       // The ready position lives in the THROWING hand, which is the right one —
       // the same hand the wind-up hands the ball to — so it is not sided by the
@@ -721,6 +788,16 @@
       if (ud.carryW > 0.001 && ud.carryKey) {
         poseGrip(P, gripFor(ud.carryKey), sideFor(ud.carryKey), ud.carryW);
       }
+
+      /* ---- REACHING FOR THE FLAG -----------------------------------------
+         Same idea as the carry pose and applied the same way: after the mixer,
+         over the top of the run cycle, faded in and out so the arms come up
+         into the reach and drop back out of it when the engagement breaks. The
+         legs keep running underneath, which is right — a defender chasing
+         somebody down does not stop to reach. */
+      var grabbing = (state.grabbedBy === gp && !gp.flagPulled && !P._oneShot);
+      ud.grabW += ((grabbing ? 1 : 0) - ud.grabW) * Math.min(1, dt * 11);
+      if (ud.grabW > 0.001) poseReach(P, ud.grabW);
 
       /* No floating nameplates during play. They were a world-space Sprite
          with depthTest off, which under the old distant camera was a harmless
@@ -813,9 +890,19 @@
     }
 
     function updateCamera(state, dt) {
-      var userSide = (engine && engine.userSide) || 'home';
-      var userOff = (state.possession === userSide);
-      var s = userOff ? 1 : -1;                    // we attack toward +x on offense
+      /* BEHIND WHOEVER HAS THE BALL.
+
+         This used to be behind whichever side the USER was playing, flipping
+         end-for-end with possession so that on defence you watched the offence
+         run at the lens. The offence always attacks +x, whichever team it is,
+         so "behind the ball" is not a variable at all — it is one side of the
+         field, always, and an interception simply hands the shot to the other
+         eleven without the camera going anywhere.
+
+         `s` is kept rather than folded away because it is the whole geometry of
+         this camera (back one way, look-at the other) and every use of it
+         downstream still wants to say which way is downfield. */
+      var s = 1;                                   // the offence attacks toward +x
       var C = (viewAspect < 1.0) ? CAM.tall : CAM.wide;
 
       if (camera.fov !== C.fov) { camera.fov = C.fov; camera.updateProjectionMatrix(); }
@@ -860,7 +947,27 @@
       if (camFz == null) camFz = latTarget;
       camFz = lerp(camFz, latTarget, clamp(dt * (chasing ? 6.0 : 2.4), 0, 1));
 
-      camFx = lerp(camFx, focusFx, clamp(dt * (chasing ? 7.0 : 4.5), 0, 1));
+      /* SETTLE BETWEEN PLAYS, EASE DURING THEM. A turnover or a new drive can
+         move the ball thirty yards up the field while nothing is happening,
+         and easing across that at 4.5/s takes about a second — which the
+         playcall and the snap can both happen inside, so the ball is live
+         again while the lens is still travelling and is briefly DOWNFIELD of
+         the man carrying it. Measured over a demo: 10% of live frames, all of
+         them in the second after a change of possession.
+
+         A long jump while the ball is dead is not a camera move, it is a
+         camera being repositioned, so just put it there. Anything the eye is
+         meant to follow — the play itself — still eases exactly as before.
+
+         The live threshold is deliberately far above anything a play can
+         produce: an eased follower's steady-state lag is speed/rate, which is
+         2 yards behind a 9yd/s runner and 3 behind a 22yd/s pass. A gap of
+         fourteen is not a camera following something, it is a camera that has
+         been left at the other end of the field. */
+      var live3d = (state.phase === 'live');
+      var jumped = Math.abs(focusFx - camFx) > (live3d ? 14 : 8);
+      if (jumped) camFx = focusFx;
+      else camFx = lerp(camFx, focusFx, clamp(dt * (chasing ? 7.0 : 4.5), 0, 1));
       var anchorX = wx(camFx);
 
       /* Keep the LENS inside the bowl, not just the focus. Backed up near your
@@ -873,8 +980,13 @@
       var camX = clamp(anchorX - s * C.back, -camLimit, camLimit);
       var lookX = anchorX + s * C.ahead;
 
-      // Ease so possession changes swing smoothly instead of snapping.
-      var k = clamp(dt * 3.2, 0, 1);
+      /* Ease, except when the shot was just repositioned. Snapping the FOCUS
+         alone does nothing on its own — the lens has a second, slower filter of
+         its own (3.2/s) and goes on gliding across the field for another
+         second regardless, which is exactly the interval the camera was
+         measured downfield of the man carrying the ball. Both have to move
+         together or neither has. */
+      var k = jumped ? 1 : clamp(dt * 3.2, 0, 1);
       camera.position.set(
         lerp(camera.position.x, camX, k),
         lerp(camera.position.y, C.height, k),

@@ -57,7 +57,12 @@ independently: `jersey`, `trim`, `skin`, `hair`, `shorts`, `socks`, `shoes`,
 `belt`, `flag`.
 
 **Clips** (all in place, no root translation drift): `Idle`, `Run`, `Walk`,
-`Backpedal`, `Throw`, `Catch`, `Dive`, `FlagPulled`, `Celebrate`, `Juke`.
+`Backpedal`, `Throw`, `Catch`, `Dive`, `FlagGrab`, `FlagPulled`, `Celebrate`,
+`Juke`.
+
+`FlagGrab` and `FlagPulled` are the two halves of the same event and belong to
+two different players: **FlagGrab** is the defender reaching out and ripping the
+flag off, **FlagPulled** is the ball carrier's reaction to losing it.
 
 ### Conventions worth knowing before you edit
 
@@ -72,8 +77,47 @@ independently: `jersey`, `trim`, `skin`, `hair`, `shorts`, `socks`, `shoes`,
   back-faces (which is exactly how the first pass lost one of the two jersey
   side stripes).
 * A fully abducted arm cannot be swung by an X rotation — that axis only twists
-  it. The `Throw` clip drives the release by *decreasing abduction* while X
-  sweeps forward.
+  it, and an elevated arm that is also swept across the chest and rotated about
+  its own axis does not decompose into an XYZ euler you can hold in your head.
+  Shoulders in `Throw` and `FlagGrab` are therefore **authored in the three
+  angles a throwing study reports** — elevation, horizontal adduction and axial
+  (external) rotation, all relative to the trunk — and the rotation is solved by
+  `armQ()`. Don't hand-type euler triples at a shoulder.
+* Feet are authored by **where they are**, not by hip angle: `plantHip(z, knee)`
+  solves the hip so a planted foot stays planted while the knee bends and the
+  hips rotate over it. Pelvis height is solved too — `groundedHips()` samples the
+  leg angles finely enough that the sole is on the turf between the keys as well
+  as on them.
+
+---
+
+## `measure-clip.mjs` — reading a clip back out in anatomical terms
+
+```sh
+node tools/measure-clip.mjs Throw            # whole clip, 40 samples/sec
+node tools/measure-clip.mjs Throw --at 0.374 # one instant
+node tools/measure-clip.mjs Run --fps 24
+```
+
+Parses the built `.glb`, runs forward kinematics over a clip, and prints the
+numbers a biomechanist would put on the pose — shoulder elevation / horizontal
+adduction / external rotation, elbow flexion, trunk and pelvis rotation and the
+separation between them, trunk lean and side-bend, knee flexion, hand height and
+speed — plus two checks that catch the things that are invisible in a still:
+
+* **lowest foot point** — anything below zero is being driven through the turf.
+* **planted foot drift** — a foot within a centimetre of the ground that is also
+  travelling is skating. (A gait clip is the honest exception and is labelled as
+  one: its planted foot is *supposed* to sweep backward at ground speed.)
+
+This is how `Throw` was rebuilt. The previous version measured, at the exact
+instant the engine released the ball, as: hand 0.41 m **behind** the chest,
+trunk still 67° closed, elbow at 95° and shoulder external rotation of 9° — a
+quarterback throwing the ball out of the back of his own shoulder while facing
+away from the target. None of that is visible in a screenshot; all of it is
+obvious in a table.
+
+---
 
 ### Using it from the game
 

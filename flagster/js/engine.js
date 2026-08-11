@@ -9,7 +9,11 @@
   var D = global.FLAGSTER.data;
 
   // Field constants (yards)
-  var FIELD_LEN = 70, FIELD_WID = 25, EZ = 10;      // end zone depth
+  /* NFL FLAG field: 70 x 30 with 10-yard end zones, so 50 between the goal
+     lines. The width was 25 — five yards narrow, which is a fifth of the
+     playing surface missing and the single dimension that decides how much
+     room a receiver has to work with against man coverage. */
+  var FIELD_LEN = 70, FIELD_WID = 30, EZ = 10;      // end zone depth
   var GOAL_L = EZ, GOAL_R = FIELD_LEN - EZ;         // x=10 (own), x=60 (target)
   var MIDFIELD = (GOAL_L + GOAL_R) / 2;             // x=35
 
@@ -179,7 +183,7 @@
       data: playerData, team: team, slot: slot,
       x: spot.x, y: spot.y, vx: 0, vy: 0, ang: 0,
       route: routeKey, wp: 0, flagPulled: false,
-      jukeCd: 0, jukeFx: 0, jukeCount: 0, stun: 0, stam: 1,
+      jukeCd: 0, jukeFx: 0, pullFx: 0, jukeCount: 0, stun: 0, stam: 1,
       cover: null, isUser: false, animPhase: 0,
       pos: playerData.pos, last: playerData.last, ovr: playerData.ovr, num: playerData.num
     };
@@ -283,21 +287,6 @@
     var losX = s.losX;
     if (carrier.x > losX + 1.0 && !s.autoHandoff) { this._flash('No forward pass past the line!'); return; }
 
-    // Lead the receiver
-    /* C1 — BALLISTICS. Every pass used to leave at a fixed 22yd/s in a straight
-       line with a cosmetic sin() bump capped at 3.5 yards, so a 5-yard flat and
-       a 40-yard bomb were thrown at identical velocity and arrived in the same
-       shape. Arm strength only ever showed up as a scatter term.
-
-       Now: launch speed comes from the arm, the angle is solved for the range,
-       and gravity does the rest. Hang time, loft and — when the arm can't cover
-       the distance — a genuine underthrow all fall out of it instead of being
-       sampled. */
-    var throwSpeed = 18 + (clamp(carrier.data.throw, 40, 99) - 40) / 59 * 12; // yards/sec
-    var lead = 0.35 + (99 - carrier.data.throw) / 200;
-    var predicted = { x: target.x + target.vx * lead, y: target.y + target.vy * lead };
-    predicted.x = clamp(predicted.x, 0, FIELD_LEN);
-    predicted.y = clamp(predicted.y, 0, FIELD_WID);
     /* WIND UP, then release. The ball used to become airborne on the same
        frame the button was pressed, while the throw animation it is supposed
        to come out of runs for 1.10s — so the pass was ten yards downfield
@@ -322,18 +311,25 @@
      The trajectory used to run from the ground to the ground, and the 3D
      renderer papered over it by drawing the whole parabola a flat 1.0 yards
      higher. Two things were wrong with that. The release height was not the
-     height of the hand the ball had just been in — measured, the throwing hand
-     passes the ear at about 1.6yd while the pass was drawn leaving at 1.0 — so
-     the ball visibly dropped out of the quarterback's grip the instant it went
-     airborne. And the ball then "landed" at 1.0yd, which is neither the ground
-     nor where a receiver catches it.
+     height of the hand the ball had just been in — so the ball visibly dropped
+     out of the quarterback's grip the instant it went airborne. And the ball
+     then "landed" at 1.0yd, which is neither the ground nor where a receiver
+     catches it.
 
      So the flight is now solved between the two heights it actually happens
      between, and the renderer draws `z` as-is. Everything downstream — hang
      time, how far the arm really reaches, the underthrow — falls out of the
-     same solve rather than being corrected for afterwards. */
-  var RELEASE_Z = 1.60;                  // yards: the throwing hand at release
-  var CATCH_Z = 1.15;                    // yards: chest height, where it's gathered
+     same solve rather than being corrected for afterwards.
+
+     Both heights are MEASURED off the rig rather than guessed, with
+     tools/measure-clip.mjs, and converted through the scales the renderer
+     applies (metres -> yards / 0.9144, then field3d's 0.87 player scale and
+     its 1.010 quarterback build, plus PLAYER_LIFT):
+
+       Throw at t=0.374 (RELEASE_AT):  hand 1.83m -> 1.86yd
+       Catch, ball secured:            hands 1.29m -> 1.35yd                */
+  var RELEASE_Z = 1.86;                  // yards: the throwing hand at release
+  var CATCH_Z = 1.35;                    // yards: chest height, where it's gathered
 
   /* Time for a ball launched upward at vz from z0 to fall back to z1.
      z1 = z0 + vz*t - g*t^2/2, taking the positive root. */
@@ -354,7 +350,20 @@
     if (s.phase !== 'live' || s.carrier !== carrier || carrier.flagPulled) return;
     if (!target || target.flagPulled) return;
 
-    var throwSpeed = 22;
+    /* C1 — BALLISTICS. Every pass used to leave at a fixed 22yd/s in a straight
+       line with a cosmetic sin() bump, so a 5-yard flat and a 40-yard bomb were
+       thrown at identical velocity and arrived in the same shape.
+
+       Launch speed comes from the arm; the angle is solved for the range below
+       and gravity does the rest. Hang time, loft and — when the arm can't cover
+       the distance — a genuine underthrow all fall out of it.
+
+       This lived in throwTo() where it could not do anything: throwTo only
+       starts the wind-up, and the whole ballistic solve happens HERE, 374ms
+       later, where a local `var throwSpeed = 22` shadowed it. Every arm in the
+       league threw at exactly the same velocity and the rating showed up only
+       as scatter — the very thing the comment said had been fixed. */
+    var throwSpeed = 18 + (clamp(carrier.data.throw, 40, 99) - 40) / 59 * 12; // yards/sec
     /* Lead the receiver to where they will BE when the ball arrives. The lead
        used to be a flat 0.35-0.57s regardless of distance, while a 15-yard
        ball is in the air 0.68s and a deep one well over a second — so every
@@ -379,24 +388,60 @@
     var dirx = d > 1e-4 ? (predicted.x - carrier.x) / d : 1;
     var diry = d > 1e-4 ? (predicted.y - carrier.y) / d : 0;
 
-    /* Solve the launch angle for the range. sin(2t) = g*d/v^2 has a flat root
-       and a lofted one; take the flat one and then impose a floor that grows
-       with distance, so a deep ball is actually thrown up in the air and is
-       catchable rather than a flat rocket. */
-    var s2 = GRAVITY * d / (throwSpeed * throwSpeed);
+    /* SOLVE THE ANGLE FOR THE RANGE THE BALL ACTUALLY HAS.
+
+       THIS IS WHY NOTHING WAS EVER CAUGHT. The angle came from sin(2t) =
+       g*d/v^2, which is the range of a projectile that lands at the height it
+       left from. This one does not: it leaves a hand at RELEASE_Z and is
+       gathered at CATCH_Z, half a yard lower, and that extra half yard of fall
+       buys it extra flight time and extra distance. Measured across 150 CPU
+       passes, the aim point was 12.6 yards away and the ball landed 15.4 —
+       every single pass sailed 2.8 yards long, while the receiver ran to the
+       aim point and stood there. The catch radius is 2.4. Completion rate:
+       one pass in three hundred.
+
+       Nothing else was wrong — the receivers arrived within 0.24 yards of
+       where they were sent. The ball was simply thrown past them, on purpose,
+       by the arithmetic.
+
+       So solve the real thing. Range for a launch at angle t, from a height
+       `drop` above where it will be caught, is
+
+           R(t) = v*cos(t) * (v*sin(t) + sqrt((v*sin(t))^2 + 2*g*drop)) / g
+
+       which rises to a maximum at tOpt = atan(v / sqrt(v^2 + 2*g*drop)) — 45
+       degrees when there is no height difference, flatter when there is — and
+       is monotonic below it. Bisect that branch. A target past the maximum is
+       genuinely out of the arm's range, and gets the best angle there is and
+       an honest underthrow, which is the same behaviour as before.
+
+       The old code also imposed a loft floor (`theta >= d*0.011`) to keep deep
+       balls in the air. That is gone: it was a correction for a range solve
+       that was wrong, and the exact solve already lofts a deep ball on its own
+       — 21 degrees at thirty yards — while keeping a five-yard out flat. */
+    var tOpt = Math.atan(throwSpeed / Math.sqrt(throwSpeed * throwSpeed + 2 * GRAVITY * Math.max(0, RELEASE_Z - CATCH_Z)));
+    function rangeAt(t) {
+      var vz = throwSpeed * Math.sin(t);
+      return throwSpeed * Math.cos(t) * flightTime(vz, RELEASE_Z, CATCH_Z);
+    }
     var theta;
-    if (s2 >= 1) {
-      theta = Math.PI / 4;              // out of range: best he's got, falls short
+    if (d >= rangeAt(tOpt)) {
+      theta = tOpt;                     // out of range: best he's got, falls short
     } else {
-      theta = 0.5 * Math.asin(s2);
-      theta = Math.max(theta, Math.min(Math.PI / 4, d * 0.011));
+      var lo = -0.7, hi = tOpt;
+      for (var bi = 0; bi < 32; bi++) {
+        var mid = (lo + hi) / 2;
+        if (rangeAt(mid) < d) lo = mid; else hi = mid;
+      }
+      theta = (lo + hi) / 2;
     }
     var hv = throwSpeed * Math.cos(theta);        // horizontal component
     var vz = throwSpeed * Math.sin(theta);        // vertical component
     var flight = flightTime(vz, RELEASE_Z, CATCH_Z);
     var reach = hv * flight;                      // how far it ACTUALLY goes
     if (reach < d) {                              // underthrow — the arm fell short
-      predicted = { x: carrier.x + dirx * reach, y: carrier.y + diry * reach };
+      predicted = { x: clamp(carrier.x + dirx * reach, 0, FIELD_LEN),
+                    y: clamp(carrier.y + diry * reach, 0, FIELD_WID) };
     }
     s.ball = {
       x: carrier.x, y: carrier.y, z: RELEASE_Z, inAir: true,
@@ -572,6 +617,7 @@
       var p = s.players[i];
       if (p.jukeCd > 0) p.jukeCd = Math.max(0, p.jukeCd - dt);
       if (p.jukeFx > 0) p.jukeFx = Math.max(0, p.jukeFx - dt);
+      if (p.pullFx > 0) p.pullFx = Math.max(0, p.pullFx - dt);
       if (p.stun > 0) p.stun = Math.max(0, p.stun - dt);
       /* The sidestep used to be scripted here — first a teleport, then a
          positional impulse integrated over a fifth of a second — because the
@@ -786,8 +832,27 @@
     }
 
     p.vx = vx; p.vy = vy;
-    p.x = clamp(p.x + vx * dt, 0, FIELD_LEN);
-    p.y = clamp(p.y + vy * dt, 0, FIELD_WID);
+    /* OUT OF BOUNDS. The step was clamped into the field and nothing else
+       happened, so a ball carrier driven at the sideline did not go out — he
+       pressed against the paint and kept running along it, for as long as you
+       liked, gaining yards down a line he was standing on. There is no such
+       thing in the sport: the moment any part of you touches out, the ball is
+       dead where you crossed.
+
+       The clamp stays — a body that keeps its feet on the grass is the right
+       way to draw the last frame, and everyone who is NOT carrying the ball
+       simply cannot leave the field. What is new is that the crossing is
+       recorded before it is clamped away, so _update can blow the whistle on
+       the carrier. `outAt` is the spot, which is the yardage. */
+    var nx = p.x + vx * dt, ny = p.y + vy * dt;
+    if (ny < 0 || ny > FIELD_WID || nx < 0 || nx > FIELD_LEN) {
+      p.outOfBounds = true;
+      p.outAt = { x: clamp(nx, 0, FIELD_LEN), y: clamp(ny, 0, FIELD_WID) };
+    } else {
+      p.outOfBounds = false;
+    }
+    p.x = clamp(nx, 0, FIELD_LEN);
+    p.y = clamp(ny, 0, FIELD_WID);
     if (Math.hypot(vx, vy) > 0.05) p.ang = Math.atan2(vy, vx);
   };
 
@@ -808,16 +873,22 @@
     this._steer(p, dx / m * spd, dy / m * spd, dt);
   };
 
-  /* Input is given in SCREEN space (dx = right, dy = down). The camera sits
-     behind whichever team you're playing as and flips with possession, so
-     screen axes do NOT line up with field axes — feeding them straight through
-     made "right" travel sideways/down the pitch. Rotate the stick into field
-     space using the same orientation the camera uses:
-        on offense  we look toward +x  -> screen-up = +x, screen-right = +y
-        on defense  we look toward -x  -> screen-up = -x, screen-right = -y  */
+  /* Input is given in SCREEN space (dx = right, dy = down) and has to be
+     rotated into field space using whatever orientation the camera is using,
+     or "right" travels sideways down the pitch.
+
+     The camera USED to sit behind whichever team you were playing as, and so
+     flipped end-for-end with possession; this returned -1 to match. It now
+     sits behind whoever has the ball, and the offence always attacks +x, so
+     the shot never turns around and the answer is always +1:
+
+        we always look toward +x -> screen-up = +x, screen-right = +y
+
+     The seam is kept — every caller still asks the camera which way is
+     downfield rather than assuming — so a camera that ever does turn round
+     again only has to change this one line. */
   Engine.prototype.viewSign = function () {
-    if (this.demo) return 1;
-    return (this.state && this.state.possession === this.userSide) ? 1 : -1;
+    return 1;
   };
 
   Engine.prototype._moveByInput = function (p, dt) {
@@ -1060,7 +1131,10 @@
     var s = this.state;
     this._flash('Thrown away');
     this.onEvent({ type: 'throwaway' });
-    this._incomplete('Thrown away', { x: qb.x, y: qb.y < FIELD_WID / 2 ? 0.5 : FIELD_WID - 0.5 });
+    /* Where a throwaway goes: OUT. It was aimed half a yard inside the
+       touchline, which is a live ball landing in play — the very thing a
+       quarterback throwing it away is trying not to do. */
+    this._incomplete('Thrown away', { x: qb.x, y: qb.y < FIELD_WID / 2 ? 0 : FIELD_WID });
   };
 
   /* B3 — PURSUIT ANGLES.
@@ -1191,8 +1265,14 @@
     var s = this.state, b = s.ball;
     var z1 = b.z1 == null ? 0 : b.z1;
     b.t += dt;
-    b.x = clamp(b.from.x + b.dirx * b.hv * b.t, 0, FIELD_LEN);
-    b.y = clamp(b.from.y + b.diry * b.hv * b.t, 0, FIELD_WID);
+    /* A THROWN BALL IS NOT ON THE FIELD, so it isn't held to it. These two
+       were clamped, which meant a pass aimed at the sideline curved back in
+       and landed inbounds — you could not throw one away, and a ball you
+       watched sail toward the touchline turned round in mid-air and came
+       home. It flies where it was thrown; whether that is in play is decided
+       when it arrives. */
+    b.x = b.from.x + b.dirx * b.hv * b.t;
+    b.y = b.from.y + b.diry * b.hv * b.t;
     b.z = Math.max(z1, (b.z0 || 0) + b.vz * b.t - 0.5 * GRAVITY * b.t * b.t);
     if (b.t >= b.dur || (b.z <= z1 && b.t > 0.05)) { b.z = z1; this._resolveCatch(); }
   };
@@ -1220,6 +1300,20 @@
     b.inAir = false;
     var pt = { x: b.x, y: b.y };
     var off = this.offenseTeam();
+
+    /* A CATCH HAS TO BE MADE IN BOUNDS. A player is always on the field (they
+       are clamped there), so what decides this is where the BALL came down:
+       past the touchline or out of the back of the end zone and nobody can
+       legally have caught it, however close they were standing. A pitch is
+       different — it is a live ball, and one that goes out is dead at the spot
+       it left the field, not an incompletion. */
+    if (pt.y < 0 || pt.y > FIELD_WID || pt.x < 0 || pt.x > FIELD_LEN) {
+      var edge = { x: clamp(pt.x, 0, FIELD_LEN), y: clamp(pt.y, 0, FIELD_WID) };
+      s.clockStops = true;
+      if (b.lateral) { this._flash('Pitch out of bounds'); this._endPlay(edge.x, true); return; }
+      this._incomplete('Incomplete — out of bounds', edge);
+      return;
+    }
 
     var contenders = [];
     for (var i = 0; i < s.players.length; i++) {
@@ -1472,6 +1566,22 @@
   Engine.prototype._flagPull = function (defender, carrier) {
     var s = this.state;
     s.stats[this.defenseTeam()].tackles++;
+    /* NOBODY'S FLAG HAS EVER COME OFF. `flagPulled` is initialised to false on
+       every player at every snap, read in a dozen places, and was set to true
+       in exactly none of them. So the flag came off in the scoreline and
+       nowhere else: no flag burst, no reaction from the carrier, and no
+       celebration from the defender, because the renderer's entire flag-pull
+       branch is gated on this flag and it never once fired.
+
+       `pullFx` is the defender's cue, on the same pattern as jukeFx — a short
+       countdown ticked down in _updateTimers, which the renderer turns into
+       the reaching-and-ripping animation. The renderer used to guess who made
+       the play by finding the nearest opponent; it is told now. */
+    carrier.flagPulled = true;
+    defender.pullFx = 0.9;
+    defender.grabbing = false;
+    s.grabbedBy = null;
+    s.grabProgress = 0;
     // spot the ball where the carrier is
     var spotX = carrier.x;
     this.anim.push({ type: 'flag', x: carrier.x, y: carrier.y, t: 0, dur: 0.7,
@@ -1638,8 +1748,27 @@
        touched. Retreating into your own end zone is legal and you can run back
        out; it costs you two points only if your flag comes off back there,
        which _flagPull now handles. */
-    // Out of bounds — also stops the clock inside two minutes
-    if (c.y <= 0.4 || c.y >= FIELD_WID - 0.4) { s.clockStops = true; this._endPlay(c.x, false); }
+    /* OUT OF BOUNDS — also stops the clock.
+
+       This used to fire on the carrier being within 0.4 yards of the sideline,
+       which is not the rule and cost the offence a strip of field on both
+       touchlines: half a yard inside the paint is inbounds and playable, and
+       working the sideline is one of the things a 30-yard field is FOR. It
+       also never ended a play at the right spot, because it triggered before
+       the crossing rather than at it.
+
+       _steer records the frame in which a step would genuinely have carried a
+       body over the line, and where (see `outOfBounds` / `outAt`), so the
+       whistle goes exactly where the player left the field. */
+    if (c.outOfBounds) {
+      s.clockStops = true;
+      var spot = c.outAt || { x: c.x, y: c.y };
+      // Leaving the field inside your own end zone is a safety, for the same
+      // reason losing your flag back there is.
+      if (spot.x <= GOAL_L) { this._flash('Out of bounds in the end zone — SAFETY!'); this._safety(); return; }
+      this._flash('Out of bounds');
+      this._endPlay(spot.x, false);
+    }
   };
 
   /* --------------------------- PLAY RESOLUTION --------------------------- */
@@ -1672,6 +1801,10 @@
     s.clockStops = false;
     if (s.gameOver) return;
 
+    /* FOUR DOWNS TO CROSS MIDFIELD, THREE TO SCORE ONCE YOU HAVE. The second
+       half of that rule was missing — a team that had crossed got four downs
+       to score as well, which is a whole extra play on every drive in the
+       half of the field where drives are decided. */
     if (!s.crossedMid) {
       if (reachedMid) {
         s.crossedMid = true; s.down = 1;
@@ -1682,7 +1815,7 @@
       }
     } else {
       s.down++;
-      if (s.down > 4) return this._turnoverOnDowns();
+      if (s.down > 3) return this._turnoverOnDowns();
     }
     this._nextSnap();
   };
