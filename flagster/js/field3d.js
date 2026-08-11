@@ -499,8 +499,99 @@
     var slashInk = makeSlashInk(THREE);
     scene.add(slashInk.group);
 
-    // Touchdown flash sprite (full-scene tint via a big plane facing camera)
-    var tdFx = { t: 0, dur: 0 };
+    /* ========================== CELEBRATIONS ============================
+       A touchdown and a first down are both good news and they are not the
+       same news, so they must not look the same. The engine says WHICH
+       happened, WHERE, and to which side (engine._celebrate); everything about
+       how big it looks lives here.
+
+           td         the whole scoring side, for nearly three seconds: high
+                      jumps, the scorer spins to the camera, three waves of
+                      confetti over the end zone in the team's colours, and a
+                      seven-yard shockwave opening under the scorer.
+           firstdown  the carrier and anyone standing within eight yards, for a
+                      beat: a bounce, a turn toward the man who moved the
+                      chains, one small puff of confetti and a ring a third the
+                      size.
+
+       HOP_RATE is 2*PI on purpose: the baked Celebrate clip hops twice a second
+       (tools/build-player-glb.mjs, HOP) and its action is reset when the
+       celebration starts, so a hop added at that rate lands WITH the clip's own
+       instead of beating against it.
+
+       Nobody is TRANSLATED by any of this. The engine stops moving players the
+       moment the ball is dead (_update returns unless phase is 'live'), so a
+       renderer-side mob would be five bodies sliding across the turf under a
+       stationary clip — the exact skate the stride matching above exists to
+       kill. Celebrations are performed on the spot. */
+    var CELEB = {
+      td:        { dur: 2.8,  hop: 0.40, radius: Infinity, stagger: 0.13, spin: 0.85,
+                   ring: { r: 7.0, dur: 0.75 }, waves: [0, 0.55, 1.15], puff: 46, star: 1.35 },
+      firstdown: { dur: 1.25, hop: 0.14, radius: 8,        stagger: 0.05, spin: 0,
+                   ring: { r: 2.6, dur: 0.40 }, waves: [0],             puff: 10, star: 1.15 }
+    };
+    var HOP_RATE = Math.PI * 2;
+    var celeb = { kind: '', cfg: null, t: 0, dur: 0, team: null, x: MID, y: WID / 2, wave: 0 };
+
+    // Confetti (one InstancedMesh, one draw call) and the shockwave on the turf.
+    var confetti = makeConfetti(THREE, 200);
+    scene.add(confetti.group);
+    var shock = makeShockRing(THREE);
+    scene.add(shock.mesh);
+
+    function startCeleb(kind, a) {
+      var cfg = CELEB[kind];
+      if (!cfg) return;
+      celeb.kind = kind; celeb.cfg = cfg;
+      celeb.t = 0; celeb.dur = cfg.dur; celeb.wave = 0;
+      celeb.team = a.team || null;
+      celeb.x = (a.x != null && isFinite(a.x)) ? a.x : MID;
+      celeb.y = (a.y != null && isFinite(a.y)) ? a.y : WID / 2;
+      shock.fire(wx(celeb.x), wz(celeb.y), cfg.ring.r, cfg.ring.dur);
+    }
+
+    function celebColors() {
+      var t = (celeb.team === 'away') ? awayCols : homeCols;
+      return [t[0], t[1] || '#ffffff', '#ffd23f', '#ffffff'];
+    }
+
+    /* Advance the celebration clock and fire whatever wave of confetti is due.
+       Called once per frame, before the players are synced, so a celebration
+       that starts this frame is already running when they read it. */
+    function updateCeleb(dt) {
+      if (celeb.dur <= 0) return;
+      var prev = celeb.t;
+      celeb.t += dt;
+      var cfg = celeb.cfg, cols = celebColors();
+      for (var i = celeb.wave; i < cfg.waves.length; i++) {
+        if (cfg.waves[i] > celeb.t || cfg.waves[i] < prev - 0.001) continue;
+        // Fan the waves out either side of the spot so it reads as the crowd
+        // end of the field going up, not one firework over one man's head.
+        var off = (i === 0) ? 0 : ((i % 2) ? -4.5 : 4.5);
+        confetti.burst(wx(celeb.x), 2.2 + i * 0.35, wz(clamp(celeb.y + off, 1, WID - 1)),
+                       cfg.puff, cols);
+        celeb.wave = i + 1;
+      }
+      if (celeb.t >= celeb.dur) { celeb.dur = 0; celeb.kind = ''; celeb.cfg = null; }
+    }
+
+    function stopCeleb() { celeb.dur = 0; celeb.kind = ''; celeb.cfg = null; }
+
+    /* Is this player celebrating, and how hard? null when they are not.
+       Membership is re-derived every frame rather than captured, which is only
+       sound because nothing moves while the ball is dead — and the one thing
+       that WOULD move everybody, a new formation, stops the celebration
+       outright (rebuildPlayers). */
+    function celebFor(gp, ud, state) {
+      var cfg = celeb.cfg;
+      if (!cfg || celeb.dur <= 0 || !celeb.team || gp.team !== celeb.team) return null;
+      if (isFinite(cfg.radius) && Math.hypot(gp.x - celeb.x, gp.y - celeb.y) > cfg.radius) return null;
+      var age = celeb.t - (ud.idx % 5) * cfg.stagger;
+      if (age <= 0) return null;
+      // Ease in so the first frame isn't a pop, and out so the last isn't.
+      var w = Math.min(1, age / 0.18, Math.max(0, celeb.dur - celeb.t) / 0.35);
+      return { cfg: cfg, age: age, w: w, star: (state.carrier === gp) };
+    }
 
     // Realistic rigged players (FLAGSTER.Player3D) are (re)built whenever the
     // roster array changes. Each entry: { P, ring, ud }.
@@ -555,6 +646,8 @@
     var camFx = MID;           // smoothed camera focus (field X)
     var camFz = null;          // smoothed camera lateral follow (world Z)
     var chaseW = 0;            // 0..1: how much the look-at is on a ball in flight
+    var holdW = 0;             // 0..1: ...and how much of it is on a ball carrier
+                               // (not ud.carryW, which is the carry-POSE blend)
     var viewAspect = 16 / 9;   // current canvas aspect (w/h); drives FOV + framing
     var prevInAir = false;
 
@@ -640,18 +733,33 @@
         var ring = makeRing(); scene.add(ring);
         pMeshes.push({
           P: P, holder: holder, ring: ring,
-          ud: { yaw: seedYaw, celebT: 0, _wasPulled: false, _pulled: false, _threw: false,
+          ud: { idx: idx, yaw: seedYaw, celebT: 0, _wasPulled: false, _pulled: false, _threw: false,
                 _caught: false, _juked: false, clip: 'idle',
                 carryKey: '', carrySide: 0, carryW: 0, carryAmp: 0, grabW: 0 }
         });
       });
       playersRef = players;
+      /* A new formation is ten new bodies at ten new spots: whatever they were
+         celebrating, these are not the men who did it. */
+      stopCeleb();
     }
 
     // Advance one player's Player3D: position, facing, clip selection, one-shots.
     function syncPlayer(entry, gp, dt, state) {
       var P = entry.P, ud = entry.ud, holder = entry.holder;
-      holder.position.set(wx(gp.x), PLAYER_LIFT, wz(gp.y));
+
+      /* Celebrating? Then this player jumps, and how high is the whole
+         difference between "we scored" and "we moved the chains". The hop is
+         added to the HOLDER, not the rig: the mixer owns root.position (the
+         clip's own little hop lives there) and would overwrite anything
+         written to it. */
+      var cel = celebFor(gp, ud, state);
+      var hop = 0;
+      if (cel) {
+        hop = cel.cfg.hop * cel.w * (cel.star ? cel.cfg.star : 1) *
+              Math.abs(Math.sin(cel.age * HOP_RATE));
+      }
+      holder.position.set(wx(gp.x), PLAYER_LIFT + hop, wz(gp.y));
 
       /* Animate what the body actually DID, not what it meant to do. The
          engine publishes rvx/rvy — real displacement over the frame — and
@@ -683,7 +791,21 @@
 
       // ---- FACING: pick a target yaw (field-angle space) by role ----------
       var yawT = ud.yaw;
-      if (throwing) {
+      if (cel) {
+        /* A celebration is PLAYED TO somebody or it is a man waving at grass.
+           The scorer turns to the camera — which is always behind the offence,
+           so that is yaw PI, always — and spins once on the way round; every
+           team-mate turns to face them. */
+        if (cel.star) {
+          var spin = cel.cfg.spin;
+          // One full turn over `spin` seconds, ending exactly back at PI so
+          // there is no jump when it finishes.
+          yawT = Math.PI - (spin && cel.age < spin ? (cel.age / spin) * Math.PI * 2 : 0);
+          yawT += Math.sin(cel.age * 3.1) * 0.18;             // never quite still
+        } else {
+          yawT = Math.atan2(celeb.y - gp.y, celeb.x - gp.x) + Math.sin(cel.age * 2.7 + ud.idx) * 0.16;
+        }
+      } else if (throwing) {
         /* TURN AND THROW, IN THAT ORDER. This used to read only ball.to and
            state.thrownTo, and neither of those exists until the ball is
            already airborne — so through the entire wind-up the quarterback
@@ -787,7 +909,7 @@
 
       // ---- LOOP clip selection (skip while a one-shot is running) ----------
       if (!P._oneShot) {
-        if (ud.celebT > 0) {
+        if (ud.celebT > 0 || cel) {
           P.play('celebrate');
         } else if (live && backpedal) {
           P.play('backpedal'); P.setSpeed(clamp(speed / RUN_NATURAL, 0.75, 2.4));
@@ -825,8 +947,14 @@
       if (holdingIt && !ud.carrySide) ud.carrySide = carrySide(state, gp);
       if (!holdingIt) ud.carrySide = 0;
       var wantKey = holdingIt ? (readying ? 'ready-1' : 'carry' + ud.carrySide) : '';
-      // A one-shot is driving the arms itself; give way to it and come back.
-      var wantW = (holdingIt && !P._oneShot && wantKey === ud.carryKey) ? 1 : 0;
+      /* A one-shot is driving the arms itself; give way to it and come back.
+         So is a celebration, and for the same reason: the Celebrate clip puts
+         both arms over the head, and blending a ball-tuck into one shoulder
+         while it does that leaves a man who has just scored standing there with
+         his arm down. Only the POSE is dropped — carryKey survives, so the ball
+         stays parented to the forearm and goes up with it, which is what a
+         scorer holding it aloft actually is. */
+      var wantW = (holdingIt && !P._oneShot && !cel && wantKey === ud.carryKey) ? 1 : 0;
       ud.carryW += (wantW - ud.carryW) * Math.min(1, dt * 9);
       if (ud.carryW < 0.02 && wantKey !== ud.carryKey) { ud.carryKey = wantKey; ud.carryW = 0; }
       if (ud.carryW > 0.001 && ud.carryKey) {
@@ -927,8 +1055,12 @@
     var SAFE = 0.72;                     // keep the ball inside 72% of the frame
     // (_bndc, not _ndc — the screen picker already owns that name in this scope.)
     var _ballW = new THREE.Vector3(), _bndc = new THREE.Vector3();
-    function keepBallInFrame(state) {
-      _ballW.set(wx(state.ball.x), state.ball.z || 0, wz(state.ball.y));
+    /* Takes WORLD coords rather than reading the ball out of state, because the
+       guarantee is not about the ball object — it is about whatever the shot is
+       currently required to contain. In flight that is the ball; the rest of
+       the time it is the player holding it. */
+    function keepInFrame(px, py, pz) {
+      _ballW.set(px, py, pz);
       for (var i = 0; i < 6; i++) {
         camera.updateMatrixWorld();
         camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
@@ -939,6 +1071,52 @@
         _target.lerp(_ballW, 0.34);
         camera.lookAt(_target);
       }
+    }
+
+    /* ===================== WHERE THE BALL IS ABOUT TO BE ==================
+       Everything downstream of this is a lag filter, so a camera aimed at where
+       the ball IS is always behind it by its own settling time — speed divided
+       by ease rate, about two yards behind a runner and three behind a pass.
+       Aiming slightly AHEAD cancels that, and costs nothing when the ball
+       changes direction because keepInFrame() is still underneath as the
+       guarantee.
+
+           carried    lead by the carrier's own velocity. rvx/rvy is what the
+                      body actually did last frame (the engine publishes it),
+                      not what it intended, so this leads a real cut rather than
+                      an input. Only while the ball is live: the engine stops
+                      updating players the moment it's dead, and leading a
+                      standing man would just park the shot four yards past him.
+           in flight  the engine solved the catch point the instant the ball
+                      left the hand (ball.to). Aim between the ball and that
+                      point, weighted further toward it as the flight runs down,
+                      and the camera is at the catch before the ball is.
+           loose      the ball itself, wherever it is — bouncing after an
+                      incompletion, in the snap, sitting on the spot.
+
+       LOS is the last resort only, for the frames before a ball exists at all. */
+    var CARRY_LEAD = 0.38;               // seconds of the carrier's velocity
+    var _focus = { x: MID, y: WID / 2 };
+    function ballFocus(state) {
+      var f = _focus, c = state.carrier, b = state.ball;
+      if (c) {
+        var lead = (state.phase === 'live') ? CARRY_LEAD : 0;
+        f.x = c.x + (c.rvx != null ? c.rvx : (c.vx || 0)) * lead;
+        f.y = c.y + (c.rvy != null ? c.rvy : (c.vy || 0)) * lead;
+      } else if (b && b.inAir) {
+        var k = (b.dur > 0) ? clamp((b.t || 0) / b.dur, 0, 1) : 1;
+        if (b.to) {
+          var w = 0.45 + 0.55 * k;       // 45% of the way there at the release
+          f.x = lerp(b.x, b.to.x, w); f.y = lerp(b.y, b.to.y, w);
+        } else { f.x = b.x; f.y = b.y; }
+      } else if (b && b.x != null && isFinite(b.x)) {
+        f.x = b.x; f.y = b.y;
+      } else if (state.losX != null && isFinite(state.losX)) {
+        f.x = state.losX; f.y = WID / 2;
+      } else { f.x = MID; f.y = WID / 2; }
+      if (!isFinite(f.x)) f.x = MID;
+      if (!isFinite(f.y)) f.y = WID / 2;
+      return f;
     }
 
     function updateCamera(state, dt) {
@@ -959,18 +1137,17 @@
 
       if (camera.fov !== C.fov) { camera.fov = C.fov; camera.updateProjectionMatrix(); }
 
-      /* FOCUS — whoever the eye should be on. Pre-snap that's the line of
-         scrimmage; once the ball is live it's the carrier, and a throw hands
-         the focus to the ball so the camera leads the receiver into the catch
-         instead of staying home with the quarterback. */
-      var hasLos = (state.losX != null && isFinite(state.losX));
-      var focusFx = hasLos ? state.losX : MID;
-      var focusFy = WID / 2;
-      if (state.carrier) { focusFx = state.carrier.x; focusFy = state.carrier.y; }
-      else if (state.ball && state.ball.inAir) { focusFx = state.ball.x; focusFy = state.ball.y; }
-      else if (hasLos && (state.phase === 'presnap' || state.phase === 'playcall')) {
-        // Pre-snap, sit back off the line so the whole formation is in frame.
-        focusFx = state.losX - s * 3;
+      /* FOCUS — the ball, at every moment of the game, and never anything else
+         while there is a ball to have. It used to be "the carrier, else a ball
+         in flight, else the line of scrimmage", and that last clause is a hole:
+         an incomplete pass clears the carrier and lands the ball twenty yards
+         downfield, and the shot cut straight back to the old spot while the
+         ball was still bouncing. ballFocus() has no such fallback. */
+      var fo = ballFocus(state);
+      var focusFx = fo.x, focusFy = fo.y;
+      if (!state.carrier && (state.phase === 'presnap' || state.phase === 'playcall')) {
+        // Pre-snap, sit back off the ball so the whole formation is in frame.
+        focusFx -= s * 3;
       }
       // A single NaN here poisons the camera matrix and the scene renders as
       // bare clear-colour, so refuse to feed anything non-finite forward.
@@ -1049,8 +1226,20 @@
          the field, and the ball stayed in shot only insofar as the lateral
          follow constants happened to suit — which they did not: a throw toward
          a sideline was measured 217 pixels outside a 1280-wide frame. */
+      /* The look-at chases a ball in flight hard, and a CARRIER softly. The
+         carrier half is new: the shot used to aim at a fixed point C.ahead down
+         the field whenever nothing was airborne, so a runner breaking wide was
+         held in frame only by the lateral follow, and on a phone (a narrow lens
+         and a tall frame) that is not enough — he drifted to the edge while the
+         lens went on staring at the middle of the field. */
       chaseW += ((chasing ? 1 : 0) - chaseW) * clamp(dt * 4.5, 0, 1);
+      holdW += ((!chasing && state.carrier ? 1 : 0) - holdW) * clamp(dt * 3.0, 0, 1);
       var tx = lookX, ty = C.lookY, tz = camFz * 0.65;
+      if (holdW > 0.001 && state.carrier) {
+        var cw = holdW * 0.45;          // partial: keep some of the downfield lead
+        tx = lerp(tx, wx(state.carrier.x), cw);
+        tz = lerp(tz, wz(state.carrier.y), cw);
+      }
       if (chaseW > 0.001 && state.ball) {
         var w = chaseW * 0.78;
         tx = lerp(tx, wx(state.ball.x), w);
@@ -1063,7 +1252,15 @@
         lerp(_target.z, tz, k)
       );
       camera.lookAt(_target);
-      if (chasing && state.ball) keepBallInFrame(state);
+      /* THE GUARANTEE, and it now covers the whole game rather than just the
+         throws: whatever the ball is currently in — the air, or a pair of hands
+         — is inside the safe box when this returns. Chest height for a carrier,
+         because his feet are what the frame edge would clip first. */
+      if (chasing && state.ball) keepInFrame(wx(state.ball.x), state.ball.z || 0, wz(state.ball.y));
+      else if (state.carrier) keepInFrame(wx(state.carrier.x), 1.0, wz(state.carrier.y));
+      else if (state.ball && state.ball.x != null && isFinite(state.ball.x)) {
+        keepInFrame(wx(state.ball.x), state.ball.z || 0, wz(state.ball.y));
+      }
       // Sun target stays at the origin: its shadow box already spans the whole
       // field, and swinging the target while the light's position is fixed
       // would rotate the sun's direction as the play moves.
@@ -1172,6 +1369,20 @@
 
       // Rebuild player meshes if the roster array was replaced (new down).
       if (state.players !== playersRef) { hostBall(null); rebuildPlayers(state.players); }
+
+      /* Consume the engine's transient anims (flag/td/firstdown/incomplete) so
+         they don't leak — the 2D renderer normally advances and clears these,
+         and we skip 2D entirely. Done BEFORE the players are synced, and after
+         the rebuild above, so a celebration triggered this frame is live on the
+         same frame and a new formation can't be handed one. */
+      if (engine && engine.anim && engine.anim.length) {
+        for (var ai = 0; ai < engine.anim.length; ai++) {
+          var av = engine.anim[ai];
+          if (av.type === 'td' || av.type === 'firstdown') startCeleb(av.type, av);
+        }
+        engine.anim.length = 0;
+      }
+      updateCeleb(dt);
 
       var inAir = !!(state.ball && state.ball.inAir);
       prevInAir = inAir;
@@ -1292,17 +1503,9 @@
         applyTransfer(state, dt);
       } else { ball.visible = false; ballShadow.visible = false; }
 
-      // Consume engine transient anims (flag/td/incomplete) so they don't leak
-      // (the 2D renderer normally advances/clears these; we skip 2D).
-      if (engine && engine.anim && engine.anim.length) {
-        engine.anim.forEach(function (a) {
-          if (a.type === 'td') tdFx.t = 0, tdFx.dur = 1.0;
-        });
-        engine.anim.length = 0;
-      }
-
       flags.update(dt);
-      if (tdFx.dur > 0) { tdFx.t += dt; if (tdFx.t >= tdFx.dur) tdFx.dur = 0; }
+      confetti.update(dt);
+      shock.update(dt);
 
       updateJumbotron(state, dt);
       updateCamera(state, dt);
@@ -1315,6 +1518,9 @@
       // would leave with that player's holder and miss the disposal sweep.
       hostBall(null);
       slashInk.dispose();
+      // InstancedMesh holds its own instance buffers; the scene-wide geometry
+      // and material sweep below doesn't reach those.
+      confetti.dispose();
       // Dispose Player3D instances (mixer + geometry/materials) and their rings.
       pMeshes.forEach(function (e) {
         if (e.P) e.P.dispose();
@@ -1339,6 +1545,18 @@
          about is actually where it says, instead of re-deriving updateCamera()
          and grading the renderer against a copy of the renderer. */
       camera: camera, ball: ball,
+      /* Same bargain for the celebrations: what the system thinks is running,
+         and the height every body is ACTUALLY being drawn at, so the sweep can
+         assert that players left the ground rather than assert that a function
+         was called. */
+      celebState: function () {
+        return {
+          kind: celeb.kind, t: celeb.t, dur: celeb.dur, team: celeb.team,
+          lift: PLAYER_LIFT,
+          y: pMeshes.map(function (e) { return e.holder.position.y; }),
+          teams: (playersRef || []).map(function (p) { return p.team; })
+        };
+      },
       render: render, resize: resize, stop: stop };
   }
 
@@ -1548,6 +1766,136 @@
       });
     }
     return { group: group, burst: burst, update: update };
+  }
+
+  /* ============================= CONFETTI =============================== */
+  /* A fixed pool in ONE InstancedMesh — one draw call whether nothing is
+     falling or two hundred pieces are, and a burst allocates nothing. Dead
+     pieces are scaled to zero rather than removed, because an InstancedMesh
+     draws a contiguous run and a recycled pool never is.
+
+     Colour is per instance (setColorAt) so confetti comes down in the scoring
+     team's colours, and a piece fades by SHRINKING: one material means one
+     opacity, and the pool is shared. */
+  function makeConfetti(THREE, n) {
+    var group = new THREE.Group();
+    var geo = new THREE.PlaneGeometry(0.20, 0.30);
+    var mat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, toneMapped: false });
+    var mesh = new THREE.InstancedMesh(geo, mat, n);
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 4;
+    mesh.count = n;
+    group.add(mesh);
+
+    var P = [], i;
+    for (i = 0; i < n; i++) P.push({ x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, spin: 0, rot: 0, tilt: 0, life: 0, max: 1 });
+    var m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
+    var pos = new THREE.Vector3(), scl = new THREE.Vector3(), col = new THREE.Color();
+    var next = 0, live = 0;
+
+    // Hide the whole pool on the first frame; nothing is falling yet.
+    for (i = 0; i < n; i++) { m4.makeScale(0, 0, 0); mesh.setMatrixAt(i, m4); }
+    mesh.instanceMatrix.needsUpdate = true;
+
+    function burst(x, y, z, count, colors) {
+      colors = colors && colors.length ? colors : ['#ffd23f'];
+      for (var k = 0; k < count; k++) {
+        var slot = next % n; next++;
+        var p = P[slot];
+        p.x = x + (Math.random() - 0.5) * 1.6;
+        p.y = y + Math.random() * 0.8;
+        p.z = z + (Math.random() - 0.5) * 1.6;
+        /* Thrown OVER the players, not into the stands. An earlier, livelier
+           burst (5-7yd/s up) peaked at about five yards, which from a camera
+           sitting behind the play at chest height is level with the second tier
+           of seating — it read as litter in the crowd rather than confetti on
+           the man who scored. This peaks about a yard over his head and is back
+           down on him inside a second. */
+        var a = Math.random() * Math.PI * 2, r = 1.0 + Math.random() * 1.8;
+        p.vx = Math.cos(a) * r; p.vz = Math.sin(a) * r;
+        p.vy = 1.8 + Math.random() * 2.2;
+        p.spin = (Math.random() - 0.5) * 14;
+        p.rot = Math.random() * Math.PI; p.tilt = Math.random() * Math.PI;
+        p.max = p.life = 2.2 + Math.random() * 1.4;
+        try {
+          col.set(colors[(Math.random() * colors.length) | 0]);
+          mesh.setColorAt(slot, col);
+        } catch (err) { /* colour is decoration; motion is the effect */ }
+      }
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      live = 1;
+    }
+
+    function update(dt) {
+      if (!live) return;
+      var any = 0;
+      for (var k = 0; k < n; k++) {
+        var p = P[k];
+        if (p.life <= 0) { m4.makeScale(0, 0, 0); mesh.setMatrixAt(k, m4); continue; }
+        any = 1;
+        p.life -= dt;
+        p.vy -= 9.0 * dt;                       // gravity, a touch softened
+        p.vx *= (1 - 1.2 * dt); p.vz *= (1 - 1.2 * dt);   // air drag
+        p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+        p.rot += p.spin * dt; p.tilt += p.spin * 0.6 * dt;
+        if (p.y < 0.04) {                       // settle on the turf and lie flat
+          p.y = 0.04; p.vy = 0; p.vx *= 0.6; p.vz *= 0.6; p.spin *= 0.5;
+        }
+        // Shrink away over the last half second — the pool shares one opacity.
+        var s = clamp(p.life / 0.5, 0, 1);
+        pos.set(p.x, p.y, p.z);
+        e.set(p.tilt, p.rot, p.rot * 0.5);
+        q.setFromEuler(e);
+        scl.set(s, s, s);
+        m4.compose(pos, q, scl);
+        mesh.setMatrixAt(k, m4);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      live = any;
+    }
+
+    function dispose() { mesh.dispose(); }
+    return { group: group, burst: burst, update: update, dispose: dispose };
+  }
+
+  /* ============================= SHOCKWAVE ============================== */
+  /* A gold ring opening on the turf under whoever just did something, sized to
+     the size of the thing they did. It is the same punctuation the flat
+     renderer draws for a first down (engine._drawAnims), which is deliberate:
+     one event, one visual language, in both renderers.
+
+     It replaced a full-frame tint that was tried first and looked wrong for a
+     reason worth recording: the composer's bloom threshold is 0.86, and washing
+     the whole frame gold lifts EVERY pixel over it, so the entire scene blooms
+     and the shot goes milky — including the celebration you were trying to draw
+     attention to. Anything that covers the frame fights the grade. This does
+     not: it is small, it is on the ground, and it is over in half a second. */
+  function makeShockRing(THREE) {
+    var geo = new THREE.RingGeometry(0.86, 1.0, 64);
+    geo.rotateX(-Math.PI / 2);                       // lie flat on the turf
+    var mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+      color: 0xffd23f, transparent: true, opacity: 0,
+      depthWrite: false, side: THREE.DoubleSide, toneMapped: false
+    }));
+    mesh.renderOrder = 3;
+    mesh.visible = false;
+    var t = 0, dur = 0, maxR = 1;
+
+    function fire(x, z, r, seconds) {
+      maxR = r || 4; dur = seconds || 0.5; t = dur;
+      mesh.position.set(x, 0.06, z);
+    }
+    function update(dt) {
+      if (t <= 0) { if (mesh.visible) mesh.visible = false; return; }
+      t -= dt;
+      if (t <= 0) { mesh.visible = false; return; }
+      var k = 1 - t / dur;                           // 0 at the strike, 1 at the end
+      mesh.visible = true;
+      var r = 0.5 + (maxR - 0.5) * (1 - (1 - k) * (1 - k));   // fast, then easing out
+      mesh.scale.set(r, 1, r);
+      mesh.material.opacity = 0.85 * (1 - k) * (1 - k);
+    }
+    return { mesh: mesh, fire: fire, update: update };
   }
 
   /* ============================== UTILS ================================= */

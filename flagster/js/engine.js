@@ -1788,6 +1788,10 @@
     if (!s.crossedMid && s.yardsToGoal <= MIDFIELD - GOAL_L + 0.001 && spotX >= MIDFIELD) {
       // reached/past midfield -> fresh set to score
     }
+    /* Where the whistle went. The renderer needs it a beat later, when the
+       down is actually awarded, to know where a celebration happens — by then
+       the ball is dead and nobody has moved, but `spotX` is a local. */
+    s.deadSpot = { x: spotX, y: s.carrier ? s.carrier.y : FIELD_WID / 2 };
     var reachedMid = spotX >= MIDFIELD;
     setTimeout(this._advanceDown.bind(this, gained, reachedMid), 900);
   };
@@ -1808,6 +1812,11 @@
       if (reachedMid) {
         s.crossedMid = true; s.down = 1;
         this._flash('First down — past midfield!');
+        /* Moving the chains is worth something, and the players should show it
+           — but it is a first down, not a score, so it gets the SMALL
+           celebration: the carrier and whoever is standing near them, for a
+           beat. The big one belongs to _touchdown. */
+        this._celebrate('firstdown', s.deadSpot);
       } else {
         s.down++;
         if (s.down > 4) return this._turnoverOnDowns();
@@ -1871,6 +1880,7 @@
   Engine.prototype._touchdown = function () {
     var s = this.state;
     var off = this.offenseTeam();
+    var c = s.carrier;            // the scorer: the celebration is built around them
     this.clearSlash();            // scoring plays skip _endPlay, which usually does this
     s.phase = 'dead';
     if (s.patActive) {            // crossing the line on a conversion is the conversion
@@ -1881,9 +1891,30 @@
     s.score[off] += 6;
     s.stats[off].td++;
     this._flash('TOUCHDOWN ' + s[off].abbr + '!  🎉');
-    this.anim.push({ type: 'td', t: 0, dur: 1.4 });
+    this._celebrate('td', { x: c ? c.x : GOAL_R, y: c ? c.y : FIELD_WID / 2 });
     this.onEvent({ type: 'touchdown', team: off });
-    setTimeout(function () { this._startPAT(off); }.bind(this), 1500);
+    /* Hold the shot on the celebration before asking about the conversion.
+       This was 1500ms, which is shorter than the celebration itself: the next
+       formation is what ends it (the renderer drops a celebration when the
+       roster is rebuilt), so a CPU side taking the point instantly cut its own
+       touchdown off halfway through. */
+    setTimeout(function () { this._startPAT(off); }.bind(this), 2600);
+  };
+
+  /* A SCORE AND A FIRST DOWN ARE NOT THE SAME THING, so they do not get the
+     same celebration. The engine says which one happened, where, and to whom;
+     how big it looks is the renderer's business (field3d.js, startCeleb).
+
+     Both go out on the same `anim` queue every other transient effect uses, so
+     the 2D fallback gets them too and neither can outlive the play. `kind` is
+     the anim type: 'td' or 'firstdown'. */
+  Engine.prototype._celebrate = function (kind, at) {
+    var s = this.state;
+    var spot = at || s.deadSpot || { x: s.losX, y: FIELD_WID / 2 };
+    this.anim.push({
+      type: kind, t: 0, dur: kind === 'td' ? 1.4 : 0.9,
+      team: this.offenseTeam(), x: spot.x, y: spot.y
+    });
   };
 
   /* A5 — THE EXTRA POINT IS A PLAY.
@@ -2375,6 +2406,17 @@
         ctx.globalAlpha = Math.sin(prog * Math.PI) * 0.5;
         ctx.fillStyle = '#ffd23f';
         ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        ctx.restore();
+      } else if (a.type === 'firstdown') {
+        /* The small celebration, in the flat renderer's own vocabulary: a ring
+           opening at the spot rather than a tint over the whole frame, because
+           the difference between the two events has to survive down here as
+           well. */
+        var fd = this._px(a.x, a.y);
+        ctx.save();
+        ctx.globalAlpha = (1 - prog) * 0.9;
+        ctx.strokeStyle = '#ffd23f'; ctx.lineWidth = sc * 0.16;
+        ctx.beginPath(); ctx.arc(fd.x, fd.y, sc * (0.6 + prog * 1.8), 0, 7); ctx.stroke();
         ctx.restore();
       }
     }
