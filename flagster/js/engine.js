@@ -317,6 +317,31 @@
   var RELEASE_AT = 0.34;                 // fraction of the clip where the ball leaves
   var THROW_WINDUP = THROW_CLIP * RELEASE_AT;
 
+  /* THE BALL LEAVES A HAND AND ARRIVES AT A PAIR OF THEM.
+
+     The trajectory used to run from the ground to the ground, and the 3D
+     renderer papered over it by drawing the whole parabola a flat 1.0 yards
+     higher. Two things were wrong with that. The release height was not the
+     height of the hand the ball had just been in — measured, the throwing hand
+     passes the ear at about 1.6yd while the pass was drawn leaving at 1.0 — so
+     the ball visibly dropped out of the quarterback's grip the instant it went
+     airborne. And the ball then "landed" at 1.0yd, which is neither the ground
+     nor where a receiver catches it.
+
+     So the flight is now solved between the two heights it actually happens
+     between, and the renderer draws `z` as-is. Everything downstream — hang
+     time, how far the arm really reaches, the underthrow — falls out of the
+     same solve rather than being corrected for afterwards. */
+  var RELEASE_Z = 1.60;                  // yards: the throwing hand at release
+  var CATCH_Z = 1.15;                    // yards: chest height, where it's gathered
+
+  /* Time for a ball launched upward at vz from z0 to fall back to z1.
+     z1 = z0 + vz*t - g*t^2/2, taking the positive root. */
+  function flightTime(vz, z0, z1) {
+    var drop = Math.max(0, z0 - z1);
+    return (vz + Math.sqrt(vz * vz + 2 * GRAVITY * drop)) / GRAVITY;
+  }
+
   /* Fire the pass the wind-up was building to. */
   Engine.prototype._releaseThrow = function () {
     var s = this.state;
@@ -354,31 +379,60 @@
     var dirx = d > 1e-4 ? (predicted.x - carrier.x) / d : 1;
     var diry = d > 1e-4 ? (predicted.y - carrier.y) / d : 0;
 
-    /* Solve the launch angle for the range. sin(2t) = g*d/v^2 has a flat root
-       and a lofted one; take the flat one and then impose a floor that grows
-       with distance, so a deep ball is actually thrown up in the air and is
-       catchable rather than a flat rocket. */
-    var s2 = GRAVITY * d / (throwSpeed * throwSpeed);
+    /* Solve the launch angle for the range — BETWEEN THE TWO HEIGHTS THE BALL
+       ACTUALLY FLIES BETWEEN. sin(2t) = g*d/v^2 is the ground-to-ground range
+       equation, and a ball released at the ear and caught at the chest is not
+       ground to ground: it has an extra RELEASE_Z - CATCH_Z to fall through,
+       which buys it extra hang time and carries it past the receiver. Pairing
+       that flat solve with a flight time measured between the real heights is
+       what broke the passing game — every ball overshot by about 30% and
+       nobody was within catching range of any of them. Completions measured
+       1.6%.
+
+       With z0 - z1 = drop, writing the trajectory at horizontal distance d and
+       substituting t = d / (v cos t) gives a quadratic in T = tan t:
+
+           k*T^2 - d*T + (k - drop) = 0,     k = g*d^2 / (2*v^2)
+
+       The smaller root is the flat trajectory, which is the one a passer
+       throws; a negative discriminant means it is out of range whatever the
+       angle, and then the best he has is 45 degrees and it falls short. */
+    var drop = RELEASE_Z - CATCH_Z;
+    var k = GRAVITY * d * d / (2 * throwSpeed * throwSpeed);
+    var disc = d * d - 4 * k * (k - drop);
     var theta;
-    if (s2 >= 1) {
+    if (k < 1e-6) {
+      theta = 0;                        // no distance to cover
+    } else if (disc <= 0) {
       theta = Math.PI / 4;              // out of range: best he's got, falls short
     } else {
-      theta = 0.5 * Math.asin(s2);
-      theta = Math.max(theta, Math.min(Math.PI / 4, d * 0.011));
+      theta = Math.atan((d - Math.sqrt(disc)) / (2 * k));
+      /* There used to be a loft floor here — max(theta, d*0.011) — to stop a
+         deep ball being a flat rocket. It has to go, because BOTH roots of
+         that quadratic land at exactly d and every angle between them lands
+         PAST it: a floor above the flat root is an overthrow by definition.
+         With the ground-to-ground solve it rarely bound; with the drop taken
+         into account the required angle is lower, so it bound most of the
+         time, and it is the rest of the overthrow. Restoring it costs
+         completions directly — measured 50% without it against 17% with it.
+
+         It is also no longer needed. Solving between the real heights already
+         steepens the throw with distance on its own: 6.4 degrees at 10 yards,
+         11.8 at 20, 19.9 at 30, against a floor that only ever asked for
+         18.9 at 30. The arc on a deep ball is the physics, not a fudge. */
     }
     var hv = throwSpeed * Math.cos(theta);        // horizontal component
     var vz = throwSpeed * Math.sin(theta);        // vertical component
-    var flight = 2 * vz / GRAVITY;                // back to ground level
+    var flight = flightTime(vz, RELEASE_Z, CATCH_Z);
     var reach = hv * flight;                      // how far it ACTUALLY goes
     if (reach < d) {                              // underthrow — the arm fell short
       predicted = { x: carrier.x + dirx * reach, y: carrier.y + diry * reach };
     }
     s.ball = {
-      x: carrier.x, y: carrier.y, z: 0, inAir: true,
+      x: carrier.x, y: carrier.y, z: RELEASE_Z, inAir: true,
       from: { x: carrier.x, y: carrier.y }, to: predicted,
-      dirx: dirx, diry: diry, hv: hv, vz: vz,
-      t: 0, dur: flight, thrower: carrier, targetSlot: pt.slot,
-      arcH: vz * vz / (2 * GRAVITY)
+      dirx: dirx, diry: diry, hv: hv, vz: vz, z0: RELEASE_Z, z1: CATCH_Z,
+      t: 0, dur: flight, thrower: carrier, targetSlot: pt.slot
     };
     carrier.hasBall = false;
     s.carrier = null;
@@ -1165,11 +1219,12 @@
 
   Engine.prototype._updateBall = function (dt) {
     var s = this.state, b = s.ball;
+    var z1 = b.z1 == null ? 0 : b.z1;
     b.t += dt;
     b.x = clamp(b.from.x + b.dirx * b.hv * b.t, 0, FIELD_LEN);
     b.y = clamp(b.from.y + b.diry * b.hv * b.t, 0, FIELD_WID);
-    b.z = Math.max(0, b.vz * b.t - 0.5 * GRAVITY * b.t * b.t);
-    if (b.t >= b.dur || (b.z <= 0 && b.t > 0.05)) { b.z = 0; this._resolveCatch(); }
+    b.z = Math.max(z1, (b.z0 || 0) + b.vz * b.t - 0.5 * GRAVITY * b.t * b.t);
+    if (b.t >= b.dur || (b.z <= z1 && b.t > 0.05)) { b.z = z1; this._resolveCatch(); }
   };
 
   /* C2 — THE CATCH IS CONTESTED IN SPACE, NOT DECIDED BY A COIN FLIP.
@@ -1354,13 +1409,20 @@
     }
     if (!back) { this._flash('Nobody back there'); return false; }
 
+    /* A pitch is flicked from where the ball is being carried and gathered at
+       the same height, so it leaves and arrives at CATCH_Z. The loft is solved
+       from the distance rather than fixed: it used to launch at a flat 1.2yd/s
+       whatever the range, which brought the ball back down after 0.22s — so
+       any pitch longer than about three yards died in mid-air short of the
+       man it was thrown to. Now it arrives when it gets there. */
     var d2 = Math.max(0.5, bestD), speed = 16;
+    var pdur = d2 / speed;
     s.ball = {
-      x: c.x, y: c.y, z: 0.6, inAir: true, lateral: true,
+      x: c.x, y: c.y, z: CATCH_Z, inAir: true, lateral: true,
       from: { x: c.x, y: c.y }, to: { x: back.x, y: back.y },
       dirx: (back.x - c.x) / d2, diry: (back.y - c.y) / d2,
-      hv: speed, vz: 1.2, t: 0, dur: d2 / speed,
-      thrower: c, targetSlot: back.slot, arcH: 0.4
+      hv: speed, vz: GRAVITY * pdur / 2, z0: CATCH_Z, z1: CATCH_Z,
+      t: 0, dur: pdur, thrower: c, targetSlot: back.slot
     };
     c.hasBall = false;
     s.carrier = null;
