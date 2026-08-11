@@ -58,7 +58,21 @@ independently: `jersey`, `trim`, `skin`, `hair`, `shorts`, `socks`, `shoes`,
 
 **Clips** (all in place, no root translation drift): `Idle`, `Run`, `Walk`,
 `Backpedal`, `Throw`, `Catch`, `Dive`, `FlagGrab`, `FlagPulled`, `Celebrate`,
-`Juke`.
+`Spike`, `Dance`, `Flex`, `HighStep`, `Juke`.
+
+The three gaits (`Run`, `Walk`, `Backpedal`) and `HighStep` are built by one
+function, `cyclicGait()`, from two authored phase tables — one leg and one arm,
+each of which the other side repeats half a cycle later. It also solves the
+frontal plane (pelvic drop toward the swing leg, lateral sway over the stance
+leg, shoulder counter-tilt) from where the feet actually are, rather than from
+a hand-keyed sine that can fall out of step with the footfalls.
+
+The five celebrations are deliberately different in SHAPE, not in detail,
+because shape is all that reads at chase-camera distance: `Spike` is a
+whole-body slam (the only one-shot of them), `Dance` is lateral, `Flex` is wide
+and static, `HighStep` is vertical and fast, and `Celebrate` is the original
+hop. field3d gives the scorer the spike and then a dance, and picks one of the
+loops per team-mate off their roster index.
 
 `FlagGrab` and `FlagPulled` are the two halves of the same event and belong to
 two different players: **FlagGrab** is the defender reaching out and ripping the
@@ -83,11 +97,43 @@ flag off, **FlagPulled** is the ball carrier's reaction to losing it.
   angles a throwing study reports** — elevation, horizontal adduction and axial
   (external) rotation, all relative to the trunk — and the rotation is solved by
   `armQ()`. Don't hand-type euler triples at a shoulder.
+* **The foot is two segments.** Heel and ball ride on `Foot_*`; the tip rides on
+  `Toe_*` and moves with it. `solePoints()` returns all three and every ground
+  solve takes the lowest — which is what lets the ankle plantarflex 30 degrees
+  through toe-off while the forefoot stays flat on the turf. Before the gaits
+  animated the toes at all, the foot was one rigid plank from heel to tip, and
+  that is the single loudest thing in a bad walk cycle.
+* **Gait tables are resampled with a cyclic cubic, not linearly.** Linear
+  interpolation makes every joint's angular velocity a staircase with a corner
+  at each authored phase, which is most of what reads as "marionette"; it also
+  clips the peaks flat when a row lands between two samples. `sampleGait()` fits
+  a cubic Hermite through the rows on their real (non-uniform) phase spacing.
 * Feet are authored by **where they are**, not by hip angle: `plantHip(z, knee)`
   solves the hip so a planted foot stays planted while the knee bends and the
   hips rotate over it. Pelvis height is solved too — `groundedHips()` samples the
   leg angles finely enough that the sole is on the turf between the keys as well
   as on them.
+
+### Clip metadata (glTF `extras`)
+
+Each gait clip carries what the renderer needs to play it at the right rate:
+
+```json
+{ "gait": 1, "groundSpeed": 6.10, "stance": 0.31, "flight": 0.38, "cycle": 0.62 }
+```
+
+`groundSpeed` is metres per second at the model's authored height, measured off
+the same kinematics the clip is built from: at every sample where a foot's
+lowest sole point is on the turf, the fore/aft velocity of *that material
+point*, averaged over the cycle. `GLTFLoader` copies `extras` onto
+`AnimationClip.userData`, `playermodel.js` exposes it as `P.naturalSpeed(clip,
+buildScale)`, and `field3d.js` divides the player's real speed by it.
+
+This replaced a pair of constants hand-copied into `field3d.js`. They had
+already drifted twice — once when the run's stride grew 32% and the divisor
+didn't, and once for the backpedal, which had no constant of its own and
+borrowed the run's, so it played four times too slowly and skated for the whole
+snap.
 
 ---
 

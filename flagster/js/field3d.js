@@ -525,16 +525,43 @@
        stationary clip — the exact skate the stride matching above exists to
        kill. Celebrations are performed on the spot. */
     var CELEB = {
-      td:        { dur: 2.8,  hop: 0.40, radius: Infinity, stagger: 0.13, spin: 0.85,
-                   ring: { r: 7.0, dur: 0.75 }, waves: [0, 0.55, 1.15], puff: 46, star: 1.35 },
+      td:        { dur: 2.5,  hop: 0.34, radius: Infinity, stagger: 0.13, spin: 0.85,
+                   ring: { r: 7.0, dur: 0.75 },
+                   /* Five waves instead of three, and four times the paper. The
+                      old burst was 46 pieces of 20x30cm confetti thrown once and
+                      then twice more — from a lens eleven yards back that is
+                      perhaps a dozen specks crossing the frame, which is why the
+                      end zone read as empty on a score. A touchdown should bury
+                      the shot. */
+                   waves: [0, 0.22, 0.5, 0.85, 1.3], puff: 130, star: 1.35 },
       firstdown: { dur: 1.25, hop: 0.14, radius: 8,        stagger: 0.05, spin: 0,
-                   ring: { r: 2.6, dur: 0.40 }, waves: [0],             puff: 10, star: 1.15 }
+                   ring: { r: 2.6, dur: 0.40 }, waves: [0, 0.25],       puff: 34, star: 1.15 }
     };
     var HOP_RATE = Math.PI * 2;
+
+    /* WHO DOES WHAT IN THE END ZONE.
+
+       The scorer spikes the ball — once, because a spike is an event — and then
+       dances. Everyone else picks one of the four looping celebrations off
+       their own roster index, so a group is four different silhouettes rather
+       than one clip played ten times in unison. Deterministic in the index, so
+       the same player celebrates the same way all game and it reads as
+       character instead of noise.
+
+       Only a touchdown gets the full range: a first down is a beat, not a
+       party, so it keeps the hop everyone already knows. */
+    var CELEB_LOOPS = ['dance', 'highstep', 'flex', 'celebrate'];
+    function celebClipFor(ud, cel) {
+      if (cel.cfg.radius !== Infinity) return 'celebrate';
+      if (cel.star) return 'dance';
+      return CELEB_LOOPS[(ud.idx * 3 + 1) % CELEB_LOOPS.length];
+    }
     var celeb = { kind: '', cfg: null, t: 0, dur: 0, team: null, x: MID, y: WID / 2, wave: 0 };
 
     // Confetti (one InstancedMesh, one draw call) and the shockwave on the turf.
-    var confetti = makeConfetti(THREE, 200);
+    // 900 pieces: five waves of 130 at a touchdown is 650 in flight at the peak,
+    // and the drifting three fifths of each wave stay up for six seconds.
+    var confetti = makeConfetti(THREE, 900);
     scene.add(confetti.group);
     var shock = makeShockRing(THREE);
     scene.add(shock.mesh);
@@ -552,7 +579,11 @@
 
     function celebColors() {
       var t = (celeb.team === 'away') ? awayCols : homeCols;
-      return [t[0], t[1] || '#ffffff', '#ffd23f', '#ffffff'];
+      /* No pure white. The pool is MeshBasicMaterial with toneMapped off, so a
+         #ffffff piece sits above the bloom threshold and comes out of the
+         composer as a featureless glowing rectangle — which is what turned the
+         first big burst into a handful of light-boxes over the end zone. */
+      return [t[0], t[1] || '#e8e8ea', '#ffd23f', '#e8e8ea', t[0]];
     }
 
     /* Advance the celebration clock and fire whatever wave of confetti is due.
@@ -607,34 +638,28 @@
 
            natural speed = stanceSweep / (stanceFraction * clipDuration)
 
-       Measured off the built rig at the 0.87 scale this renderer applies — the
-       fore-aft travel of the planted foot relative to the root:
+       This used to be a pair of constants measured by hand and copied in here,
+       under a comment asking whoever edits the gait tables to keep them in
+       step. That is a promise no comment can keep, and it had already been
+       broken twice: once when the run's stride grew 32% and the divisor didn't,
+       and once — invisibly, for the whole life of the clip — for the BACKPEDAL,
+       which had no constant of its own at all and borrowed the RUN's. Its real
+       natural speed was a quarter of the run's, so a defender backpedalling at
+       4yd/s played it at the 0.75 floor instead of the 3.0 the stride needed,
+       and slid backwards for the entire snap.
 
-           run   1.075 units, stance 30% of a 0.62s cycle -> 5.78 yd/s at 1x
-           walk  0.690 units, stance 50% of a 1.00s cycle -> 1.38 yd/s at 1x
+       So nobody measures it here any more. tools/build-player-glb.mjs computes
+       each gait's ground speed from the same kinematics it builds the clip
+       from and bakes it into the .glb; P.naturalSpeed() reads it back and
+       scales it by that player's own build, because a taller athlete's stride
+       really does cover more ground. NATURAL_FALLBACK is only for a rig old
+       enough to carry no measurement.
 
-       The walk is the check on the arithmetic: a walk has no flight phase, so
-       stance is half the cycle and "sweep rate" and "distance per cycle" have
-       to give the same answer — and both give 1.38. A run does have a flight
-       phase, so distance per cycle is NOT the right basis: the body keeps
-       travelling while neither foot is down, and matching per-cycle distance
-       would cycle the legs about 1.7x too fast.
-
-       Playback used to be `clamp(speed / 6, 0.6, 1.8)`. The divisor was in the
-       right area for the stride the rig has NOW, but the rig's stride was 32%
-       shorter then (natural 4.4), so every stride slid forward, and the 0.6
-       floor did the same thing in reverse at walking pace — legs cycling for
-       1.6yd/s under a player barely moving. Keep these numbers in step with the
-       gait tables in tools/build-player-glb.mjs.
-
-       One honest limitation: a real runner's stance fraction shrinks as they
-       speed up, and a baked clip's cannot, so no single constant is right
-       everywhere. These are set for where the running actually happens —
-       6-7yd/s, where the run clip lands at ~1.1x and 3.6 steps/second. Below
-       ~4.3yd/s the run would drop under 0.75x and read as slow motion, so it
-       is held there and takes a little slip instead; slip is far less visible
-       at a jog than moon-walking is. */
-    var RUN_NATURAL = 5.78, WALK_NATURAL = 1.38;
+       One honest limitation remains: a real runner's stance fraction shrinks as
+       they speed up and a baked clip's cannot, so no single rate is right
+       everywhere. The clamps below hold the extremes and take a little slip
+       instead; slip is far less visible at a jog than moon-walking is. */
+    var NATURAL_FALLBACK = { run: 5.78, walk: 1.38, backpedal: 1.30 };
     var WALK_MAX = 2.4;              // hand over to the run cycle above this
     var PLAYER_LIFT = 0.10;    // rig dips slightly below its origin; sit feet on turf
     // A few skin tones rotated through by roster index for visual variety.
@@ -731,10 +756,15 @@
         P.setYaw(seedYaw);
         scene.add(holder);
         var ring = makeRing(); scene.add(ring);
+        // The speed each gait clip travels at 1x, for THIS athlete's build.
+        var nat = {};
+        for (var g in NATURAL_FALLBACK) {
+          nat[g] = (P.naturalSpeed && P.naturalSpeed(g, b.h)) || NATURAL_FALLBACK[g];
+        }
         pMeshes.push({
-          P: P, holder: holder, ring: ring,
+          P: P, holder: holder, ring: ring, nat: nat,
           ud: { idx: idx, yaw: seedYaw, celebT: 0, _wasPulled: false, _pulled: false, _threw: false,
-                _caught: false, _juked: false, clip: 'idle',
+                _caught: false, _juked: false, _spiked: false, clip: 'idle',
                 carryKey: '', carrySide: 0, carryW: 0, carryAmp: 0, grabW: 0 }
         });
       });
@@ -747,6 +777,7 @@
     // Advance one player's Player3D: position, facing, clip selection, one-shots.
     function syncPlayer(entry, gp, dt, state) {
       var P = entry.P, ud = entry.ud, holder = entry.holder;
+      var nat = entry.nat || NATURAL_FALLBACK;
 
       /* Celebrating? Then this player jumps, and how high is the whole
          difference between "we scored" and "we moved the chains". The hop is
@@ -908,15 +939,28 @@
       if (!(gp.pullFx > 0)) ud._pulled = false;
 
       // ---- LOOP clip selection (skip while a one-shot is running) ----------
+      /* THE SPIKE, fired once when a scorer starts celebrating. It is a
+         one-shot rather than part of the loop selection below because it is an
+         event with a beginning and an end, and because its last pose is the
+         arms-wide finish the Dance it hands over to begins from — which is what
+         keeps the crossfade out of it from swinging both arms down and straight
+         back up again. */
+      if (cel && cel.star && cel.cfg.radius === Infinity && !ud._spiked) {
+        P.oneShot('spike', 'dance'); ud._spiked = true;
+      }
+      if (!cel) ud._spiked = false;
+
       if (!P._oneShot) {
-        if (ud.celebT > 0 || cel) {
+        if (cel) {
+          P.play(celebClipFor(ud, cel));
+        } else if (ud.celebT > 0) {
           P.play('celebrate');
         } else if (live && backpedal) {
-          P.play('backpedal'); P.setSpeed(clamp(speed / RUN_NATURAL, 0.75, 2.4));
+          P.play('backpedal'); P.setSpeed(clamp(speed / nat.backpedal, 0.6, 2.0));
         } else if (live && moving) {
           // Walk the slow stuff and run the rest, each matched to its own clip.
-          if (speed < WALK_MAX) { P.play('walk'); P.setSpeed(clamp(speed / WALK_NATURAL, 0.5, 1.9)); }
-          else { P.play('run'); P.setSpeed(clamp(speed / RUN_NATURAL, 0.75, 2.4)); }
+          if (speed < WALK_MAX) { P.play('walk'); P.setSpeed(clamp(speed / nat.walk, 0.5, 1.9)); }
+          else { P.play('run'); P.setSpeed(clamp(speed / nat.run, 0.75, 2.4)); }
         } else {
           P.play('idle');                       // stand down between/at end of plays
         }
@@ -1044,33 +1088,66 @@
        So the smoothing runs first and proposes a shot, and then this checks it.
        Project the ball; if it is inside the safe box, change nothing at all and
        the camera stays exactly as cinematic as it was. If it is outside, walk
-       the look-at toward the ball until it isn't — no further. Each step moves
-       a third of the way and re-tests, so the correction applied is the
-       smallest one that works, and the result is a camera that follows the
-       pass loosely when it can and tightens onto it only when it must.
+       the look-at toward the ball until it isn't — no further.
+
+       "No further" has to mean it exactly, and for a long time it did not.
+
+       THE SIDELINE SHUDDER. This used to step a THIRD of the way toward the
+       ball and re-test, up to six times, which makes the correction a staircase
+       rather than a function: nought, or a third, or five ninths, with nothing
+       in between. Put that inside a loop whose other half is an ease pulling
+       the shot back toward the middle of the field and you have a bang-bang
+       controller. The equilibrium is not a fixed point but a limit cycle: the
+       ease creeps the carrier out past the safe edge over three or four frames,
+       one 34% step slams him back well inside it, and the whole thing repeats
+       several times a second. It only bites when the correction is needed at
+       all, which is exactly when the ball carrier is near a touchline — worst
+       on a phone, whose lens is much narrower across.
+
+       Simulated against a runner cutting to the touchline in portrait, the old
+       staircase moved the look-at by up to 1.36 world units of frame-to-frame
+       acceleration (mean 0.48). Solving instead for the SMALLEST lerp that puts
+       the ball exactly on the safe boundary — by bisection, so the correction
+       is a continuous function of where the ball is — leaves the same shot with
+       a peak of 0.0027 and a mean of 0.00028, and turns the limit cycle into a
+       genuine fixed point: the target settles ON the boundary and tracks it.
 
        Writing the correction back into _target (rather than applying it after
        the fact) means the next frame eases from the corrected shot, so a hard
        chase settles into a smooth one instead of fighting the filter. */
     var SAFE = 0.72;                     // keep the ball inside 72% of the frame
     // (_bndc, not _ndc — the screen picker already owns that name in this scope.)
-    var _ballW = new THREE.Vector3(), _bndc = new THREE.Vector3();
+    var _ballW = new THREE.Vector3(), _bndc = new THREE.Vector3(), _keep = new THREE.Vector3();
+    // Is the world point outside the safe box, for the camera as it stands?
+    // Behind the lens (w < 0 flips the projection) counts as out of frame.
+    function outOfFrame(pt) {
+      camera.updateMatrixWorld();
+      camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+      _bndc.copy(pt).project(camera);
+      return _bndc.z > 1 || Math.abs(_bndc.x) > SAFE || Math.abs(_bndc.y) > SAFE;
+    }
     /* Takes WORLD coords rather than reading the ball out of state, because the
        guarantee is not about the ball object — it is about whatever the shot is
        currently required to contain. In flight that is the ball; the rest of
        the time it is the player holding it. */
     function keepInFrame(px, py, pz) {
       _ballW.set(px, py, pz);
-      for (var i = 0; i < 6; i++) {
-        camera.updateMatrixWorld();
-        camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
-        _bndc.copy(_ballW).project(camera);
-        // Behind the lens (w < 0 flips the projection) counts as out of frame.
-        var out = _bndc.z > 1 || Math.abs(_bndc.x) > SAFE || Math.abs(_bndc.y) > SAFE;
-        if (!out) return;
-        _target.lerp(_ballW, 0.34);
-        camera.lookAt(_target);
+      if (!outOfFrame(_ballW)) return;
+      _keep.copy(_target);                       // the cinematic shot, to move from
+      var aim = function (t) { _target.copy(_keep).lerp(_ballW, t); camera.lookAt(_target); };
+      // Aiming dead at it is the most this can do. If even that leaves the ball
+      // outside (it is behind the lens, or the safe box is tighter than the
+      // lens is wide), stay there rather than searching for a t that isn't
+      // there — and, critically, don't fall back to the uncorrected shot.
+      aim(1);
+      if (outOfFrame(_ballW)) return;
+      var lo = 0, hi = 1;                        // out at lo, in at hi
+      for (var i = 0; i < 11; i++) {
+        var mid = (lo + hi) / 2;
+        aim(mid);
+        if (outOfFrame(_ballW)) lo = mid; else hi = mid;
       }
+      aim(hi);
     }
 
     /* ===================== WHERE THE BALL IS ABOUT TO BE ==================
@@ -1779,7 +1856,9 @@
      opacity, and the pool is shared. */
   function makeConfetti(THREE, n) {
     var group = new THREE.Group();
-    var geo = new THREE.PlaneGeometry(0.20, 0.30);
+    // Bigger than life: 0.20 x 0.30 is real confetti at real scale and from
+    // eleven yards back it is two pixels. Paper the size of a hand reads.
+    var geo = new THREE.PlaneGeometry(0.26, 0.36);
     var mat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, toneMapped: false });
     var mesh = new THREE.InstancedMesh(geo, mat, n);
     mesh.frustumCulled = false;
@@ -1788,7 +1867,10 @@
     group.add(mesh);
 
     var P = [], i;
-    for (i = 0; i < n; i++) P.push({ x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, spin: 0, rot: 0, tilt: 0, life: 0, max: 1 });
+    for (i = 0; i < n; i++) {
+      P.push({ x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, spin: 0, rot: 0, tilt: 0,
+               life: 0, max: 1, drag: 1.2, fall: 9.0, sz: 1 });
+    }
     var m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
     var pos = new THREE.Vector3(), scl = new THREE.Vector3(), col = new THREE.Color();
     var next = 0, live = 0;
@@ -1797,28 +1879,67 @@
     for (i = 0; i < n; i++) { m4.makeScale(0, 0, 0); mesh.setMatrixAt(i, m4); }
     mesh.instanceMatrix.needsUpdate = true;
 
+    /* A burst is TWO populations, which is the difference between a puff and a
+       stadium going up. The old one had only the first.
+
+         thrown    fired up off the spot, peaking about a yard over the scorer's
+                   head and back down on him inside a second. This is the part
+                   that reads as "something just happened HERE".
+         drifting  released high and wide and left to fall through the whole
+                   shot, slowly, for the length of the celebration. This is the
+                   part that reads as confetti at all: a burst that has landed
+                   is over, and a touchdown is not over in one second.
+
+       Both share the pool. The drift ones get almost no upward velocity, heavy
+       drag and a long life, so they flutter rather than fly. */
     function burst(x, y, z, count, colors) {
       colors = colors && colors.length ? colors : ['#ffd23f'];
       for (var k = 0; k < count; k++) {
         var slot = next % n; next++;
         var p = P[slot];
-        p.x = x + (Math.random() - 0.5) * 1.6;
-        p.y = y + Math.random() * 0.8;
-        p.z = z + (Math.random() - 0.5) * 1.6;
-        /* Thrown OVER the players, not into the stands. An earlier, livelier
-           burst (5-7yd/s up) peaked at about five yards, which from a camera
-           sitting behind the play at chest height is level with the second tier
-           of seating — it read as litter in the crowd rather than confetti on
-           the man who scored. This peaks about a yard over his head and is back
-           down on him inside a second. */
-        var a = Math.random() * Math.PI * 2, r = 1.0 + Math.random() * 1.8;
-        p.vx = Math.cos(a) * r; p.vz = Math.sin(a) * r;
-        p.vy = 1.8 + Math.random() * 2.2;
-        p.spin = (Math.random() - 0.5) * 14;
+        var drift = (k % 5) < 3;               // three fifths of every wave
+        if (drift) {
+          p.x = x + (Math.random() - 0.5) * 13;
+          p.y = y + 5.5 + Math.random() * 6.0;
+          p.z = z + (Math.random() - 0.5) * 15;
+          var da = Math.random() * Math.PI * 2, dr = 0.3 + Math.random() * 0.9;
+          p.vx = Math.cos(da) * dr; p.vz = Math.sin(da) * dr;
+          p.vy = -0.4 - Math.random() * 0.8;
+          p.drag = 2.6;                        // flutters down instead of falling
+          p.fall = 2.4;
+          p.spin = (Math.random() - 0.5) * 9;
+          p.max = p.life = 4.5 + Math.random() * 2.5;
+        } else {
+          /* Spread ALONG the goal line, not out of one point. A tight spawn
+             with a tight speed range is a cloud of paper that stays a cloud:
+             every piece keeps its neighbour, and the burst reads as three or
+             four white sheets rather than a hundred pieces of confetti. */
+          p.x = x + (Math.random() - 0.5) * 7;
+          p.y = y + Math.random() * 1.2;
+          p.z = z + (Math.random() - 0.5) * 11;
+          var a = Math.random() * Math.PI * 2, r = 0.6 + Math.random() * 3.6;
+          p.vx = Math.cos(a) * r; p.vz = Math.sin(a) * r;
+          p.vy = 1.6 + Math.random() * 4.0;
+          p.drag = 1.2;
+          p.fall = 9.0;
+          p.spin = (Math.random() - 0.5) * 16;
+          p.max = p.life = 2.4 + Math.random() * 1.6;
+        }
+        // Real confetti is cut to one size and then read at a hundred
+        // distances; a fixed quad is read at one. Vary it.
+        p.sz = 0.6 + Math.random() * 0.6;
         p.rot = Math.random() * Math.PI; p.tilt = Math.random() * Math.PI;
-        p.max = p.life = 2.2 + Math.random() * 1.4;
         try {
           col.set(colors[(Math.random() * colors.length) | 0]);
+          /* HOLD IT UNDER THE BLOOM. The pool is MeshBasicMaterial with tone
+             mapping off, so anything at full white sails past the composer's
+             0.86 threshold and comes back as a featureless glowing rectangle —
+             and half the nations in this game wear white. Six hundred of those
+             at once flooded the whole frame. Ceiling every piece at 0.86 keeps
+             the paper looking like paper; the floodlights still glow because
+             they are the only things left above the line. */
+          var mx = Math.max(col.r, col.g, col.b);
+          if (mx > 0.86) col.multiplyScalar(0.86 / mx);
           mesh.setColorAt(slot, col);
         } catch (err) { /* colour is decoration; motion is the effect */ }
       }
@@ -1834,15 +1955,21 @@
         if (p.life <= 0) { m4.makeScale(0, 0, 0); mesh.setMatrixAt(k, m4); continue; }
         any = 1;
         p.life -= dt;
-        p.vy -= 9.0 * dt;                       // gravity, a touch softened
-        p.vx *= (1 - 1.2 * dt); p.vz *= (1 - 1.2 * dt);   // air drag
+        // Paper does not fall like a stone: terminal velocity comes from drag
+        // on the same axis as gravity, which is what makes the drifting half of
+        // a burst flutter down through the whole shot instead of dropping out
+        // of frame in half a second.
+        p.vy -= p.fall * dt;
+        var d = 1 - Math.min(0.9, p.drag * dt);
+        p.vx *= d; p.vz *= d;
+        if (p.vy < 0) p.vy *= d;
         p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
         p.rot += p.spin * dt; p.tilt += p.spin * 0.6 * dt;
         if (p.y < 0.04) {                       // settle on the turf and lie flat
           p.y = 0.04; p.vy = 0; p.vx *= 0.6; p.vz *= 0.6; p.spin *= 0.5;
         }
         // Shrink away over the last half second — the pool shares one opacity.
-        var s = clamp(p.life / 0.5, 0, 1);
+        var s = clamp(p.life / 0.5, 0, 1) * p.sz;
         pos.set(p.x, p.y, p.z);
         e.set(p.tilt, p.rot, p.rot * 0.5);
         q.setFromEuler(e);

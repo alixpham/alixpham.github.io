@@ -56,9 +56,16 @@
     // reaching out and ripping the flag off; FlagPulled is the ball carrier's
     // reaction to losing it.
     flaggrab: 'FlagGrab', flagpull: 'FlagPulled', flagpulled: 'FlagPulled',
-    celebrate: 'Celebrate', juke: 'Juke'
+    // Five celebrations, not one. `celebrate` is the hop the game has always
+    // had; the other four are there so ten men in an end zone don't perform a
+    // single animation in unison. Spike is the only one-shot of them.
+    celebrate: 'Celebrate', spike: 'Spike', dance: 'Dance', flex: 'Flex',
+    highstep: 'HighStep', juke: 'Juke'
   };
-  var LOOPING = { Idle: 1, Run: 1, Walk: 1, Backpedal: 1, Celebrate: 1 };
+  var LOOPING = {
+    Idle: 1, Run: 1, Walk: 1, Backpedal: 1,
+    Celebrate: 1, Dance: 1, Flex: 1, HighStep: 1
+  };
 
   // Which materials each option tints. Anything not listed keeps its baked
   // colour, so setting a jersey never repaints skin, shoes or the flags.
@@ -318,6 +325,30 @@
       if (actions.Backpedal) actions.Backpedal.timeScale = mult;
     };
 
+    /* HOW FAST THIS PLAYER TRAVELS WHEN A GAIT CLIP PLAYS AT 1x, in world units
+       per second. A clip with no root motion only looks planted if the support
+       foot sweeps backward at exactly the speed the ground moves under it, and
+       that speed is a property of the CLIP — it changes the moment anybody
+       edits a stride table. tools/build-player-glb.mjs measures it off the same
+       kinematics it builds the clip from and bakes it into the glTF as
+       animation extras, which GLTFLoader hands back on clip.userData.
+
+       The only thing left to do here is the units: the number in the file is
+       metres per second at the model's authored height, and this instance is
+       scaled twice — once from metres to yards, and again by whatever build the
+       renderer gave this particular athlete. A taller player's stride really
+       does cover more ground, so both belong in the answer.
+
+       Returns null for a clip that carries no measurement (or a rig old enough
+       not to have any), which is the caller's cue to fall back. */
+    api.naturalSpeed = function (name, extraScale) {
+      var a = actions[canon(name)];
+      var cl = a && a.getClip && a.getClip();
+      var g = cl && cl.userData;
+      if (!g || !g.gait || !(g.groundSpeed > 0)) return null;
+      return g.groundSpeed * scale * (extraScale == null ? 1 : extraScale);
+    };
+
     // yaw = world heading, yaw 0 -> +X. Rig faces +Z, hence the PI/2 offset —
     // identical to FLAGSTER.Player3D so the two are interchangeable.
     api.face = function (yaw, dt) {
@@ -388,7 +419,8 @@
     build: build,
     model: MODEL,
     url: MODEL_URL,
-    clipNames: ['Idle', 'Run', 'Walk', 'Backpedal', 'Throw', 'Catch', 'Dive', 'FlagGrab', 'FlagPulled', 'Celebrate', 'Juke'],
+    clipNames: ['Idle', 'Run', 'Walk', 'Backpedal', 'Throw', 'Catch', 'Dive', 'FlagGrab',
+      'FlagPulled', 'Celebrate', 'Spike', 'Dance', 'Flex', 'HighStep', 'Juke'],
     materialNames: ['jersey', 'trim', 'skin', 'hair', 'shorts', 'socks', 'shoes', 'belt', 'flag'],
     socketNames: ['Socket_Hand_L', 'Socket_Hand_R', 'Socket_Flag_L', 'Socket_Flag_R'],
     heightMetres: AUTHOR_HEIGHT_M,

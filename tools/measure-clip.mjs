@@ -230,19 +230,27 @@ function measure(W) {
   const lean = Math.atan2(V.dot(spineUp, pz), V.dot(spineUp, py)) * DEG;   // + = toward the target
   const tilt = Math.atan2(V.dot(spineUp, px), V.dot(spineUp, py)) * DEG;   // + = away from a right arm
 
-  /* Ground contact is the SOLE, not a joint: the ankle rides 0.090 above it and
-     the shoe runs from 0.075 behind the ankle to 0.175 in front (the same three
-     numbers the pelvis solver in the builder uses). Take whichever end is
-     lower — that is the bit of the player touching the field. */
+  /* Ground contact is the SOLE, not a joint — and the sole is TWO segments, not
+     one. The foot carries the heel and the ball; the toe tip hangs off the Toe
+     joint and moves with it, so once the gait clips started extending the MTP
+     at toe-off (which is the whole point of having a Toe bone) a rigid
+     heel-to-tip model reported a phantom point 26mm under the turf while the
+     real shoe was flat on it. Same three offsets the builder's solePoints uses. */
   const xform = (m, p) => [
     m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12],
     m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13],
     m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14]
   ];
   const sole = s => {
-    const m = W['Foot_' + s];
-    const a = xform(m, [0, -0.090, -0.075]), b = xform(m, [0, -0.090, 0.175]);
-    return a[1] <= b[1] ? a : b;
+    const f = W['Foot_' + s], t = W['Toe_' + s];
+    const pts = [
+      xform(f, [0, -0.090, -0.075]),          // heel
+      xform(f, [0, -0.090, 0.115]),           // ball, under the MTP joint
+      xform(t, [0, -0.035, 0.068])            // toe tip, on the toe segment
+    ];
+    let lo = pts[0];
+    for (const p of pts) if (p[1] < lo[1]) lo = p;
+    return lo;
   };
   const soleL = sole('L'), soleR = sole('R');
   // Drift is measured at the ANKLE, not at the sole: the lowest point of a shoe
