@@ -319,12 +319,25 @@
        elbow bent to about a right angle, forearm level and across the front.
 
        That last part is why the arm pose and the ball offsets have to be tuned
-       together and are written together. Sampled every frame across a full
-       stride in the running game, the ball holds 0.17yd from the elbow joint
-       and 0.29yd from the hand with a spread of ZERO on both — which is the
-       whole point of hanging it off the limb, and is what the chest could
-       never give. It rides 0.21yd below the chest bone, against 0.09 before,
-       so it also finally sits down at the waist where it belongs.
+       together and are written together.
+
+       BUT A HELD BALL IS NOT A STILL ONE. Hanging the ball off the forearm and
+       then pinning that forearm to a constant rotation made the ball rigid and
+       the arm a mannequin: nothing animates the Shoulder these two bones hang
+       from, so a constant pose at full weight is literally a welded limb.
+       Measured on a clean carry at running speed, the ball-side upper arm's
+       own rotation moved 0.024 across a stride against the free arm's 0.549 —
+       4% — and the hand travelled 0.031 in chest-local space against 0.635.
+       The player ran and the arm did not move at all.
+
+       A runner does clamp the ball, but the arm still drives: the elbow stays
+       shut and the whole assembly pumps fore and aft from the shoulder, in the
+       same rhythm as the free arm and roughly a third of its amplitude. So the
+       pose below is a BASE plus a `swing`, sampled from the same cosine and the
+       same peak phase that built the rig's own arm tracks (see armTracks in
+       tools/build-player-glb.mjs — the left arm leads at 0.12 of the cycle, the
+       right half a cycle behind it), which is what keeps it contralateral to
+       the legs instead of reading as a second animation over the first.
 
        Ball offsets are FOREARM-local; arm rotations are the bone's own. Both
        mirror with `side`: +1 carries on the player's LEFT. The rotation about
@@ -334,9 +347,17 @@
     var HALF_PI = Math.PI / 2;
     var CARRY = {
       host:     'LowerArm',                          // the forearm bone
-      ball:     { pos: [0.055, -0.13, -0.05], rot: [0, 0.18, -HALF_PI] },
-      upperArm: [0.12, -0.28, 0.13],                 // hangs, turned slightly in
-      lowerArm: [-1.69, 0, 0.05]                     // ~97 degrees: forearm level
+      /* The ball sits at the HAND end of the forearm (the bone runs 0.27 down
+         its own -Y to the wrist), not halfway along it, so the hand is on the
+         ball instead of reaching past its nose — which is what it did at
+         -0.13, and it read as a ball balanced on a shelf. */
+      ball:     { pos: [0, -0.27, -0.08], rot: [0, 0.50, -1.35] },
+      upperArm: [-0.05, -0.42, 0.22],                // elbow in at the ribs
+      lowerArm: [-2.35, 0, 0.05],                    // ~135 deg: forearm up across the chest
+      /* Fore-aft drive, in radians of amplitude about the base. The free arm
+         covers 26 to -46 degrees, i.e. +/-0.63rad; the elbow barely opens at
+         all because the ball is clamped in it. */
+      swing:    { upper: 0.24, lower: 0.05, peakL: 0.12 }
     };
     /* A passer still holding it has it IN THE THROWING HAND, at the near
        shoulder, with the off hand brought across onto it — which is both what
@@ -391,22 +412,45 @@
     /* Blend one arm toward a posed rotation. Weight 0 leaves the clip alone and
        1 takes it over completely, so a pose can fade in and out instead of
        snapping — and slerping the bone means it composes with whatever the
-       mixer just wrote rather than fighting it. */
-    function poseArm(P, suffix, sign, upper, lower, w) {
+       mixer just wrote rather than fighting it.
+
+       `drive` is added to the fore-aft angle of both joints before the slerp:
+       it is what stops a full-weight pose from being a welded limb. It is not
+       a blend with the clip — blending back toward the clip would open the
+       elbow and drop the ball out of the arm, which is the one thing the pose
+       exists to prevent. The elbow keeps its angle and the whole closed arm
+       swings from the shoulder. */
+    function poseArm(P, suffix, sign, upper, lower, w, driveUp, driveLo) {
       if (!P.nodes || w <= 0.001) return;
       var up = P.nodes['UpperArm_' + suffix], lo = P.nodes['LowerArm_' + suffix];
       if (!up || !lo) return;
-      _q.setFromEuler(_e.set(upper[0], upper[1] * sign, upper[2] * sign));
+      _q.setFromEuler(_e.set(upper[0] + (driveUp || 0), upper[1] * sign, upper[2] * sign));
       up.quaternion.slerp(_q, w);
-      _q.setFromEuler(_e.set(lower[0], lower[1] * sign, lower[2] * sign));
+      _q.setFromEuler(_e.set(lower[0] + (driveLo || 0), lower[1] * sign, lower[2] * sign));
       lo.quaternion.slerp(_q, w);
     }
     /* Apply a whole grip: the arm the ball is in, plus — for the two-handed
-       ready position — the off arm reaching across onto it. */
-    function poseGrip(P, grip, side, w) {
+       ready position — the off arm reaching across onto it.
+
+       `phase` is where the legs are in the stride (null when no gait is
+       running) and `amp` scales the drive down as the player slows, so a
+       carrier standing still holds the ball still instead of pumping an arm
+       on the spot. The cosine and the peak are the rig's own: the left arm is
+       furthest forward at 0.12 of the cycle and the right half a cycle behind,
+       so the ball-side arm stays contralateral to the legs. */
+    function poseGrip(P, grip, side, w, phase, amp) {
       var main = side > 0 ? 'L' : 'R', off = side > 0 ? 'R' : 'L';
-      poseArm(P, main, side, grip.upperArm, grip.lowerArm, w);
-      if (grip.offUpperArm) poseArm(P, off, -side, grip.offUpperArm, grip.offLowerArm, w);
+      var sw = grip.swing, dUp = 0, dLo = 0;
+      if (sw && phase != null && amp > 0.001) {
+        var peak = side > 0 ? sw.peakL : (sw.peakL + 0.5) % 1;
+        var c = Math.cos(2 * Math.PI * (phase - peak));
+        dUp = sw.upper * amp * c;
+        dLo = sw.lower * amp * c;
+      }
+      poseArm(P, main, side, grip.upperArm, grip.lowerArm, w, dUp, dLo);
+      // The off arm mirrors the drive, half a cycle out, so a two-handed ready
+      // position doesn't leave one arm alive and the other dead.
+      if (grip.offUpperArm) poseArm(P, off, -side, grip.offUpperArm, grip.offLowerArm, w, -dUp, -dLo);
     }
 
     // Flying-flag effect pool (spawned on flag pulls)
@@ -560,7 +604,7 @@
         pMeshes.push({
           P: P, holder: holder, ring: ring,
           ud: { yaw: seedYaw, celebT: 0, _wasPulled: false, _threw: false, _caught: false, _juked: false,
-                clip: 'idle', carryKey: '', carrySide: 0, carryW: 0 }
+                clip: 'idle', carryKey: '', carrySide: 0, carryW: 0, carryAmp: 0 }
         });
       });
       playersRef = players;
@@ -719,7 +763,15 @@
       ud.carryW += (wantW - ud.carryW) * Math.min(1, dt * 9);
       if (ud.carryW < 0.02 && wantKey !== ud.carryKey) { ud.carryKey = wantKey; ud.carryW = 0; }
       if (ud.carryW > 0.001 && ud.carryKey) {
-        poseGrip(P, gripFor(ud.carryKey), sideFor(ud.carryKey), ud.carryW);
+        /* How hard the arm drives. Off at a standstill, full by the time the
+           run clip has taken over, so the pump arrives with the running rather
+           than switching on. Eased frame to frame as well, because the clip
+           itself crossfades and a step change in amplitude across that would
+           show as a hitch in the one limb that is holding the ball. */
+        var wantAmp = P.stridePhase ? clamp((speed - 1.2) / (WALK_MAX - 0.6), 0, 1) : 0;
+        ud.carryAmp += (wantAmp - ud.carryAmp) * Math.min(1, dt * 6);
+        poseGrip(P, gripFor(ud.carryKey), sideFor(ud.carryKey), ud.carryW,
+                 P.stridePhase ? P.stridePhase() : null, ud.carryAmp);
       }
 
       /* No floating nameplates during play. They were a world-space Sprite

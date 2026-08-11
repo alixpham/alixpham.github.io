@@ -379,17 +379,47 @@
     var dirx = d > 1e-4 ? (predicted.x - carrier.x) / d : 1;
     var diry = d > 1e-4 ? (predicted.y - carrier.y) / d : 0;
 
-    /* Solve the launch angle for the range. sin(2t) = g*d/v^2 has a flat root
-       and a lofted one; take the flat one and then impose a floor that grows
-       with distance, so a deep ball is actually thrown up in the air and is
-       catchable rather than a flat rocket. */
-    var s2 = GRAVITY * d / (throwSpeed * throwSpeed);
+    /* Solve the launch angle for the range — BETWEEN THE TWO HEIGHTS THE BALL
+       ACTUALLY FLIES BETWEEN. sin(2t) = g*d/v^2 is the ground-to-ground range
+       equation, and a ball released at the ear and caught at the chest is not
+       ground to ground: it has an extra RELEASE_Z - CATCH_Z to fall through,
+       which buys it extra hang time and carries it past the receiver. Pairing
+       that flat solve with a flight time measured between the real heights is
+       what broke the passing game — every ball overshot by about 30% and
+       nobody was within catching range of any of them. Completions measured
+       1.6%.
+
+       With z0 - z1 = drop, writing the trajectory at horizontal distance d and
+       substituting t = d / (v cos t) gives a quadratic in T = tan t:
+
+           k*T^2 - d*T + (k - drop) = 0,     k = g*d^2 / (2*v^2)
+
+       The smaller root is the flat trajectory, which is the one a passer
+       throws; a negative discriminant means it is out of range whatever the
+       angle, and then the best he has is 45 degrees and it falls short. */
+    var drop = RELEASE_Z - CATCH_Z;
+    var k = GRAVITY * d * d / (2 * throwSpeed * throwSpeed);
+    var disc = d * d - 4 * k * (k - drop);
     var theta;
-    if (s2 >= 1) {
+    if (k < 1e-6) {
+      theta = 0;                        // no distance to cover
+    } else if (disc <= 0) {
       theta = Math.PI / 4;              // out of range: best he's got, falls short
     } else {
-      theta = 0.5 * Math.asin(s2);
-      theta = Math.max(theta, Math.min(Math.PI / 4, d * 0.011));
+      theta = Math.atan((d - Math.sqrt(disc)) / (2 * k));
+      /* There used to be a loft floor here — max(theta, d*0.011) — to stop a
+         deep ball being a flat rocket. It has to go, because BOTH roots of
+         that quadratic land at exactly d and every angle between them lands
+         PAST it: a floor above the flat root is an overthrow by definition.
+         With the ground-to-ground solve it rarely bound; with the drop taken
+         into account the required angle is lower, so it bound most of the
+         time, and it is the rest of the overthrow. Restoring it costs
+         completions directly — measured 50% without it against 17% with it.
+
+         It is also no longer needed. Solving between the real heights already
+         steepens the throw with distance on its own: 6.4 degrees at 10 yards,
+         11.8 at 20, 19.9 at 30, against a floor that only ever asked for
+         18.9 at 30. The arc on a deep ball is the physics, not a fudge. */
     }
     var hv = throwSpeed * Math.cos(theta);        // horizontal component
     var vz = throwSpeed * Math.sin(theta);        // vertical component

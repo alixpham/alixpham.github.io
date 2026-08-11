@@ -290,6 +290,23 @@
       current = a; api._oneShot = a;
     };
 
+    /* Where in the stride the legs currently are, 0..1, or null if the clip
+       running isn't a gait. Anything layered on top of a walk or a run has to
+       be in step with it or it reads as a second animation playing over the
+       first — the carry arm is the case this exists for. Read from the action
+       rather than integrated separately, because setSpeed() rescales the clip
+       continuously and only the action knows where that has left it. */
+    var GAITS = { Run: 1, Walk: 1, Backpedal: 1 };
+    api.stridePhase = function () {
+      if (!current || api._oneShot) return null;
+      var clip = current.getClip && current.getClip();
+      if (!clip || !GAITS[clip.name] || !current.isRunning()) return null;
+      var d = clip.duration;
+      if (!(d > 0)) return null;
+      var p = (current.time % d) / d;
+      return p < 0 ? p + 1 : p;
+    };
+
     api.setSpeed = function (mult) {
       api._speed = mult;
       if (actions.Run) actions.Run.timeScale = mult;
