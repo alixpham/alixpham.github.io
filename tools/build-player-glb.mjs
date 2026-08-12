@@ -539,6 +539,11 @@ const clip = (name, duration, tracks) => CLIPS.push({ name, duration, tracks });
                          never negative here
      ankle(a)     a > 0  toes pull up toward the shin (dorsiflexion)
                   a < 0  toes point away from the shin (plantarflexion)
+     toe(a)       a > 0  the metatarsophalangeal joint EXTENDS — the toes bend
+                         up relative to the rest of the foot. At toe-off this
+                         is what lets the ankle plantarflex 30 degrees while
+                         the forefoot stays flat on the turf; it is never
+                         meaningfully negative.
      shoulder(a)  a > 0  arm swings forward
      elbow(a)     a > 0  hand comes up toward the shoulder — never negative
 
@@ -548,6 +553,7 @@ const D = Math.PI / 180;
 const hip = a => -a * D;
 const knee = a => a * D;
 const ankle = a => -a * D;
+const toe = a => -a * D;
 const shoulder = a => -a * D;
 const elbow = a => -a * D;
 
@@ -556,23 +562,84 @@ const elbow = a => -a * D;
    curve half a cycle later. Authoring at named gait phases and resampling onto
    a uniform grid is what makes that shift a plain array rotation, so the two
    legs can never drift out of agreement.                                    */
-const STEPS = 16;
+const STEPS = 32;
 
-/* rows: [phase, hipDeg, kneeDeg, ankleDeg] — phase 0..1, ascending. */
+/* Resample an authored phase table onto the uniform STEPS grid.
+
+   This used to interpolate LINEARLY between the rows, and that single decision
+   is most of the reason a set of perfectly reasonable poses walked like a
+   marionette. Between two rows every joint turns at a CONSTANT rate, and at the
+   row itself the rate changes within one frame — so the whole body moves as a
+   staircase of angular velocities with a visible corner at every phase
+   boundary. Sixteen samples per cycle then quantised the rows onto a grid they
+   don't sit on, which clipped the extremes flat as well: the run's 124-degree
+   heel-to-glute measured back out of the built file as 115, and held there for
+   two frames, because the peak fell between two samples.
+
+   What replaces it is a cyclic cubic Hermite through the same rows, with
+   tangents taken from the neighbouring rows at their ACTUAL phase spacing — the
+   rows are deliberately not evenly spaced (a run spends 30% of the cycle in
+   stance and needs most of its detail there), so uniform Catmull-Rom would be
+   the wrong curve. It passes through every authored pose exactly, has
+   continuous velocity everywhere including across the wrap from 1.0 back to
+   0.0, and at 32 samples the peaks survive to within a degree.
+
+   rows: [phase, ...columns] with phase 0..1 ascending, row 0 at phase 0, and a
+   closing row at phase 1 that repeats row 0 (it is dropped — the wrap is what
+   makes the cycle continuous). Missing columns read as 0.                    */
 function sampleGait(rows, col) {
+  const K = rows[rows.length - 1][0] >= 1 ? rows.slice(0, -1) : rows.slice();
+  const n = K.length;
+  const X = K.map(r => r[0]);
+  const V = K.map(r => (r[col + 1] == null ? 0 : r[col + 1]));
+  // Knot i, wrapped: phase runs on past 1.0 (and below 0.0) so the tangent at
+  // the seam is computed on real spacing rather than on a fold.
+  const at = i => {
+    const w = ((i % n) + n) % n;
+    return { x: X[w] + Math.floor(i / n), v: V[w] };
+  };
   const out = [];
-  for (let i = 0; i < STEPS; i++) {
-    const p = i / STEPS;
-    let k = 0;
-    while (k < rows.length - 2 && rows[k + 1][0] <= p) k++;
-    const u = (p - rows[k][0]) / (rows[k + 1][0] - rows[k][0]);
-    out.push(rows[k][col + 1] + (rows[k + 1][col + 1] - rows[k][col + 1]) * u);
+  for (let s = 0; s < STEPS; s++) {
+    const p = s / STEPS;
+    let k = n - 1;
+    for (let j = 0; j < n; j++) if (X[j] <= p) k = j;
+    const P0 = at(k - 1), P1 = at(k), P2 = at(k + 1), P3 = at(k + 2);
+    const h = P2.x - P1.x, u = (p - P1.x) / h;
+    const m1 = (P2.v - P0.v) / (P2.x - P0.x);
+    const m2 = (P3.v - P1.v) / (P3.x - P1.x);
+    const u2 = u * u, u3 = u2 * u;
+    out.push((2 * u3 - 3 * u2 + 1) * P1.v + (u3 - 2 * u2 + u) * h * m1
+      + (-2 * u3 + 3 * u2) * P2.v + (u3 - u2) * h * m2);
   }
   return out;
 }
 const cycleTimes = dur => Array.from({ length: STEPS + 1 }, (_, i) => (i / STEPS) * dur);
 const closeLoop = a => a.concat([a[0]]);
 const halfCycle = a => a.slice(STEPS / 2).concat(a.slice(0, STEPS / 2));
+/* Smooth 0..1 ramp — used to turn "how far off the turf is this foot" into the
+   weight behind everything the pelvis and shoulders do in the frontal plane. A
+   bare clamp has corners at both ends and those corners are visible in a hip. */
+const smooth = t => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
+
+/* The first harmonic of a cyclic signal, rescaled so it peaks at +/-1. Used to
+   turn a near-square footfall indicator into the smooth, correctly-phased sine
+   that the pelvis and the shoulder girdle actually ride on. Returns all zeros
+   for a signal with no fundamental (a stationary pose), which is the right
+   answer: nothing to list toward. */
+function fundamental(sig) {
+  const n = sig.length;
+  let a = 0, b = 0;
+  for (let i = 0; i < n; i++) {
+    const th = 2 * Math.PI * i / n;
+    a += sig[i] * Math.cos(th); b += sig[i] * Math.sin(th);
+  }
+  const amp = Math.hypot(a, b);
+  if (amp < 1e-9) return sig.map(() => 0);
+  return sig.map((_, i) => {
+    const th = 2 * Math.PI * i / n;
+    return (a * Math.cos(th) + b * Math.sin(th)) / amp;
+  });
+}
 
 /* --- Pelvis height, solved rather than guessed -----------------------------
    Hand-keyed hip bob is how a cycle ends up skating 15cm above the turf. The
@@ -589,18 +656,56 @@ const halfCycle = a => a.slice(STEPS / 2).concat(a.slice(0, STEPS / 2));
 const THIGH = 0.460, SHIN = 0.410;
 const HIP_Y = 1.000 - 0.040;                       // UpperLeg height at rest
 const SOLE = 0.090;                                // ankle joint above the sole
-const SOLE_BACK = -0.075, SOLE_FWD = 0.175;        // heel and ball, along the foot
+const HEEL_Z = -0.075;                             // back of the heel, in the foot frame
+const MTP_Z = 0.115;                               // ball of the foot == the Toe joint
+const MTP_DROP = 0.055;                            // Toe joint above the sole under it
+const TOE_DROP = 0.035, TOE_LEN = 0.068;           // sole under, and length past, that joint
 
-/* Lowest sole point of one leg, relative to a pelvis sitting at HIP_Y. */
-function soleHeight(hipDeg, kneeDeg, ankleDeg) {
+/* THE FOOT IS TWO SEGMENTS, NOT A PADDLE.
+
+   The rig has always had Toe_L / Toe_R and no clip had ever touched them, so
+   every foot in the game was one rigid plank from heel to toe. That is the
+   single loudest thing in the old walk: a real foot lands on its heel, rolls
+   flat, and then leaves the ground by rotating the whole leg up over toes that
+   stay put. A plank can do none of that — it lands flat, it leaves flat, and
+   between those it hangs off the end of the shin at whatever angle the ankle
+   was keyed to. It reads as a boot on a stick.
+
+   So the sole is modelled the way it is shaped: heel and ball on the FOOT
+   segment, tip on the TOE segment, with the toe's own rotation folded in. Every
+   ground solve below takes the lowest of the three, which is what lets the
+   ankle plantarflex through toe-off while the forefoot stays flat on the turf.
+
+   `tilt` is the accumulated forward tilt of a segment (its direction is
+   (0, -cos, +sin)), and a local point (0, ly, lz) on it lands at
+       y = ly*cos + lz*sin ,  z = -ly*sin + lz*cos
+   relative to the segment's own joint.                                       */
+function xf(ly, lz, tilt, oy, oz) {
+  const c = Math.cos(tilt), s = Math.sin(tilt);
+  return { y: oy + ly * c + lz * s, z: oz - ly * s + lz * c };
+}
+
+/* The three sole contact points of one leg, relative to a pelvis at HIP_Y.
+   Index 0 = heel, 1 = ball, 2 = toe tip. */
+function solePoints(hipDeg, kneeDeg, ankleDeg, toeDeg) {
   const t = hipDeg * D;                            // forward tilt of the thigh
   const s = t - kneeDeg * D;                       // knee folds the shin back
   const f = s + ankleDeg * D;                      // dorsiflexion lifts the toes
-  const kneeY = HIP_Y - THIGH * Math.cos(t);
-  const ankleY = kneeY - SHIN * Math.cos(s);
-  const cos = Math.cos(f), sin = Math.sin(f);
-  const pt = z => ankleY + (-SOLE * cos + z * sin);
-  return Math.min(pt(SOLE_BACK), pt(SOLE_FWD));
+  const g = f + (toeDeg || 0) * D;                 // MTP extension lifts the foot off them
+  const kneeY = HIP_Y - THIGH * Math.cos(t), kneeZ = THIGH * Math.sin(t);
+  const ankY = kneeY - SHIN * Math.cos(s), ankZ = kneeZ + SHIN * Math.sin(s);
+  const mtp = xf(-MTP_DROP, MTP_Z, f, ankY, ankZ);
+  return [
+    xf(-SOLE, HEEL_Z, f, ankY, ankZ),
+    xf(-SOLE, MTP_Z, f, ankY, ankZ),
+    xf(-TOE_DROP, TOE_LEN, g, mtp.y, mtp.z)
+  ];
+}
+
+/* Lowest sole point of one leg, relative to a pelvis sitting at HIP_Y. */
+function soleHeight(hipDeg, kneeDeg, ankleDeg, toeDeg) {
+  const p = solePoints(hipDeg, kneeDeg, ankleDeg, toeDeg);
+  return Math.min(p[0].y, p[1].y, p[2].y);
 }
 
 /* --- The shoulder, authored the way a throwing study reports it -------------
@@ -717,10 +822,24 @@ function standHipY(legL, legR) {
    ground the whole body is. A celebration hop leaves the turf, and the
    kinematics of a tucked leg can't tell you that — so it is added ON TOP of
    the solved height rather than replacing it, which keeps the feet exactly on
-   the ground at the bottom of every hop. */
-function groundedHips(times, legL, legR, lift, step = 0.02) {
+   the ground at the bottom of every hop.
+
+   `roll` is the pelvis's own Z rotation at each key, if the clip has one. It
+   belongs here because tilting the pelvis raises one hip joint and lowers the
+   other by 0.098*sin(theta): the Juke rolls 23 degrees at the plant, which is
+   38mm — twice the tolerance this holds ground contact to, and enough on its
+   own to put the inside foot through the turf while every leg angle is right. */
+const HIP_HALF = 0.098;                            // UpperLeg offset from the spine
+function groundedHips(times, legL, legR, lift, roll, step = 0.02) {
   const lerpLeg = (A, B, u) => A.map((v, i) => v + (B[i] - v) * u);
   const up = k => (lift ? lift[k] : 0);
+  const rz = k => (roll ? roll[k] : 0);
+  // Lowest sole of either leg with the pelvis tilted by `th`, whose two hip
+  // joints therefore sit +/- HIP_HALF*sin(th) either side of the pelvis.
+  const low = (L, R, th) => {
+    const dy = HIP_HALF * Math.sin(th);            // + raises the LEFT hip joint
+    return Math.min(soleHeight(...L) + dy, soleHeight(...R) - dy);
+  };
   const T = [], Y = [];
   for (let k = 0; k < times.length - 1; k++) {
     const span = times[k + 1] - times[k];
@@ -728,68 +847,207 @@ function groundedHips(times, legL, legR, lift, step = 0.02) {
     for (let i = 0; i < n; i++) {
       const u = i / n;
       T.push(times[k] + span * u);
-      Y.push(standHipY(lerpLeg(legL[k], legL[k + 1], u), lerpLeg(legR[k], legR[k + 1], u))
+      Y.push(1.000 - low(lerpLeg(legL[k], legL[k + 1], u), lerpLeg(legR[k], legR[k + 1], u),
+        rz(k) + (rz(k + 1) - rz(k)) * u)
         + up(k) + (up(k + 1) - up(k)) * u);
     }
   }
-  T.push(times[times.length - 1]);
-  Y.push(standHipY(legL[legL.length - 1], legR[legR.length - 1]) + up(times.length - 1));
+  const last = times.length - 1;
+  T.push(times[last]);
+  Y.push(1.000 - low(legL[legL.length - 1], legR[legR.length - 1], rz(last)) + up(last));
   return pos('Hips', T, Y.map(y => [0, y, 0]));
 }
 
-function solveHipY(dur, rows, lift = 0, stanceEnd = 0.5) {
-  const H = sampleGait(rows, 0), K = sampleGait(rows, 1), A = sampleGait(rows, 2);
-  const Hr = halfCycle(H), Kr = halfCycle(K), Ar = halfCycle(A);
+/* ============================ ONE CYCLIC GAIT, END TO END ==================
+
+   Everything a walk, a run or a backpedal needs, built from two authored phase
+   tables (one leg, one arm) plus a handful of amplitudes. It exists as one
+   function because the parts are not independent: the pelvis has to know where
+   the feet are to sit at the right height, the frontal plane has to know which
+   foot is carrying the weight, and the trunk and the head have to counter what
+   the pelvis does. Scattering those across four helpers is how the old cycle
+   ended up with a pelvis that bobbed and a body above it that did nothing.
+
+   WHAT THE OLD ONE WAS MISSING, and why it read as a novelty walk:
+
+     * The frontal plane was FROZEN. Pelvis translation was Y only, pelvis
+       rotation was yaw only, and the chest had no side-bend at all. A real
+       walker's pelvis drops four or five degrees toward the leg that is in the
+       air, shifts two or three centimetres over the leg that is not, and the
+       shoulders tilt back against both. With none of that, ten players ran
+       about with a spirit level for a pelvis.
+     * Nothing counter-rotated above the hips except a token seven degrees of
+       chest yaw, and the head was keyed to a constant — so the eyeline swung
+       with the shoulders instead of staying on where the player was going.
+     * The toes never moved (see solePoints above).
+
+   The frontal-plane terms are all driven off ONE derived quantity: how far each
+   foot is off the turf, smoothed to 0..1. That is not a stylistic choice, it is
+   the actual mechanism — the pelvis drops toward the unsupported side because
+   there is nothing under it — and deriving it means the sway can never drift
+   out of phase with the footfalls the way a hand-keyed sine would.
+
+   cfg:
+     leg     [phase, hip, knee, ankle, toe]  — ONE leg; the other is +0.5
+     arm     [phase, shoulder, elbow, abduct] — ditto, in degrees
+     lift    extra pelvis rise at mid-flight, metres (0 for a walk: a walk never
+             leaves the ground, and the kinematics already know that)
+     lean    trunk flexion, radians, split across Spine and Chest
+     yaw     pelvis rotation amplitude, radians
+     obliq   pelvic drop toward the swing leg, radians
+     sway    pelvis shift toward the stance leg, metres
+     tilt    shoulder counter-tilt against the pelvic drop, radians
+     splay   constant hip abduction, radians
+     head    head pitch, radians                                              */
+function cyclicGait(name, dur, cfg) {
+  const T = cycleTimes(dur);
+  const col = c => sampleGait(cfg.leg, c);
+  const H = col(0), K = col(1).map(v => Math.max(0, v)), A = col(2), O = col(3).map(v => Math.max(0, v));
+  const Hr = halfCycle(H), Kr = halfCycle(K), Ar = halfCycle(A), Or = halfCycle(O);
+  const legAt = (i, right) => (right ? [Hr[i], Kr[i], Ar[i], Or[i]] : [H[i], K[i], A[i], O[i]]);
+
+  /* --- pelvis height, and which foot is carrying ------------------------- */
+  const stanceEnd = cfg.stanceEnd == null ? 0.5 : cfg.stanceEnd;
   const span = 0.5 - stanceEnd;                    // half-cycle spent airborne
-  const ys = [];
+  const raw = [];
   for (let i = 0; i < STEPS; i++) {
-    const low = Math.min(soleHeight(H[i], K[i], A[i]), soleHeight(Hr[i], Kr[i], Ar[i]));
-    // Every step is two half-cycles, so the airborne window repeats twice.
+    // + = the weight is on the LEFT foot (which sits at +X), - = on the right.
+    raw.push(soleHeight(...legAt(i, true)) - soleHeight(...legAt(i, false)));
+  }
+  /* Take the FUNDAMENTAL of that rather than the raw signal. The difference in
+     sole heights is a very nearly square wave — a swinging foot is 40cm up for
+     most of its swing, so any normalisation of it saturates and the pelvis
+     snaps from one obliquity to the other inside two frames. A pelvis does not
+     do that. Its lateral list is dominated by the first harmonic of the stride,
+     which is exactly what this extracts: same phase as the real footfalls
+     (which is the whole reason for deriving it rather than keying a sine by
+     hand and hoping), and smooth by construction. */
+  const load = fundamental(raw);
+  const hipsX = load.map(l => (cfg.sway || 0) * l);
+
+  /* Now the pelvis height, WITH the obliquity folded in. Tilting the pelvis
+     raises one hip joint and lowers the other by 0.098*sin(theta) — nine
+     millimetres at the amplitudes here, which is three times the tolerance this
+     project holds ground contact to, so leaving it out puts a foot through the
+     turf on the very frames the tilt is deepest. */
+  const HIP_X = 0.098;                             // UpperLeg offset from the spine
+  const hipsY = [], hipRise = [];
+  for (let i = 0; i < STEPS; i++) {
+    const th = (cfg.obliq || 0) * load[i];
+    const dy = HIP_X * Math.sin(th);               // + raises the LEFT hip joint
+    hipRise.push(dy);
+    const lowL = soleHeight(...legAt(i, false)) + dy;
+    const lowR = soleHeight(...legAt(i, true)) - dy;
     const q = (i / STEPS) % 0.5;
     const air = span > 0 && q > stanceEnd ? Math.sin(Math.PI * (q - stanceEnd) / span) : 0;
-    ys.push(1.000 - low + lift * air);
+    hipsY.push(1.000 - Math.min(lowL, lowR) + (cfg.lift || 0) * air);
   }
-  return hipY(cycleTimes(dur), closeLoop(ys));
-}
 
-/* Six leg tracks (both sides) from one authored cycle. */
-function legTracks(dur, rows, splay = 0.02) {
-  const T = cycleTimes(dur);
-  const H = sampleGait(rows, 0), K = sampleGait(rows, 1), A = sampleGait(rows, 2);
-  const mk = (node, vals, f, z) => rot(node, T, closeLoop(vals).map(v => [f(v), 0, z]));
-  return [
-    mk('UpperLeg_L', H, hip, splay),
-    mk('LowerLeg_L', K, knee, 0),
-    mk('Foot_L', A, ankle, 0),
-    mk('UpperLeg_R', halfCycle(H), hip, -splay),
-    mk('LowerLeg_R', halfCycle(K), knee, 0),
-    mk('Foot_R', halfCycle(A), ankle, 0)
+  /* --- pelvis and trunk rotation ----------------------------------------- */
+  const yawOf = i => (cfg.yaw || 0) * Math.sin(2 * Math.PI * (i / STEPS - (cfg.yawPhase || 0)));
+  const pelvis = [], spine = [], chest = [], head = [];
+  const leanS = (cfg.lean || 0) * 0.55, leanC = (cfg.lean || 0) * 0.45;
+  for (let i = 0; i < STEPS; i++) {
+    const y = yawOf(i), l = load[i];
+    // Obliquity: the pelvis drops toward the leg that is in the air. Positive Z
+    // raises the character's LEFT, and `l` is negative when the left foot is
+    // the one off the turf, so this falls out with no sign to remember.
+    pelvis.push([0, y, (cfg.obliq || 0) * l]);
+    // The shoulder girdle unwinds the pelvis and tilts back against its drop —
+    // split across the two spine joints so neither has to bend further than a
+    // spine bends.
+    spine.push([leanS, -y * 0.55, -(cfg.tilt || 0) * l * 0.55]);
+    chest.push([leanC, -y * 0.75, -(cfg.tilt || 0) * l * 0.45]);
+    // EYES DOWNFIELD. The head is a child of the chest and inherits every
+    // degree of the above; give most of it back so the player looks where they
+    // are running rather than swinging their face side to side.
+    const carried = y + (-y * 0.55) + (-y * 0.75);
+    head.push([(cfg.head == null ? -0.13 : cfg.head), -carried * 0.85, 0]);
+  }
+
+  /* --- arms --------------------------------------------------------------
+     Authored as a table like the legs so the swing gets the same spline, and
+     so the elbow's peaks can be placed a beat LATER than the shoulder's. That
+     lag is the whole difference between an arm and a lever: the forearm is
+     dragged round by the upper arm and arrives after it. */
+  const S = sampleGait(cfg.arm, 0), E = sampleGait(cfg.arm, 1).map(v => Math.max(0, v));
+  const B = sampleGait(cfg.arm, 2);
+  const Sr = halfCycle(S), Er = halfCycle(E), Br = halfCycle(B);
+
+  const key = (node, vals) => rot(node, T, closeLoop(vals));
+  const splay = cfg.splay == null ? 0.02 : cfg.splay;
+  const tracks = [
+    pos('Hips', T, closeLoop(hipsY.map((y, i) => [hipsX[i], y, 0]))),
+    key('Hips', pelvis), key('Spine', spine), key('Chest', chest), key('Head', head),
+    key('UpperLeg_L', H.map(v => [hip(v), 0, splay])),
+    key('LowerLeg_L', K.map(v => [knee(v), 0, 0])),
+    key('Foot_L', A.map(v => [ankle(v), 0, 0])),
+    key('Toe_L', O.map(v => [toe(v), 0, 0])),
+    key('UpperLeg_R', Hr.map(v => [hip(v), 0, -splay])),
+    key('LowerLeg_R', Kr.map(v => [knee(v), 0, 0])),
+    key('Foot_R', Ar.map(v => [ankle(v), 0, 0])),
+    key('Toe_R', Or.map(v => [toe(v), 0, 0])),
+    key('UpperArm_L', S.map((v, i) => [shoulder(v), 0, B[i] * D])),
+    key('LowerArm_L', E.map(v => [elbow(v), 0, 0.05])),
+    key('UpperArm_R', Sr.map((v, i) => [shoulder(v), 0, -Br[i] * D])),
+    key('LowerArm_R', Er.map(v => [elbow(v), 0, -0.05])),
+    key('Flag_L', H.map(v => [-0.004 * v, 0, 0.06])),
+    key('Flag_R', Hr.map(v => [-0.004 * v, 0, -0.06]))
   ];
+
+  // Where the turf sits relative to the pelvis at each sample: the solve above
+  // dropped the pelvis to `hipsY`, so a sole point's height above the field is
+  // its height in the HIP_Y frame plus (hipsY - 1.000).
+  const rise = (i, right) => hipsY[i] - 1.000 + (right ? -hipRise[i] : hipRise[i]);
+  CLIPS.push({ name, duration: dur, tracks, extras: gaitMetrics(dur, legAt, rise) });
 }
 
-/* Four arm tracks sampled from a cosine, so the swing is smooth and the two
-   arms come from a single description. `peakL` is the cycle phase at which the
-   LEFT arm is furthest forward; the right arm is half a cycle behind it. Arms
-   run CONTRALATERALLY to the legs — the left arm drives forward as the right
-   knee does, which is what cancels the rotation the hips put into the torso. */
-function armTracks(dur, peakL, fwd, back, flexFwd, flexBack, abduct) {
-  const n = 12;
-  const T = Array.from({ length: n + 1 }, (_, i) => (i / n) * dur);
-  const side = (peak, sgn) => {
-    const sh = [], el = [];
-    for (let i = 0; i <= n; i++) {
-      const w = (Math.cos(2 * Math.PI * (i / n - peak)) + 1) / 2;   // 1 = fully forward
-      sh.push([shoulder(back + (fwd - back) * w), 0, sgn * abduct]);
-      el.push([elbow(flexBack + (flexFwd - flexBack) * w), 0, sgn * 0.05]);
+/* HOW FAST THE GROUND GOES BY, measured rather than asserted.
+
+   A clip with no root motion only looks planted if the support foot sweeps
+   backward at exactly the speed the ground moves under it, and the renderer has
+   to know that speed to pick a playback rate. It has always been a pair of
+   constants hand-copied into field3d.js with a comment begging whoever edits
+   these tables to keep them in step — which is a promise no comment can keep,
+   and one that was already broken once (the rig's stride grew 32% and the
+   divisor didn't, so every stride slid forward).
+
+   So it is computed here, from the same kinematics the clip is built from, and
+   baked into the glTF as animation extras. field3d reads it off the clip.
+
+   The measurement: at every sample where a foot's lowest sole point is on the
+   turf, take the fore/aft velocity of THAT MATERIAL POINT — the same corner of
+   the same shoe one sample later, not whichever point happens to be lowest then
+   — and average over the whole cycle. Both feet count when both are down, which
+   is what makes a walk's double-support come out right.                      */
+function gaitMetrics(dur, legAt, riseAt) {
+  const dt = dur / STEPS;
+  const ON = 0.004;                                // within 4mm of the turf
+  let sum = 0, n = 0, stanceL = 0, anyDown = 0;
+  for (let i = 0; i < STEPS; i++) {
+    const j = (i + 1) % STEPS;
+    let down = 0;
+    for (const right of [false, true]) {
+      const now = solePoints(...legAt(i, right)), nxt = solePoints(...legAt(j, right));
+      let k = 0;
+      for (let m = 1; m < 3; m++) if (now[m].y < now[k].y) k = m;
+      // Height above the FIELD, which during flight is not the lowest sole:
+      // the pelvis has been lifted off the kinematic solution by `lift`.
+      if (now[k].y + riseAt(i, right) > ON) continue;
+      down = 1;
+      if (!right) stanceL++;
+      sum += -(nxt[k].z - now[k].z) / dt;          // ground travels backward under it
+      n++;
     }
-    return [sh, el];
+    anyDown += down;
+  }
+  return {
+    gait: 1,
+    groundSpeed: n ? sum / n : 0,   // metres/sec at the model's authored scale
+    stance: stanceL / STEPS,        // fraction of the cycle one given foot is down
+    flight: 1 - anyDown / STEPS,    // fraction with neither foot down
+    cycle: dur
   };
-  const [shL, elL] = side(peakL, 1);
-  const [shR, elR] = side((peakL + 0.5) % 1, -1);
-  return [
-    rot('UpperArm_L', T, shL), rot('LowerArm_L', T, elL),
-    rot('UpperArm_R', T, shR), rot('LowerArm_R', T, elR)
-  ];
 }
 
 /* ------------------------------------------------------------------ Idle */
@@ -815,102 +1073,136 @@ clip('Idle', 2.4, [
 ]);
 
 /* ------------------------------------------------------------------- Run */
-/* The six phases of the running gait, for ONE leg, as fractions of a stride.
-   Stance runs 0.00 -> 0.30 (~30% of the cycle, which is right for a run) and
-   swing fills the rest; because the other leg is half a cycle behind, both
-   feet are off the ground between one leg's toe-off and the other's contact —
-   the flight phase falls out of the timing rather than being posed. */
-{
-  /* Hip sweep opens up from the original 25/-28. That gave a stride of only
-     0.81 units at the scale the game renders, i.e. a natural ground speed of
-     2.6yd/s — so a player moving at a realistic 6.4yd/s needed the clip run at
-     2.4x just to keep the feet planted, which is ~8 steps a second and reads
-     as frantic and weightless even when it isn't sliding. A longer stride puts
-     the cadence back in the realistic 4-5 steps/sec range at game speeds.
-     solveHipY re-solves pelvis height from these angles, so ground contact
-     stays exact without hand-tuning. */
-  const RUN_LEG = [
-    //  phase   hip   knee  ankle
-    [0.00, 37, 22, -6],    // 1. initial contact — midfoot lands just ahead of the hips
-    [0.10, 4, 36, 9],      // 2. mid-stance — knee and ankle flex to absorb, hips lowest
-    [0.30, -41, 12, -34],  // 3. propulsion — hip/knee/ankle extend, the foot rolls onto the toes
-    [0.38, -20, 82, -12],  // 4. flight — the trailing knee starts to fold
-    [0.48, 10, 124, 6],    // 5a. recovery — heel snaps up under the glute
-    [0.62, 62, 94, 13],    // 5b. knee drive — hip flexors carry the knee forward, toes up
-    [0.78, 62, 54, 9],
-    [0.92, 48, 27, 0],     // 6. reach — the shin unfolds toward the next contact
-    [1.00, 37, 22, -6]
-  ];
-  const d = 0.62;
-  clip('Run', d, [
-    solveHipY(d, RUN_LEG, 0.030, 0.30),
-    rot('Spine', [0, d], [[0.17, 0, 0], [0.17, 0, 0]]),
-    rot('Chest', [0, 0.25, 0.5, 0.75, 1].map(p => p * d),
-      [[0.05, 0.12, 0], [0.05, 0, 0], [0.05, -0.12, 0], [0.05, 0, 0], [0.05, 0.12, 0]]),
-    rot('Hips', [0, 0.25, 0.5, 0.75, 1].map(p => p * d),
-      [[0, -0.09, 0], [0, 0, 0], [0, 0.09, 0], [0, 0, 0], [0, -0.09, 0]]),
-    rot('Head', [0, d], [[-0.15, 0, 0], [-0.15, 0, 0]]),
-    ...legTracks(d, RUN_LEG),
-    // The left knee drives at phase 0.62, so the left ARM leads half a cycle
-    // out of step with it — furthest forward at 0.12.
-    ...armTracks(d, 0.12, 26, -46, 118, 52, 0.14),
-    rot('Flag_L', cycleTimes(d), closeLoop(sampleGait(RUN_LEG, 0)).map(h => [-0.004 * h, 0, 0.06])),
-    rot('Flag_R', cycleTimes(d), closeLoop(halfCycle(sampleGait(RUN_LEG, 0))).map(h => [-0.004 * h, 0, -0.06]))
-  ]);
-}
+/* THE RUNNING GAIT, one leg, as fractions of a stride. Stance runs 0.00 ->
+   ~0.30 and swing fills the rest; because the other leg is half a cycle behind,
+   both feet are off the ground between one leg's toe-off and the other's
+   contact — the flight phase falls out of the timing rather than being posed.
+
+   Two things changed here besides the interpolation. Stance is broken into four
+   rows rather than two, because that is where a run is READ — the eye watches
+   the leg that is carrying the weight, and giving the whole support phase two
+   keys 20% of a cycle apart is what made the old one look like it was being
+   winched along. And the toe column exists at all, so the foot rolls: contact
+   just ahead of the hips on a flat-ish forefoot, the ankle collapsing into
+   dorsiflexion to absorb, and then a toe-off where the ankle plantarflexes 30
+   degrees over an MTP joint that extends 48 and keeps the shoe on the turf. */
+cyclicGait('Run', 0.62, {
+  leg: [
+    //  phase  hip  knee  ankle  toe
+    [0.00, 34, 20, -4, 6],     // 1. initial contact, midfoot, just ahead of the hips
+    [0.06, 22, 30, 4, 2],      // 2. loading — the ankle collapses under the weight
+    [0.13, 5, 39, 11, 0],      // 3. mid-stance — knee deepest, hips lowest
+    [0.21, -14, 27, 3, 14],    // 4. the heel comes up, the MTP starts to extend
+    [0.30, -38, 11, -30, 48],  // 5. toe-off — everything extends over a flat forefoot
+    [0.38, -19, 79, -13, 22],  // 6. early flight, the trailing knee folds
+    [0.48, 11, 123, 5, 4],     // 7. recovery — heel snaps up under the glute
+    [0.62, 61, 96, 14, 0],     // 8. knee drive — hip flexors carry the knee through
+    [0.78, 61, 55, 10, 0],
+    [0.90, 50, 30, 2, 2],      // 9. reach — the shin unfolds toward the next contact
+    [1.00, 34, 20, -4, 6]
+  ],
+  /* The left knee drives at 0.62, so the left ARM is furthest BACK there and
+     furthest forward half a cycle away — contralateral, which is what cancels
+     the rotation the hips put into the trunk. Both extremes of the elbow are
+     placed a beat AFTER the shoulder's: the forearm is dragged round by the
+     upper arm and arrives late, and that lag is most of what separates an arm
+     from a lever. Hand travels roughly sternum-to-hip-pocket. */
+  arm: [
+    //  phase  shoulder  elbow  abduct
+    [0.00, 20, 94, 9],
+    [0.12, 30, 104, 8],        // shoulder furthest forward
+    [0.20, 24, 110, 8],        // ...elbow peaks here, a beat later
+    [0.34, 2, 94, 10],
+    [0.50, -34, 74, 13],
+    [0.62, -52, 68, 14],       // shoulder furthest back, hand past the hip
+    [0.72, -43, 66, 13],       // ...elbow bottoms out here
+    [0.86, -8, 80, 11],
+    [1.00, 20, 94, 9]
+  ],
+  lift: 0.030, stanceEnd: 0.30,
+  lean: 0.22, head: -0.13,
+  yaw: 0.10, yawPhase: 0.25,
+  obliq: 0.075, sway: 0.016, tilt: 0.055, splay: 0.02
+});
 
 /* ------------------------------------------------------------------ Walk */
-/* Same six phases, but a walk heel-strikes, keeps a much straighter stance
-   leg, and spends ~60% of the cycle in stance — so the two legs overlap in
-   double support instead of flying. */
-{
-  const WALK_LEG = [
-    //  phase   hip   knee  ankle
-    [0.00, 22, 6, 6],      // heel strike — toes held up
-    [0.15, 12, 16, -4],    // loading — the foot flattens onto the ground
-    [0.32, -2, 6, 7],      // mid-stance — the shin rolls forward over a near-straight leg
-    [0.50, -20, 20, -18],  // heel-off into toe-off
-    [0.62, -2, 62, 4],     // early swing — the knee folds
-    [0.78, 20, 40, 9],     // mid-swing — toes up to clear the ground
-    [0.92, 27, 12, 7],     // terminal swing — the shin reaches out
-    [1.00, 22, 6, 6]
-  ];
-  const d = 1.0;
-  clip('Walk', d, [
-    solveHipY(d, WALK_LEG),
-    rot('Spine', [0, d], [[0.07, 0, 0], [0.07, 0, 0]]),
-    rot('Chest', [0, 0.25, 0.5, 0.75, 1].map(p => p * d),
-      [[0.02, 0.07, 0], [0.02, 0, 0], [0.02, -0.07, 0], [0.02, 0, 0], [0.02, 0.07, 0]]),
-    ...legTracks(d, WALK_LEG),
-    ...armTracks(d, 0.42, 20, -22, 34, 18, 0.15),
-    rot('Flag_L', [0, 0.5, 1.0], [[-0.12, 0, 0.04], [0.08, 0, 0.04], [-0.12, 0, 0.04]]),
-    rot('Flag_R', [0, 0.5, 1.0], [[0.08, 0, -0.04], [-0.12, 0, -0.04], [0.08, 0, -0.04]])
-  ]);
-}
+/* A walk heel-strikes, keeps a much straighter stance leg, and never leaves
+   the ground — the two legs overlap in double support instead of flying. The
+   roll-off is the whole character of it: heel down with the toes held up, the
+   forefoot slapping flat under load, the shin rolling forward over a nearly
+   straight leg, and then a push where the heel lifts off toes that stay put. */
+cyclicGait('Walk', 1.0, {
+  leg: [
+    //  phase  hip  knee  ankle  toe
+    [0.00, 28, 4, 5, 0],       // heel strike — toes held up, knee almost straight
+    [0.08, 21, 17, -7, 0],     // loading response — the forefoot slaps flat
+    [0.20, 9, 17, -1, 0],      // the shin begins to roll forward over the foot
+    [0.32, -6, 5, 9, 3],       // mid-stance — tallest point, leg nearly straight
+    [0.46, -21, 7, 12, 24],    // terminal stance — heel off, MTP extending
+    [0.58, -15, 36, -16, 48],  // toe-off — ankle plantarflexes over a flat forefoot
+    [0.70, 6, 68, -2, 14],     // early swing — the knee folds
+    [0.82, 24, 45, 10, 2],     // mid-swing — toes up to clear the turf
+    [0.93, 32, 14, 7, 0],      // terminal swing — the shin reaches out
+    [1.00, 28, 4, 5, 0]
+  ],
+  /* Left leg is furthest forward across the wrap, so the left arm is furthest
+     BACK there. Same elbow lag as the run, a third of the amplitude. */
+  arm: [
+    [0.00, -25, 32, 9],
+    [0.16, -8, 38, 9],
+    [0.32, 12, 44, 8],
+    [0.46, 25, 47, 8],         // shoulder furthest forward
+    [0.58, 20, 50, 8],         // ...elbow peaks a beat later
+    [0.76, -6, 38, 9],
+    [0.90, -22, 32, 9],
+    [1.00, -25, 32, 9]
+  ],
+  lift: 0, stanceEnd: 0.5,
+  lean: 0.075, head: -0.05,
+  yaw: 0.075, yawPhase: 0.25,
+  obliq: 0.085, sway: 0.026, tilt: 0.06, splay: 0.02
+});
 
 /* ------------------------------------------------------------- Backpedal */
-/* A defender's backpedal: hips sunk, chest kept over the toes, short choppy
-   steps that reach BEHIND the body — so the thigh spends most of the cycle
-   extended while the knee stays deeply bent. */
-{
-  const BACK_LEG = [
-    //  phase   hip   knee  ankle
-    [0.00, 20, 44, 10],    // knee up in front, toes up, foot about to reach back
-    [0.28, -6, 22, -4],    // the foot lands behind and drives the body backwards
-    [0.55, -20, 40, 4],    // hip fully extended behind, the knee begins to fold
-    [0.78, 4, 58, 10],     // knee folds and swings back through under the hips
-    [1.00, 20, 44, 10]
-  ];
-  const d = 0.5;
-  clip('Backpedal', d, [
-    solveHipY(d, BACK_LEG),
-    rot('Spine', [0, d], [[0.16, 0, 0], [0.16, 0, 0]]),
-    rot('Chest', [0, d], [[0.03, 0, 0], [0.03, 0, 0]]),
-    rot('Head', [0, d], [[-0.16, 0, 0], [-0.16, 0, 0]]),
-    ...legTracks(d, BACK_LEG, 0.05),
-    ...armTracks(d, 0.30, 4, -22, 82, 60, 0.26)
-  ]);
-}
+/* A defender's backpedal: hips sunk, chest kept over the toes, steps that reach
+   BEHIND the body — so the thigh spends most of the cycle extended while the
+   knee stays bent, and the whole thing rides on the forefoot. A backpedalling
+   defender's heel never touches the ground, which is why the toe column stays
+   small and the ankle stays plantarflexed.
+
+   The reach is much longer than it was, and that is a bug fix rather than a
+   restyling. The renderer picked this clip's playback rate off RUN_NATURAL —
+   the run's 5.8yd/s — while the clip's own natural speed was 1.3. A defender
+   backpedalling at 4yd/s therefore played it at the 0.75 floor instead of the
+   3.0 the stride actually needed, and slid backwards for the whole snap. Now
+   that field3d reads each clip's own measured speed off the file, the only
+   thing left to fix is the stride itself: 0.44s and a 30/-34 sweep puts the
+   natural speed near 3.4yd/s, which is the middle of the range a defensive
+   back actually backpedals at.                                              */
+cyclicGait('Backpedal', 0.44, {
+  leg: [
+    //  phase  hip  knee  ankle  toe
+    [0.00, 30, 52, 6, 2],      // knee up in front, foot about to reach back
+    [0.14, 16, 34, -6, 4],
+    [0.26, -2, 22, -14, 8],    // the forefoot lands behind and drives the body back
+    [0.40, -18, 24, -10, 8],
+    [0.52, -34, 34, -2, 4],    // hip fully extended behind, the knee begins to fold
+    [0.68, -16, 62, 6, 0],     // the knee folds and swings through under the hips
+    [0.84, 12, 70, 10, 0],
+    [1.00, 30, 52, 6, 2]
+  ],
+  arm: [
+    [0.00, 8, 78, 15],
+    [0.26, 12, 86, 17],
+    [0.50, -10, 70, 16],
+    [0.72, -20, 62, 14],
+    [1.00, 8, 78, 15]
+  ],
+  lift: 0.012, stanceEnd: 0.42,
+  lean: 0.20, head: -0.16,
+  yaw: 0.05, yawPhase: 0.25,
+  obliq: 0.05, sway: 0.020, tilt: 0.035, splay: 0.05
+});
 
 /* ----------------------------------------------------------------- Throw */
 /* THE QUARTERBACK THROW.
@@ -1031,8 +1323,18 @@ clip('Idle', 2.4, [
 }
 
 /* ----------------------------------------------------------------- Catch */
+/* Pelvis height solved, not keyed. The hand-keyed track drove a heel 27mm
+   through the turf on the first frame and sat the whole pose 3cm low
+   throughout — invisible in a still, obvious in the measurement, and exactly
+   the failure the solver exists for. The leg angles are the same ones the
+   rotation tracks below carry, restated in degrees; `lift` is the part the
+   kinematics cannot know, which is that he leaves the ground to catch it. */
+{
+  const T = [0, 0.35, 0.9];
+  const legL = [[5.7, 12.6, 0], [2.9, 14.4, 0], [10.3, 17.2, 0]];
+  const legR = [[-8.0, 12.6, 0], [2.9, 14.4, 0], [-10.3, 17.2, 0]];
 clip('Catch', 0.90, [
-  hipY([0, 0.35, 0.9], [1.000, 1.020, 0.996]),
+  groundedHips(T, legL, legR, [0, 0.055, 0]),
   rot('Spine', [0, 0.35, 0.9], [[0.10, 0, 0], [-0.10, 0, 0], [0.14, 0, 0]]),
   rot('Chest', [0, 0.35, 0.9], [[0.04, 0, 0], [-0.06, 0, 0], [0.06, 0, 0]]),
   rot('Head', [0, 0.35, 0.9], [[-0.05, 0, 0], [-0.30, 0, 0], [-0.02, 0, 0]]),
@@ -1045,6 +1347,7 @@ clip('Catch', 0.90, [
   rot('UpperLeg_R', [0, 0.35, 0.9], [[0.14, 0, -0.03], [-0.05, 0, -0.03], [0.18, 0, -0.03]]),
   rot('LowerLeg_R', [0, 0.9], [[0.22, 0, 0], [0.3, 0, 0]])
 ]);
+}
 
 /* ------------------------------------------------------------------ Dive */
 clip('Dive', 1.20, [
@@ -1185,9 +1488,178 @@ clip('Celebrate', 1.00, [
 ]);
 }
 
+/* ====================== THE END ZONE ==================================
+
+   ONE celebration, for everybody, forever: a man hopping on the spot with both
+   arms over his head. Ten of them doing it in perfect unison, because it was
+   literally the same clip at the same phase. Flag football's whole culture is
+   the celebration, and the game had one, and it was a pogo stick.
+
+   What follows is four more, deliberately different in SHAPE rather than in
+   detail, because at chase-camera distance that is all that reads: one is a
+   whole-body slam (Spike), one is lateral (Dance), one is static and wide
+   (Flex), one is vertical and fast (HighStep). Put four of those in a group and
+   it looks like a team; put four variations on a hop in a group and it looks
+   like a rendering bug.
+
+   Every one of them is authored the way the throw and the flag grab are: feet
+   by WHERE THEY ARE, hips solved so the soles stay on the turf, and shoulders
+   through armQ rather than by typing euler triples at them.                  */
+
+/* A POSED, NON-CYCLIC CLIP — the shape every one-shot in this file already has,
+   extracted so four more of them don't mean four more copies of it.
+
+   rows:  t     seconds
+          pel   pelvis yaw, degrees        trk  trunk yaw, degrees
+          lean  trunk flexion, + forward   tilt trunk side-bend
+          L, R  [z, knee, ankle] — the foot's fore/aft POSITION in metres, its
+                knee flexion and its ankle; the hip angle is solved from them so
+                a planted foot stays where it was put
+          up    how far the whole body is off the turf, metres (a hop)
+          arm   [elev, horiz, er, elbow] for the RIGHT arm, through armQ
+          off   ditto for the LEFT
+          look  optional [pitch, yaw] for the head, radians                    */
+function posedClip(name, dur, rows, opts = {}) {
+  const T = rows.map(k => k.t);
+  const legL = rows.map(k => [plantHip(k.L[0], k.L[1]), k.L[1], k.L[2]]);
+  const legR = rows.map(k => [plantHip(k.R[0], k.R[1]), k.R[1], k.R[2]]);
+  const lift = rows.map(k => k.up || 0);
+  const sway = k => (k.sway || 0);
+  const hips = groundedHips(T, legL, legR, lift, rows.map(k => (k.roll || 0) * D));
+  // groundedHips only writes height; fold the lateral shift in on the same
+  // dense grid it produced, so a dance can put its weight over one foot.
+  if (rows.some(k => k.sway)) {
+    const xs = hips.times.map(t => {
+      let k = 0;
+      while (k < rows.length - 2 && rows[k + 1].t <= t) k++;
+      const u = (t - rows[k].t) / (rows[k + 1].t - rows[k].t || 1);
+      return sway(rows[k]) + (sway(rows[k + 1]) - sway(rows[k])) * u;
+    });
+    hips.values = hips.values.map((v, i) => [xs[i], v[1], v[2]]);
+  }
+  clip(name, dur, [
+    hips,
+    rot('Hips', T, rows.map(k => [0, (k.pel || 0) * D, (k.roll || 0) * D])),
+    rot('Spine', T, rows.map(k => [(k.lean || 0) * 0.55 * D, ((k.trk || 0) - (k.pel || 0)) * 0.5 * D, -(k.tilt || 0) * 0.55 * D])),
+    rot('Chest', T, rows.map(k => [(k.lean || 0) * 0.45 * D, ((k.trk || 0) - (k.pel || 0)) * 0.5 * D, -(k.tilt || 0) * 0.45 * D])),
+    rot('Head', T, rows.map(k => (k.look || [-0.05 - (k.lean || 0) * 0.6 * D, -(k.trk || 0) * 0.5 * D]))
+      .map(h => [h[0], h[1], 0])),
+    rotq('UpperArm_R', T, rows.map(k => armQ('R', k.arm[0], k.arm[1], k.arm[2]))),
+    rot('LowerArm_R', T, rows.map(k => [elbow(k.arm[3]), 0, -0.05])),
+    rotq('UpperArm_L', T, rows.map(k => armQ('L', k.off[0], k.off[1], k.off[2]))),
+    rot('LowerArm_L', T, rows.map(k => [elbow(k.off[3]), 0, 0.05])),
+    rot('UpperLeg_L', T, legL.map(l => [hip(l[0]), 0, (opts.splay == null ? 0.03 : opts.splay)])),
+    rot('LowerLeg_L', T, legL.map(l => [knee(l[1]), 0, 0])),
+    rot('Foot_L', T, legL.map(l => [ankle(l[2]), 0, 0])),
+    rot('Toe_L', T, rows.map(k => [toe(k.L[3] || 0), 0, 0])),
+    rot('UpperLeg_R', T, legR.map(l => [hip(l[0]), 0, -(opts.splay == null ? 0.03 : opts.splay)])),
+    rot('LowerLeg_R', T, legR.map(l => [knee(l[1]), 0, 0])),
+    rot('Foot_R', T, legR.map(l => [ankle(l[2]), 0, 0])),
+    rot('Toe_R', T, rows.map(k => [toe(k.R[3] || 0), 0, 0])),
+    rot('Flag_L', T, rows.map(k => [-0.004 * (k.lean || 0), 0, 0.05])),
+    rot('Flag_R', T, rows.map(k => [-0.004 * (k.lean || 0), 0, -0.05]))
+  ]);
+}
+
+/* ----------------------------------------------------------------- Spike */
+/* THE BALL GOES INTO THE TURF. The one celebration everybody can name, and the
+   only one here that is a one-shot: it has a beginning (the ball still in the
+   hand from the run), a middle (both arms up, up on the toes, the trunk arched
+   back) and an end (the slam, and the stagger out of it with the arms flung
+   wide). It hands over to a looping dance afterwards, so the last key is open
+   and high rather than back at a rest pose — a fast arm-swing down and straight
+   up again either side of a crossfade is the one thing that reads as a glitch. */
+posedClip('Spike', 1.15, [
+  // t     pelvis trunk lean tilt |  lead foot        back foot      | throwing arm             off arm
+  { t: 0.00, pel: 0, trk: 0, lean: 8, tilt: 0, L: [0.12, 30, 10], R: [-0.12, 30, 10], arm: [30, 30, 10, 70], off: [24, 24, 8, 62] },
+  { t: 0.20, pel: 0, trk: 4, lean: -14, tilt: 0, L: [0.12, 16, -18], R: [-0.12, 16, -20], up: 0.02, arm: [162, 26, 40, 44], off: [140, 34, 30, 58] },
+  // the ball is at the top and the body is stretched: heels off, back arched
+  { t: 0.30, pel: 0, trk: 6, lean: -20, tilt: 0, L: [0.12, 12, -26], R: [-0.12, 12, -28], up: 0.04, arm: [172, 20, 46, 30], off: [148, 30, 26, 62] },
+  // SLAM. Trunk folds, the arm whips through past the knee, the knees give.
+  { t: 0.42, pel: 0, trk: -2, lean: 46, tilt: 0, L: [0.12, 54, 16], R: [-0.12, 54, 14], arm: [24, 8, -60, 16], off: [40, -10, -30, 40] },
+  { t: 0.52, pel: 0, trk: -4, lean: 52, tilt: 0, L: [0.12, 62, 18], R: [-0.12, 62, 16], arm: [16, -14, -70, 22], off: [30, -22, -40, 46] },
+  // up out of it, arms thrown wide, chest open, head back — the pose the crowd
+  // shot is framed on.
+  { t: 0.74, pel: 0, trk: 0, lean: -14, tilt: 0, L: [0.12, 26, -6], R: [-0.12, 26, -6], arm: [96, -34, 40, 26], off: [96, -34, 40, 26], look: [0.22, 0] },
+  { t: 0.94, pel: 0, trk: 0, lean: -16, tilt: 0, L: [0.12, 22, -10], R: [-0.12, 22, -10], up: 0.03, arm: [118, -26, 50, 22], off: [118, -26, 50, 22], look: [0.26, 0] },
+  { t: 1.15, pel: 0, trk: 0, lean: -8, tilt: 0, L: [0.12, 28, 4], R: [-0.12, 28, 4], arm: [128, -12, 46, 34], off: [128, -12, 46, 34], look: [0.14, 0] }
+]);
+
+/* ------------------------------------------------------------------ Dance */
+/* A two-step shimmy, and the only celebration in here that is LATERAL — which
+   is the whole reason it exists. Weight rocks from one foot to the other, the
+   pelvis swings under a trunk that counters it, and the arms punch across the
+   body on the off-beat. Loops on a 1.1s bar so a group of them, staggered, is
+   not a chorus line. */
+posedClip('Dance', 1.10, [
+  { t: 0.000, pel: 22, trk: -10, lean: 6, tilt: -8, sway: 0.055, L: [0.14, 46, 12], R: [-0.14, 20, 6], arm: [92, 58, 30, 104], off: [58, -22, -10, 76] },
+  { t: 0.275, pel: 0, trk: 0, lean: 10, tilt: 0, sway: 0.000, L: [0.14, 30, 10], R: [-0.14, 30, 10], arm: [74, 20, 10, 88], off: [74, 20, 10, 88] },
+  { t: 0.550, pel: -22, trk: 10, lean: 6, tilt: 8, sway: -0.055, L: [0.14, 20, 6], R: [-0.14, 46, 12], arm: [58, -22, -10, 76], off: [92, 58, 30, 104] },
+  { t: 0.825, pel: 0, trk: 0, lean: 10, tilt: 0, sway: 0.000, L: [0.14, 30, 10], R: [-0.14, 30, 10], arm: [74, 20, 10, 88], off: [74, 20, 10, 88] },
+  { t: 1.100, pel: 22, trk: -10, lean: 6, tilt: -8, sway: 0.055, L: [0.14, 46, 12], R: [-0.14, 20, 6], arm: [92, 58, 30, 104], off: [58, -22, -10, 76] }
+], { splay: 0.06 });
+
+/* ------------------------------------------------------------------- Flex */
+/* Both arms out and folded, chest up, rocking slowly on braced legs. The wide,
+   STATIC one: it holds a silhouette while everything around it is moving, which
+   is what stops a group celebration reading as one animation played ten times.
+   'er' near 90 puts the forearms vertical, which is what makes it a flex and
+   not a shrug. */
+posedClip('Flex', 1.30, [
+  { t: 0.000, pel: 0, trk: 0, lean: -6, tilt: 0, L: [0.16, 24, 8], R: [-0.16, 24, 8], arm: [82, 4, 88, 128], off: [82, 4, 88, 128], look: [0.06, 0] },
+  { t: 0.325, pel: 6, trk: -6, lean: -10, tilt: -4, L: [0.16, 18, 4], R: [-0.16, 30, 10], arm: [88, -6, 94, 138], off: [78, 10, 82, 122], look: [0.10, -0.14] },
+  { t: 0.650, pel: 0, trk: 0, lean: -6, tilt: 0, L: [0.16, 26, 9], R: [-0.16, 26, 9], arm: [80, 6, 86, 126], off: [80, 6, 86, 126], look: [0.06, 0] },
+  { t: 0.975, pel: -6, trk: 6, lean: -10, tilt: 4, L: [0.16, 30, 10], R: [-0.16, 18, 4], arm: [78, 10, 82, 122], off: [88, -6, 94, 138], look: [0.10, 0.14] },
+  { t: 1.300, pel: 0, trk: 0, lean: -6, tilt: 0, L: [0.16, 24, 8], R: [-0.16, 24, 8], arm: [82, 4, 88, 128], off: [82, 4, 88, 128], look: [0.06, 0] }
+], { splay: 0.07 });
+
+/* --------------------------------------------------------------- HighStep */
+/* Knees to the chest, on the spot, fast. It is a gait — so it is built by the
+   gait machinery, which means it gets the same foot roll and the same solved
+   ground contact as the run rather than being a second, worse implementation
+   of the same thing. Nothing translates a celebrating player, so a cycle with
+   no root motion is exactly right. */
+cyclicGait('HighStep', 0.52, {
+  leg: [
+    //  phase  hip  knee  ankle  toe
+    [0.00, -6, 26, -22, 10],   // driving down onto the forefoot
+    [0.10, -20, 20, -30, 26],  // toe-off, hard
+    [0.24, -6, 96, -12, 8],
+    [0.40, 46, 116, 6, 0],
+    [0.52, 88, 104, 14, 0],    // knee to the chest
+    [0.68, 84, 76, 10, 0],
+    [0.84, 48, 46, -4, 4],     // the shin drops for the next strike
+    [1.00, -6, 26, -22, 10]
+  ],
+  arm: [
+    [0.00, -20, 96, 14],
+    [0.16, 26, 118, 12],
+    [0.30, 40, 128, 11],       // hand up by the shoulder
+    [0.52, 10, 110, 13],
+    [0.70, -34, 88, 16],
+    [0.84, -28, 84, 15],
+    [1.00, -20, 96, 14]
+  ],
+  lift: 0.040, stanceEnd: 0.22,
+  lean: -0.06, head: 0.04,
+  yaw: 0.10, yawPhase: 0.25,
+  obliq: 0.06, sway: 0.014, tilt: 0.05, splay: 0.03
+});
+
 /* ------------------------------------------------------------------ Juke */
+/* Same treatment as Catch, and it mattered more here: this is the animation a
+   player watches most closely, because it is the one they asked for. The
+   hand-keyed pelvis put a foot 77mm under the turf at the bottom of the plant.
+   The sink the keys were reaching for is real, but it belongs to the knee
+   flexion already in the pose — solve the height and it arrives for free,
+   without the foot going with it. */
+{
+  const T = [0, 0.20, 0.45, 0.80];
+  const legL = [[25.8, 20.1, 0], [-11.5, 17.2, 0], [31.5, 51.6, 0], [17.2, 20.1, 0]];
+  const legR = [[-17.2, 34.4, 0], [28.6, 54.4, 0], [-20.1, 20.1, 0], [8.6, 22.9, 0]];
+  const roll = [0.20, 0.40, -0.35, -0.12];         // matches the Hips track below
 clip('Juke', 0.80, [
-  hipY([0, 0.20, 0.45, 0.80], [1.000, 0.940, 0.975, 1.010]),
+  groundedHips(T, legL, legR, null, roll),
   rot('Hips', [0, 0.20, 0.45, 0.80], [[0, 0, 0.20], [0, 0.25, 0.40], [0, -0.30, -0.35], [0, 0, -0.12]]),
   rot('Spine', [0, 0.20, 0.45, 0.80], [[0.12, 0, -0.18], [0.30, -0.20, -0.34], [0.24, 0.25, 0.30], [0.14, 0, 0.10]]),
   rot('Head', [0, 0.20, 0.45, 0.80], [[-0.08, 0.20, 0], [-0.08, 0.35, 0], [-0.08, -0.30, 0], [-0.08, 0, 0]]),
@@ -1202,6 +1674,7 @@ clip('Juke', 0.80, [
   rot('Flag_L', [0, 0.20, 0.45, 0.80], [[0.15, 0, 0.05], [-0.35, 0.3, 0.30], [0.35, -0.3, -0.10], [0.05, 0, 0.05]]),
   rot('Flag_R', [0, 0.20, 0.45, 0.80], [[0.15, 0, -0.05], [-0.35, 0.3, 0.10], [0.35, -0.3, -0.30], [0.05, 0, -0.05]])
 ]);
+}
 
 /* ==================================================== 6. glTF ASSEMBLY */
 
@@ -1350,7 +1823,13 @@ for (const c of CLIPS) {
     samplers.push({ input, output, interpolation: 'LINEAR' });
     channels.push({ sampler: samplers.length - 1, target: { node: BI[tr.node], path: tr.path } });
   }
-  gltf.animations.push({ name: c.name, samplers, channels });
+  const anim = { name: c.name, samplers, channels };
+  // Clip metadata rides along in glTF `extras`, which GLTFLoader copies onto
+  // AnimationClip.userData — so the renderer reads a gait's natural ground
+  // speed off the clip instead of keeping a hand-copied constant in step with
+  // these tables by force of comment.
+  if (c.extras) anim.extras = c.extras;
+  gltf.animations.push(anim);
 }
 
 /* ---- pack the GLB ---- */

@@ -370,7 +370,11 @@
         P.oneShot('juke', 'run', 0.15);   // plant + spin, auto-return to run
         break;
       case 'highstep':
-        P.setSpeed(2.1); P.play('walk', 0.25);   // lively, exaggerated strut
+        // There is a real HighStep clip now (knees to the chest, on the spot).
+        // This used to be the walk cycle run at 2.1x, which is a man hurrying,
+        // not a man showing off. Fall back to that if the rig predates it.
+        if (P.actions && (P.actions.HighStep || P.actions.highstep)) P.play('highstep', 0.25);
+        else { P.setSpeed(2.1); P.play('walk', 0.25); }
         break;
       case 'throw':
         P.oneShot('throw', 'idle', 0.2);

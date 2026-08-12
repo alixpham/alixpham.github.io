@@ -52,6 +52,16 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   in your head; author the three anatomical angles and let `armQ()` solve it.
   Check the result with `node tools/measure-clip.mjs <Clip>` — it also reports
   feet through the turf and planted feet that skate.
+- **The foot is two segments, and gait tables interpolate as cubics.** Heel and
+  ball on `Foot_*`, tip on `Toe_*`; every ground solve takes the lowest of the
+  three. Cyclic gaits are built by `cyclicGait()` from one leg table and one arm
+  table, resampled with a non-uniform cubic Hermite — linear interpolation puts
+  a velocity corner at every authored phase, which is what makes a cycle read as
+  a marionette.
+- **A gait clip's natural ground speed lives IN the .glb**, as animation
+  `extras` measured by the builder, and `field3d` reads it through
+  `P.naturalSpeed()`. Don't reintroduce a hand-copied constant; it has drifted
+  out of step with the stride tables twice already.
 - The camera sits behind whoever HAS THE BALL, and the offence always attacks
   +x, so it never turns round; `engine.viewSign()` is the seam that says which
   way is downfield and now always returns 1.

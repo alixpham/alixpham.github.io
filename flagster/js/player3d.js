@@ -438,7 +438,11 @@
     };
     api.oneShot = function (name, returnTo) { if (returnTo) api.play(returnTo); };  // model has no football one-shots
     api.setSpeed = function (m) { api._speed = m; if (A.run) A.run.timeScale = m; if (A.walk) A.walk.timeScale = m; };
-    api.face = function (yaw, dt) { var d = yaw - api._yaw; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; api._yaw += d * Math.min(1, (dt || 0.016) * 9); root.rotation.y = -api._yaw; };
+    /* Turn rate must not depend on how long the frame took — easing by
+       `dt * 9` catches up further on a long frame, so a hitching device turns
+       the body in visible steps. `1 - exp(-9*dt)` is the same filter with the
+       frame rate divided out (see ease() in field3d.js). */
+    api.face = function (yaw, dt) { var d = yaw - api._yaw; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; api._yaw += d * (1 - Math.exp(-9 * (dt || 0.016))); root.rotation.y = -api._yaw; };
     api.setYaw = function (yaw) { api._yaw = yaw; root.rotation.y = -yaw; };
     api.plate = plate;
     api.setPlateScale = function (k) { if (plate) plate.scale.set(1.9 * k, 0.48 * k, 1); };
@@ -554,7 +558,7 @@
       var diff = yaw - api._yaw;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
-      api._yaw += diff * Math.min(1, (dt || 0.016) * 9);
+      api._yaw += diff * (1 - Math.exp(-9 * (dt || 0.016)));   // frame-rate independent, as above
       root.rotation.y = Math.PI / 2 - api._yaw;   // rig forward = +Z
     };
     api.setYaw = function (yaw) { api._yaw = yaw; root.rotation.y = Math.PI / 2 - yaw; };
