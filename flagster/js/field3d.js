@@ -542,13 +542,15 @@
        how big it looks lives here.
 
            td         the whole scoring side, for nearly three seconds: high
-                      jumps, the scorer spins to the camera, three waves of
-                      confetti over the end zone in the team's colours, and a
-                      seven-yard shockwave opening under the scorer.
+                      jumps, the scorer spins to the camera, and a seven-yard
+                      shockwave opening under the scorer.
            firstdown  the carrier and anyone standing within eight yards, for a
                       beat: a bounce, a turn toward the man who moved the
-                      chains, one small puff of confetti and a ring a third the
-                      size.
+                      chains, and a ring a third the size.
+
+       NO CONFETTI. It used to bury the shot in paper — five waves of 130
+       pieces at a touchdown, drifting through the frame for six seconds. The
+       celebration is what the players do; the paper was in front of it.
 
        HOP_RATE is 2*PI on purpose: the baked Celebrate clip hops twice a second
        (tools/build-player-glb.mjs, HOP) and its action is reset when the
@@ -562,16 +564,9 @@
        kill. Celebrations are performed on the spot. */
     var CELEB = {
       td:        { dur: 2.5,  hop: 0.34, radius: Infinity, stagger: 0.13, spin: 0.85,
-                   ring: { r: 7.0, dur: 0.75 },
-                   /* Five waves instead of three, and four times the paper. The
-                      old burst was 46 pieces of 20x30cm confetti thrown once and
-                      then twice more — from a lens eleven yards back that is
-                      perhaps a dozen specks crossing the frame, which is why the
-                      end zone read as empty on a score. A touchdown should bury
-                      the shot. */
-                   waves: [0, 0.22, 0.5, 0.85, 1.3], puff: 130, star: 1.35 },
+                   ring: { r: 7.0, dur: 0.75 }, star: 1.35 },
       firstdown: { dur: 1.25, hop: 0.14, radius: 8,        stagger: 0.05, spin: 0,
-                   ring: { r: 2.6, dur: 0.40 }, waves: [0, 0.25],       puff: 34, star: 1.15 }
+                   ring: { r: 2.6, dur: 0.40 }, star: 1.15 }
     };
     var HOP_RATE = Math.PI * 2;
 
@@ -592,13 +587,10 @@
       if (cel.star) return 'dance';
       return CELEB_LOOPS[(ud.idx * 3 + 1) % CELEB_LOOPS.length];
     }
-    var celeb = { kind: '', cfg: null, t: 0, dur: 0, team: null, x: MID, y: WID / 2, wave: 0 };
+    var celeb = { kind: '', cfg: null, t: 0, dur: 0, team: null, x: MID, y: WID / 2 };
 
-    // Confetti (one InstancedMesh, one draw call) and the shockwave on the turf.
-    // 900 pieces: five waves of 130 at a touchdown is 650 in flight at the peak,
-    // and the drifting three fifths of each wave stay up for six seconds.
-    var confetti = makeConfetti(THREE, 900);
-    scene.add(confetti.group);
+    // The shockwave on the turf — the only thing the celebration draws that
+    // isn't a player.
     var shock = makeShockRing(THREE);
     scene.add(shock.mesh);
 
@@ -606,39 +598,19 @@
       var cfg = CELEB[kind];
       if (!cfg) return;
       celeb.kind = kind; celeb.cfg = cfg;
-      celeb.t = 0; celeb.dur = cfg.dur; celeb.wave = 0;
+      celeb.t = 0; celeb.dur = cfg.dur;
       celeb.team = a.team || null;
       celeb.x = (a.x != null && isFinite(a.x)) ? a.x : MID;
       celeb.y = (a.y != null && isFinite(a.y)) ? a.y : WID / 2;
       shock.fire(wx(celeb.x), wz(celeb.y), cfg.ring.r, cfg.ring.dur);
     }
 
-    function celebColors() {
-      var t = (celeb.team === 'away') ? awayCols : homeCols;
-      /* No pure white. The pool is MeshBasicMaterial with toneMapped off, so a
-         #ffffff piece sits above the bloom threshold and comes out of the
-         composer as a featureless glowing rectangle — which is what turned the
-         first big burst into a handful of light-boxes over the end zone. */
-      return [t[0], t[1] || '#e8e8ea', '#ffd23f', '#e8e8ea', t[0]];
-    }
-
-    /* Advance the celebration clock and fire whatever wave of confetti is due.
-       Called once per frame, before the players are synced, so a celebration
-       that starts this frame is already running when they read it. */
+    /* Advance the celebration clock. Called once per frame, before the players
+       are synced, so a celebration that starts this frame is already running
+       when they read it. */
     function updateCeleb(dt) {
       if (celeb.dur <= 0) return;
-      var prev = celeb.t;
       celeb.t += dt;
-      var cfg = celeb.cfg, cols = celebColors();
-      for (var i = celeb.wave; i < cfg.waves.length; i++) {
-        if (cfg.waves[i] > celeb.t || cfg.waves[i] < prev - 0.001) continue;
-        // Fan the waves out either side of the spot so it reads as the crowd
-        // end of the field going up, not one firework over one man's head.
-        var off = (i === 0) ? 0 : ((i % 2) ? -4.5 : 4.5);
-        confetti.burst(wx(celeb.x), 2.2 + i * 0.35, wz(clamp(celeb.y + off, 1, WID - 1)),
-                       cfg.puff, cols);
-        celeb.wave = i + 1;
-      }
       if (celeb.t >= celeb.dur) { celeb.dur = 0; celeb.kind = ''; celeb.cfg = null; }
     }
 
@@ -1560,7 +1532,8 @@
         homeAbbr: (st0.home && st0.home.id) || 'HOME',
         awayScore: (state.score && state.score.away) || 0,
         homeScore: (state.score && state.score.home) || 0,
-        period: state.overtime ? 'OT' : ('Q' + (state.quarter || 1)),
+        // The game is played in halves; only the jumbotron still said quarters.
+        period: state.overtime ? 'OT' : ((state.halves ? 'H' : 'Q') + (state.quarter || 1)),
         clock: mm + ':' + (ss < 10 ? '0' : '') + ss,
         awayColor: awayCols[0], homeColor: homeCols[0],
         footer: 'FLAGSTER'
@@ -1714,7 +1687,6 @@
       } else { ball.visible = false; ballShadow.visible = false; }
 
       flags.update(dt);
-      confetti.update(dt);
       shock.update(dt);
 
       updateJumbotron(state, dt);
@@ -1728,9 +1700,6 @@
       // would leave with that player's holder and miss the disposal sweep.
       hostBall(null);
       slashInk.dispose();
-      // InstancedMesh holds its own instance buffers; the scene-wide geometry
-      // and material sweep below doesn't reach those.
-      confetti.dispose();
       // Dispose Player3D instances (mixer + geometry/materials) and their rings.
       pMeshes.forEach(function (e) {
         if (e.P) e.P.dispose();
@@ -2011,146 +1980,6 @@
       });
     }
     return { group: group, burst: burst, update: update };
-  }
-
-  /* ============================= CONFETTI =============================== */
-  /* A fixed pool in ONE InstancedMesh — one draw call whether nothing is
-     falling or two hundred pieces are, and a burst allocates nothing. Dead
-     pieces are scaled to zero rather than removed, because an InstancedMesh
-     draws a contiguous run and a recycled pool never is.
-
-     Colour is per instance (setColorAt) so confetti comes down in the scoring
-     team's colours, and a piece fades by SHRINKING: one material means one
-     opacity, and the pool is shared. */
-  function makeConfetti(THREE, n) {
-    var group = new THREE.Group();
-    // Bigger than life: 0.20 x 0.30 is real confetti at real scale and from
-    // eleven yards back it is two pixels. Paper the size of a hand reads.
-    var geo = new THREE.PlaneGeometry(0.26, 0.36);
-    var mat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, toneMapped: false });
-    var mesh = new THREE.InstancedMesh(geo, mat, n);
-    mesh.frustumCulled = false;
-    mesh.renderOrder = 4;
-    mesh.count = n;
-    group.add(mesh);
-
-    var P = [], i;
-    for (i = 0; i < n; i++) {
-      P.push({ x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, spin: 0, rot: 0, tilt: 0,
-               life: 0, max: 1, drag: 1.2, fall: 9.0, sz: 1 });
-    }
-    var m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
-    var pos = new THREE.Vector3(), scl = new THREE.Vector3(), col = new THREE.Color();
-    var next = 0, live = 0;
-
-    // Hide the whole pool on the first frame; nothing is falling yet.
-    for (i = 0; i < n; i++) { m4.makeScale(0, 0, 0); mesh.setMatrixAt(i, m4); }
-    mesh.instanceMatrix.needsUpdate = true;
-
-    /* A burst is TWO populations, which is the difference between a puff and a
-       stadium going up. The old one had only the first.
-
-         thrown    fired up off the spot, peaking about a yard over the scorer's
-                   head and back down on him inside a second. This is the part
-                   that reads as "something just happened HERE".
-         drifting  released high and wide and left to fall through the whole
-                   shot, slowly, for the length of the celebration. This is the
-                   part that reads as confetti at all: a burst that has landed
-                   is over, and a touchdown is not over in one second.
-
-       Both share the pool. The drift ones get almost no upward velocity, heavy
-       drag and a long life, so they flutter rather than fly. */
-    function burst(x, y, z, count, colors) {
-      colors = colors && colors.length ? colors : ['#ffd23f'];
-      for (var k = 0; k < count; k++) {
-        var slot = next % n; next++;
-        var p = P[slot];
-        var drift = (k % 5) < 3;               // three fifths of every wave
-        if (drift) {
-          p.x = x + (Math.random() - 0.5) * 13;
-          p.y = y + 5.5 + Math.random() * 6.0;
-          p.z = z + (Math.random() - 0.5) * 15;
-          var da = Math.random() * Math.PI * 2, dr = 0.3 + Math.random() * 0.9;
-          p.vx = Math.cos(da) * dr; p.vz = Math.sin(da) * dr;
-          p.vy = -0.4 - Math.random() * 0.8;
-          p.drag = 2.6;                        // flutters down instead of falling
-          p.fall = 2.4;
-          p.spin = (Math.random() - 0.5) * 9;
-          p.max = p.life = 4.5 + Math.random() * 2.5;
-        } else {
-          /* Spread ALONG the goal line, not out of one point. A tight spawn
-             with a tight speed range is a cloud of paper that stays a cloud:
-             every piece keeps its neighbour, and the burst reads as three or
-             four white sheets rather than a hundred pieces of confetti. */
-          p.x = x + (Math.random() - 0.5) * 7;
-          p.y = y + Math.random() * 1.2;
-          p.z = z + (Math.random() - 0.5) * 11;
-          var a = Math.random() * Math.PI * 2, r = 0.6 + Math.random() * 3.6;
-          p.vx = Math.cos(a) * r; p.vz = Math.sin(a) * r;
-          p.vy = 1.6 + Math.random() * 4.0;
-          p.drag = 1.2;
-          p.fall = 9.0;
-          p.spin = (Math.random() - 0.5) * 16;
-          p.max = p.life = 2.4 + Math.random() * 1.6;
-        }
-        // Real confetti is cut to one size and then read at a hundred
-        // distances; a fixed quad is read at one. Vary it.
-        p.sz = 0.6 + Math.random() * 0.6;
-        p.rot = Math.random() * Math.PI; p.tilt = Math.random() * Math.PI;
-        try {
-          col.set(colors[(Math.random() * colors.length) | 0]);
-          /* HOLD IT UNDER THE BLOOM. The pool is MeshBasicMaterial with tone
-             mapping off, so anything at full white sails past the composer's
-             0.86 threshold and comes back as a featureless glowing rectangle —
-             and half the nations in this game wear white. Six hundred of those
-             at once flooded the whole frame. Ceiling every piece at 0.86 keeps
-             the paper looking like paper; the floodlights still glow because
-             they are the only things left above the line. */
-          var mx = Math.max(col.r, col.g, col.b);
-          if (mx > 0.86) col.multiplyScalar(0.86 / mx);
-          mesh.setColorAt(slot, col);
-        } catch (err) { /* colour is decoration; motion is the effect */ }
-      }
-      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-      live = 1;
-    }
-
-    function update(dt) {
-      if (!live) return;
-      var any = 0;
-      for (var k = 0; k < n; k++) {
-        var p = P[k];
-        if (p.life <= 0) { m4.makeScale(0, 0, 0); mesh.setMatrixAt(k, m4); continue; }
-        any = 1;
-        p.life -= dt;
-        // Paper does not fall like a stone: terminal velocity comes from drag
-        // on the same axis as gravity, which is what makes the drifting half of
-        // a burst flutter down through the whole shot instead of dropping out
-        // of frame in half a second.
-        p.vy -= p.fall * dt;
-        var d = 1 - Math.min(0.9, p.drag * dt);
-        p.vx *= d; p.vz *= d;
-        if (p.vy < 0) p.vy *= d;
-        p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
-        p.rot += p.spin * dt; p.tilt += p.spin * 0.6 * dt;
-        if (p.y < 0.04) {                       // settle on the turf and lie flat
-          p.y = 0.04; p.vy = 0; p.vx *= 0.6; p.vz *= 0.6; p.spin *= 0.5;
-        }
-        // Shrink away over the last half second — the pool shares one opacity.
-        var s = clamp(p.life / 0.5, 0, 1) * p.sz;
-        pos.set(p.x, p.y, p.z);
-        e.set(p.tilt, p.rot, p.rot * 0.5);
-        q.setFromEuler(e);
-        scl.set(s, s, s);
-        m4.compose(pos, q, scl);
-        mesh.setMatrixAt(k, m4);
-      }
-      mesh.instanceMatrix.needsUpdate = true;
-      live = any;
-    }
-
-    function dispose() { mesh.dispose(); }
-    return { group: group, burst: burst, update: update, dispose: dispose };
   }
 
   /* ============================= SHOCKWAVE ============================== */

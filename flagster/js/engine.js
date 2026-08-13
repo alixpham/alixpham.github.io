@@ -77,6 +77,10 @@
       halves: true,
       clock: cfg.halfLen || cfg.quarterLen || 1200,
       possession: cfg.startPossession || 'away', // team with ball
+      /* Who took the opening possession. The second half belongs to the OTHER
+         side, so this has to survive the whole first half to be read at the
+         break. */
+      openingPossession: cfg.startPossession || 'away',
       yardsToGoal: 45, down: 1, crossedMid: false,
       phase: 'playcall',
       players: [], ball: null,
@@ -1855,6 +1859,7 @@
       s.yardsToGoal = clamp(50 - s.yardsToGoal, 8, 45);
       s.down = 1; s.crossedMid = false;
       this.runPlayClock(s.snapT || 0, false);
+      this._announceTakeover(s.possession);
       this._nextSnap();
     }.bind(this), 1200);
   };
@@ -1873,6 +1878,7 @@
       s.possession = this.defenseTeam();
       s.yardsToGoal = clamp(50 - s.yardsToGoal, 8, 45);
       s.down = 1; s.crossedMid = false;
+      this._announceTakeover(s.possession);
       this._nextSnap();
     }.bind(this), 1200);
   };
@@ -1982,6 +1988,7 @@
     if (s.overtime) { if (this._otPossessionOver()) return; this._nextSnap(); return; }
     s.possession = team === 'home' ? 'away' : 'home';
     s.yardsToGoal = 45; s.down = 1; s.crossedMid = false;
+    this._announceTakeover(s.possession);
     this._nextSnap();
   };
 
@@ -1995,6 +2002,7 @@
     s.phase = 'dead';
     setTimeout(function () {
       s.possession = def; s.yardsToGoal = 45; s.down = 1; s.crossedMid = false;
+      this._announceTakeover(def);
       this._nextSnap();
     }.bind(this), 1400);
   };
@@ -2002,10 +2010,56 @@
   Engine.prototype._nextSnap = function () {
     var s = this.state;
     if (s.gameOver) return;
+    /* A period ran out somewhere inside the play that just finished. Whatever
+       that play decided about downs and possession belongs to the period that
+       is over, so the reset lands here rather than in the clock: by the time
+       anyone is lining up again, the break has been applied exactly once. */
+    if (s.periodBreak) {
+      s.periodBreak = false;
+      s.patActive = false; s.patTeam = null; s.patChoicePending = false;
+      if (s.overtime) {
+        // Every overtime possession starts first-and-goal from the 5.
+        s.yardsToGoal = 5; s.down = 1; s.crossedMid = true;
+        this._flash('OVERTIME — ' + s[s.possession].abbr + ' ball on the 5');
+      } else {
+        // The side that did NOT take the opening possession receives the second half.
+        s.possession = s.openingPossession === 'home' ? 'away' : 'home';
+        s.yardsToGoal = 45; s.down = 1; s.crossedMid = false;
+        this._flash('Second half — ' + s[s.possession].abbr + ' ball on their own 5');
+      }
+    }
     s.offPlay = null; s.defPlay = null;
     s.phase = 'playcall';
     s.thrownTo = null;
     this.onEvent({ type: 'playcall', offense: this.offenseTeam() });
+  };
+
+  /* A spot the way a commentator says it: 50 yards between the goal lines, so
+     yardsToGoal 45 is your own 5 and 25 is midfield. */
+  Engine.prototype._spotName = function (ytg) {
+    var y = Math.round(ytg);
+    if (y === 25) return 'midfield';
+    return (y > 25) ? ('own ' + (50 - y)) : ('opponent ' + y);
+  };
+
+  /* WHO HAS THE BALL NOW. Every change of possession used to happen in
+     silence: the score flashed, and then a team — the other one — lined up on
+     a 5-yard line and snapped. Watching it, that reads as the side that just
+     scored keeping the ball, because nothing on screen ever says otherwise.
+     The message lands after the scoring flash has had its moment and before
+     the next snap, so the handover is a beat you can see. */
+  Engine.prototype._announceTakeover = function (team) {
+    var s = this.state;
+    setTimeout(function () {
+      if (!this.state || this.state !== s) return;      // game torn down meanwhile
+      if (s.gameOver || s.possession !== team) return;  // superseded already
+      /* Read the spot when the message actually goes up, not when it was
+         queued: a half can expire on the play that caused the handover, and
+         the break re-spots the ball on the 5 in between. */
+      var where = this._spotName(s.yardsToGoal) + (s.overtime ? ', overtime' : '');
+      this._flash('🏈 ' + s[team].abbr + ' ball — ' + where);
+      this.onEvent({ type: 'takeover', team: team });
+    }.bind(this), 1000);
   };
 
   /* ------------------------------- CLOCK --------------------------------- */
@@ -2039,6 +2093,14 @@
       }
       s.quarter++; s.clock += (this.cfg.halfLen || this.cfg.quarterLen || 1200);
       this._flash('End of ' + (s.halves ? ('H' + (s.quarter - 1)) : ('Q' + (s.quarter - 1))));
+      /* THE SECOND HALF IS A NEW POSSESSION. The clock used to simply roll
+         over: whoever had the ball when time expired kept it, on the same
+         down, at the same spot, and a half break was invisible. The side that
+         did NOT take the opening possession starts the second half, first
+         down, on their own 5 — applied at the next snap rather than here,
+         because the caller is still in the middle of resolving the play that
+         ran the clock out. */
+      s.periodBreak = true;
     }
   };
 
@@ -2053,6 +2115,12 @@
     s.otFirst = s.possession;
     s.otScoreAtRoundStart = { home: s.score.home, away: s.score.away };
     s.quarter = s.quarters + 1;
+    /* The FIRST overtime possession has to be spotted too. Only the handovers
+       between possessions were, so overtime opened wherever regulation
+       happened to expire — mid-drive, on whatever down — and the "from the 5"
+       in this very message was a promise the first snap broke. Applied at the
+       next snap, for the same reason as the half break. */
+    s.periodBreak = true;
     this._flash('OVERTIME — alternating possessions from the 5');
     this.onEvent({ type: 'overtime', round: 1 });
   };
@@ -2071,6 +2139,7 @@
     }
     s.possession = (s.possession === 'home') ? 'away' : 'home';
     s.yardsToGoal = 5; s.down = 1; s.crossedMid = true;
+    this._announceTakeover(s.possession);
     return false;
   };
 

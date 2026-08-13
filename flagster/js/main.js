@@ -58,7 +58,16 @@
     }
   }
 
-  // CPU-vs-CPU attract mode: two random nations play themselves. No input.
+  /* CPU-vs-CPU attract mode: two random nations play themselves. No input.
+
+     A FULL GAME, not a highlight. This used to run two 2-minute halves, which
+     is about eight snaps: most demos never saw a touchdown, ended 0-0 and went
+     to overtime — where possessions alternate from the 5 — so the thing it
+     showed off was the tie-breaker rather than football. It now plays the real
+     IFAF game, two halves of twenty minutes. The clock burns play time plus
+     the huddle, so that is ~50 snaps and five or six minutes of watching: a
+     whole game, with drives, a half-time change of possession, and a score
+     that means something. */
   function startDemo() {
     var D = F.data;
     var pool = D.NATIONS.slice();
@@ -68,7 +77,7 @@
       home: a, away: b,
       homeJersey: D.jerseysFor(a.id)[0], awayJersey: D.jerseysFor(b.id)[1],
       userSide: 'home', startPossession: 'away',
-      quarters: 2, quarterLen: 120, demo: true, difficulty: 'pro',
+      halves: 2, halfLen: 1200, demo: true, difficulty: 'pro',
       onQuit: mainMenu,
       onGameOver: function () { mainMenu(); }
     });
