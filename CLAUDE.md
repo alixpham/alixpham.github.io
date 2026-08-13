@@ -59,9 +59,26 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   a velocity corner at every authored phase, which is what makes a cycle read as
   a marionette.
 - **A gait clip's natural ground speed lives IN the .glb**, as animation
-  `extras` measured by the builder, and `field3d` reads it through
-  `P.naturalSpeed()`. Don't reintroduce a hand-copied constant; it has drifted
-  out of step with the stride tables twice already.
+  `extras` measured by the builder, and `playermodel` reads it back. Don't
+  reintroduce a hand-copied constant; it has drifted out of step with the stride
+  tables twice already. The same goes for `blendUp`, the correction for how fast
+  a *blend* of two gaits really is.
+- **Locomotion is a ladder, not a clip.** Walk / Jog / Run / Sprint are blended
+  by `P.gait(kind, speed)`; `play('run')` is for the menu hero only. A clip can
+  only be played faster, and playback rate changes cadence while leaving the
+  baked stride exactly as long as it was authored — which is how the old
+  renderer ended up sprinting at 465 steps a minute. All four rungs put the LEFT
+  foot's contact at phase 0, or a blend has one clip landing while the other is
+  airborne.
+- **Arms are contralateral, and `measure-clip` is how you know.** At the instant
+  the left foot lands the right hand is at the front of its swing. The `Run`
+  clip was a third of a cycle out for its whole life: every frame of it was a
+  good pose, and it read as a wind-up toy. Timing errors are invisible in
+  stills — check `arm/leg error` rather than screenshots.
+- **A stance sweep has to be EVEN, not just long.** `groundSpeed` is a mean, and
+  a stance that creeps then whips through toe-off averages out right while the
+  support foot slides for the part of it the eye watches. `measure-clip` prints
+  the median and spread; `GAIT_DEBUG=1` on the builder prints the series.
 - The camera sits behind whoever HAS THE BALL, and the offence always attacks
   +x, so it never turns round; `engine.viewSign()` is the seam that says which
   way is downfield and now always returns 1.

@@ -45,6 +45,29 @@ at pursuit and leverage again rather than at another rule.
 
 ---
 
+## v2.27.0 — the half break, and who has the ball
+
+A6 shipped two 20-minute halves in v2.17.0, but only the *clock* knew about
+them. When time expired the period counter incremented and play carried on:
+whoever had the ball kept it, on the same down, at the same spot. Measured over
+twenty CPU-vs-CPU games, **twenty out of twenty second halves opened mid-drive**
+(`poss=home ytg=40 dn=3`, and so on). Overtime had the same hole one level down
+— it flashed "alternating possessions from the 5" and then opened wherever
+regulation happened to expire, `ytg=34` on second down; only the handovers
+*between* OT possessions were ever spotted on the 5.
+
+Both are now applied at the next snap rather than inside the clock, because the
+clock runs in the middle of resolving the play that ran it out and the reset has
+to outrank whatever that play concluded about downs. The side that did not take
+the opening possession receives the second half, first down on their own 5.
+
+And every change of possession now says so. The rule after a score was already
+right — in IFAF the opponent takes over on their own 5, and across ~440 scoring
+sequences the scoring team never once kept the ball — but the handover happened
+in total silence: the flash said "conversion GOOD", and then a team, the other
+one, lined up on a 5-yard line and snapped. Watching that, it reads as the
+scoring side keeping the ball. It now names the team and the spot.
+
 ## v2.22.0 — the throw, and the rules around it
 
 **A pass had stopped being catchable at all.** Measured over 32 CPU-vs-CPU

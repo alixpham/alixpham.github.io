@@ -56,16 +56,42 @@ torn-off flag can be parented at runtime.
 independently: `jersey`, `trim`, `skin`, `hair`, `shorts`, `socks`, `shoes`,
 `belt`, `flag`.
 
-**Clips** (all in place, no root translation drift): `Idle`, `Run`, `Walk`,
-`Backpedal`, `Throw`, `Catch`, `Dive`, `FlagGrab`, `FlagPulled`, `Celebrate`,
-`Spike`, `Dance`, `Flex`, `HighStep`, `Juke`.
+**Clips** (all in place, no root translation drift): `Idle`, `Walk`, `Jog`,
+`Run`, `Sprint`, `Backpedal`, `Throw`, `Catch`, `Dive`, `FlagGrab`,
+`FlagPulled`, `Celebrate`, `Spike`, `Dance`, `Flex`, `HighStep`, `Juke`.
 
-The three gaits (`Run`, `Walk`, `Backpedal`) and `HighStep` are built by one
-function, `cyclicGait()`, from two authored phase tables — one leg and one arm,
-each of which the other side repeats half a cycle later. It also solves the
-frontal plane (pelvic drop toward the swing leg, lateral sway over the stance
-leg, shoulder counter-tilt) from where the feet actually are, rather than from
-a hand-keyed sine that can fall out of step with the footfalls.
+The five gaits and `HighStep` are built by one function, `cyclicGait()`, from
+two authored phase tables — one leg and one arm, each of which the other side
+repeats half a cycle later. It also solves the frontal plane (pelvic drop toward
+the swing leg, lateral sway over the stance leg, shoulder counter-tilt) from
+where the feet actually are, rather than from a hand-keyed sine that can fall
+out of step with the footfalls.
+
+### The gait ladder
+
+`Walk`, `Jog`, `Run` and `Sprint` are one **ladder**, not four alternatives.
+The renderer blends the two rungs that bracket a player's speed
+(`flagster/js/playermodel.js`, `api.gait`), because a clip can only be played
+*faster*: playback rate changes cadence and leaves the baked stride exactly as
+long as it was authored, and real speed is stride length times stride frequency
+with both of them rising.
+
+| | speed | cadence | step |
+|---|---|---|---|
+| `Walk` | 1.8 m/s | 120 /min | 0.9 m |
+| `Jog` | 3.5 m/s | 167 /min | 1.2 m |
+| `Run` | 6.1 m/s | 194 /min | 1.9 m |
+| `Sprint` | 9.0 m/s | 250 /min | 2.2 m |
+
+Two invariants make the blend work, and both are checked by `measure-clip`:
+
+* **The left foot's contact is at phase 0** in every rung, the right foot's half
+  a cycle later. Blend two clips that disagree about that and one lands while
+  the other is still airborne.
+* **The arms are contralateral**: at the instant the left foot lands, the right
+  hand is at the front of its swing. This was a third of a cycle out in `Run`
+  for the whole life of the clip — a mistake no single frame shows, and one that
+  makes a runner read as a wind-up toy.
 
 The five celebrations are deliberately different in SHAPE, not in detail,
 because shape is all that reads at chase-camera distance: `Spike` is a
@@ -119,8 +145,30 @@ flag off, **FlagPulled** is the ball carrier's reaction to losing it.
 Each gait clip carries what the renderer needs to play it at the right rate:
 
 ```json
-{ "gait": 1, "groundSpeed": 6.10, "stance": 0.31, "flight": 0.38, "cycle": 0.62 }
+{ "gait": 1, "groundSpeed": 6.09, "steady": 6.44, "even": 0.29,
+  "stance": 0.31, "flight": 0.38, "cycle": 0.62,
+  "blendUp": [1, 1.021, 1.026, 0.993, 1] }
 ```
+
+`steady` (the median sweep) and `even` (its interquartile spread) exist because
+`groundSpeed` is a *mean*, and a mean is exactly the wrong summary if the
+support foot does not travel at a constant rate: a stance that creeps for most
+of its length and then whips through toe-off averages out to the right number
+while sliding forward under the player for the part of it the eye is watching.
+Keep `steady` within a few percent of `groundSpeed` and `even` under about 0.3.
+`GAIT_DEBUG=1 node tools/build-player-glb.mjs` prints the whole per-sample
+series, which is what tells you *which* authored row to move.
+
+`blendUp` is the correction from this rung to the next one up. A pose halfway
+between a jog and a run does not cover the ground at the average of their two
+speeds — the legs interpolate, the pelvis height interpolates as a separate
+translation track and is never re-solved against them, and the stride that falls
+out is a little short. It can be computed exactly here rather than guessed at
+runtime, because every joint a gait animates in the sagittal plane rotates about
+ONE axis and a slerp between two rotations about a common axis is a plain
+interpolation of the angle — so the blended pose the mixer will produce is the
+interpolation of these tables, and the same kinematics that measured each clip
+can measure the mix. Sampled at w = 0, ¼, ½, ¾, 1.
 
 `groundSpeed` is metres per second at the model's authored height, measured off
 the same kinematics the clip is built from: at every sample where a foot's
@@ -156,6 +204,25 @@ speed — plus two checks that catch the things that are invisible in a still:
   travelling is skating. (A gait clip is the honest exception and is labelled as
   one: its planted foot is *supposed* to sweep backward at ground speed.)
 
+For a gait clip it also prints a **coupling** block, which catches the class of
+error that is invisible in every individual frame because it is an error of
+*timing*:
+
+```
+gait coupling
+  L  contact   98%   hand back   97%   forward   40%   swing 0.69m   arm/leg error   -2%
+  R  contact   48%   hand back   47%   forward   90%   swing 0.69m   arm/leg error   -2%
+  step symmetry   right contact 50% after left
+  extras          6.09 m/s, stride 3.77m, cadence 194 steps/min, stance 31%, flight 38%
+  stance sweep    median 6.44 m/s (6% off the mean), spread 29% of it
+```
+
+Foot contact phase against rearmost-hand phase, per side. Zero is a runner;
+past about 8% is worth looking at; 50% is a toy soldier. This is how the `Run`
+clip was found to be swinging its arms 33% of a cycle early — every pose in it
+was a good pose, the arms swung the right distance at the right rate, and they
+arrived at the wrong time.
+
 This is how `Throw` was rebuilt. The previous version measured, at the exact
 instant the engine released the ball, as: hand 0.41 m **behind** the chest,
 trunk still 67° closed, elbow at 95° and shoulder external rotation of 9° — a
@@ -177,8 +244,24 @@ var P = FLAGSTER.PlayerModel.build(THREE, {
   jersey: '#d80621', trim: '#ffdf00', skin: '#e8b98f', number: 7, name: 'RIVERA'
 });
 scene.add(P.root);
-P.play('run');          // lower-camel game names are mapped to the .glb names
+P.play('celebrate');    // lower-camel game names are mapped to the .glb names
 ```
+
+For a player who is **moving**, drive locomotion through the ladder instead —
+`play('run')` is one clip at one stride length and is only right for the menu
+hero, which runs at a fixed speed:
+
+```js
+P.setBuildScale(0.87);      // this athlete's height multiplier
+P.setPhaseOffset(0.31);     // so a squad isn't ten men in lockstep
+// ...each frame, while they're moving...
+P.gait('forward', speedInWorldUnits);   // or 'backward'
+P.update(dt);
+```
+
+`gait()` is a request, not a state change: the blend owns the body only for as
+long as something keeps asking, so dropping into a one-shot or a celebration
+needs no matching "stop" call.
 
 It scales metres to world units (1 unit = 1 yard) by `1 / 0.9144 = 1.0936`,
 giving a 2.023-unit-tall player, and uses the game's heading convention

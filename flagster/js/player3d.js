@@ -25,6 +25,34 @@
   'use strict';
 
   /* ------------------------------------------------------------------ utils */
+
+  /* THE FALLBACK HALF OF THE LOCOMOTION CONTRACT.
+
+     field3d drives every moving player through P.gait(kind, speed) — see the
+     blend space in playermodel.js, which picks the two authored strides that
+     bracket that speed and blends them so stride LENGTH changes as well as
+     cadence. Neither rig in this file has a ladder to blend: the procedural one
+     has a single run and a single walk, and the external-model path has
+     whatever the .glb happened to ship.
+
+     So they get the old behaviour behind the new call — one clip chosen by
+     speed, playback rate carrying the rest — rather than a missing method that
+     would leave a moving player standing in an idle pose. Neither of these
+     paths is normally reached (the rigged flagplayer.glb is the one the game
+     ships); they are what a failed asset load falls back to. */
+  function gaitShim(api, natural) {
+    api._buildScale = 1;
+    api.setBuildScale = function (k) { api._buildScale = (k > 0 ? k : 1); };
+    api.setPhaseOffset = function () {};        // no shared phase to offset
+    api.gaitInfo = function () { return null; };
+    api.gait = function (kind, speed) {
+      var nm = kind === 'backward' ? 'backpedal' : (speed < 2.4 ? 'walk' : 'run');
+      api.play(nm);
+      var m = (speed || 0) / (natural[nm] * api._buildScale);
+      api.setSpeed(m < 0.5 ? 0.5 : m > 2.4 ? 2.4 : m);
+    };
+  }
+
   function q(THREE, rx, ry, rz) {
     return new THREE.Quaternion().setFromEuler(new THREE.Euler(rx || 0, ry || 0, rz || 0));
   }
@@ -438,6 +466,7 @@
     };
     api.oneShot = function (name, returnTo) { if (returnTo) api.play(returnTo); };  // model has no football one-shots
     api.setSpeed = function (m) { api._speed = m; if (A.run) A.run.timeScale = m; if (A.walk) A.walk.timeScale = m; };
+    gaitShim(api, { walk: 1.67, run: 5.78, backpedal: 3.10 });
     /* Turn rate must not depend on how long the frame took — easing by
        `dt * 9` catches up further on a long frame, so a hitching device turns
        the body in visible steps. `1 - exp(-9*dt)` is the same filter with the
@@ -552,6 +581,7 @@
       if (actions.walk) actions.walk.timeScale = mult;
       if (actions.backpedal) actions.backpedal.timeScale = mult;
     };
+    gaitShim(api, { walk: 1.67, run: 5.78, backpedal: 3.10 });
 
     // Smoothly steer the whole body's facing toward a heading (radians).
     api.face = function (yaw, dt) {

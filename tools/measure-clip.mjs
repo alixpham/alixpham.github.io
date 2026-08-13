@@ -158,7 +158,7 @@ function loadClip(name) {
     dur = Math.max(dur, times[times.length - 1]);
     tracks.push({ node: ch.target.node, path: ch.target.path, times, values });
   }
-  return { name, dur, tracks };
+  return { name, dur, tracks, extras: anim.extras || {} };
 }
 
 /* Full-body world transforms at time t. */
@@ -262,6 +262,8 @@ function measure(W) {
     lean, tilt,
     kneeL: knee('L'), kneeR: knee('R'),
     hipsY: matPos(W.Hips)[1],
+    hipsP: matPos(W.Hips),
+    pelvisFwd: matAxis(W.Hips, 2),
     // Where each foot IS, for the skate check: a planted foot must not travel.
     footY: { L: soleL[1], R: soleR[1] },
     footP: { L: matPos(W.Foot_L), R: matPos(W.Foot_R) },
@@ -319,7 +321,7 @@ console.log(`lowest foot point ${sink.toFixed(3)} m at t=${sinkT.toFixed(3)}` +
    standing on a field and a man sliding across one. A GAIT clip is the honest
    exception: its planted foot is supposed to sweep backward under the root at
    exactly ground speed, which is what stride matching in field3d.js is for. */
-const GAIT = { Run: 1, Walk: 1, Backpedal: 1 };
+const GAIT = clip.extras.gait ? { [clip.name]: 1 } : {};
 for (const side of ['L', 'R']) {
   let worst = 0, at = 0;
   const down = i => i >= 0 && i < rows.length && rows[i].m.footY[side] < 0.012;
@@ -334,6 +336,89 @@ for (const side of ['L', 'R']) {
   }
   console.log(`planted ${side} foot   drifts up to ${worst.toFixed(2)} m/s at t=${at.toFixed(3)}` +
     (GAIT[clip.name] ? '   (gait: the sweep IS the stride)' : worst > 0.9 ? '   <-- SKATING' : ''));
+}
+
+/* ---- GAIT COUPLING -------------------------------------------------------
+   THE ARMS HAVE TO BE IN THE RIGHT PLACE, NOT MERELY MOVING.
+
+   Every check above this one is about a single instant: is this foot through
+   the turf, is this planted foot travelling. None of them can see the error
+   that made the run read as a wind-up toy, because it is an error of TIMING
+   and every individual frame of it is a perfectly good pose.
+
+   A human runs contralaterally. At the instant the left foot lands, the RIGHT
+   hand is at the front of its swing and the LEFT hand is behind the hip — that
+   is what cancels the angular momentum the legs put into the trunk, and it is
+   the single most recognisable thing about a running human. Swing the arm on
+   the same side as the leg and you get a toy soldier; swing it a quarter of a
+   cycle out and you get something that is not obviously wrong in any frame and
+   is unmistakably wrong in motion.
+
+   So: find each foot's contact phase, find each hand's rearmost phase, and
+   report the gap. Zero is a runner. Anything past about 8% of a cycle is worth
+   looking at; 50% is a toy soldier.
+
+   Fore/aft is measured in the PELVIS frame — the clip has no root motion, but
+   the hips yaw through the cycle, and a world-frame reading folds that yaw into
+   the arm swing it is trying to measure. */
+if (clip.extras.gait) {
+  const N2 = rows.length - 1;                        // last row repeats the first
+  const at = i => rows[((i % N2) + N2) % N2];
+  const phaseOf = i => (((i % N2) + N2) % N2) / N2;
+
+  // Fore/aft of a point in the pelvis's own frame, at row i.
+  const fore = (i, p) => {
+    const m = at(i).m, W = m.hipsP;
+    return (p[0] - W[0]) * m.pelvisFwd[0] + (p[2] - W[2]) * m.pelvisFwd[2];
+  };
+
+  const report = [];
+  for (const side of ['L', 'R']) {
+    const isDown = i => at(i).m.footY[side] < 0.012;
+    // Contact = the first grounded row of a grounded run, searched cyclically.
+    let contact = null;
+    for (let i = 0; i < N2; i++) if (isDown(i) && !isDown(i - 1)) { contact = i; break; }
+    // Rearmost hand. The hand swings once per cycle, so the minimum is unique.
+    let back = 0, bv = Infinity, front = 0, fv = -Infinity;
+    for (let i = 0; i < N2; i++) {
+      const v = fore(i, at(i).m[side].hand);
+      if (v < bv) { bv = v; back = i; }
+      if (v > fv) { fv = v; front = i; }
+    }
+    let err = contact == null ? null : phaseOf(back) - phaseOf(contact);
+    if (err != null) { while (err > 0.5) err -= 1; while (err < -0.5) err += 1; }
+    report.push({ side, contact, back, front, err, reach: fv - bv });
+  }
+
+  console.log('');
+  console.log('gait coupling');
+  for (const r of report) {
+    console.log(`  ${r.side}  contact ${r.contact == null ? ' n/a ' : (phaseOf(r.contact) * 100).toFixed(0).padStart(4) + '%'}` +
+      `   hand back ${(phaseOf(r.back) * 100).toFixed(0).padStart(4)}%` +
+      `   forward ${(phaseOf(r.front) * 100).toFixed(0).padStart(4)}%` +
+      `   swing ${r.reach.toFixed(2)}m` +
+      (r.err == null ? '' : `   arm/leg error ${(r.err * 100).toFixed(0).padStart(4)}%` +
+        (Math.abs(r.err) > 0.08 ? '   <-- NOT CONTRALATERAL' : '')));
+  }
+  const cL = report[0].contact, cR = report[1].contact;
+  if (cL != null && cR != null) {
+    let gap = phaseOf(cR) - phaseOf(cL);
+    if (gap < 0) gap += 1;
+    console.log(`  step symmetry   right contact ${(gap * 100).toFixed(0)}% after left` +
+      (Math.abs(gap - 0.5) > 0.06 ? '   <-- LIMPING' : ''));
+  }
+  const e = clip.extras;
+  console.log(`  extras          ${e.groundSpeed.toFixed(2)} m/s, stride ${(e.groundSpeed * e.cycle).toFixed(2)}m,` +
+    ` cadence ${(120 / e.cycle).toFixed(0)} steps/min, stance ${(e.stance * 100).toFixed(0)}%, flight ${(e.flight * 100).toFixed(0)}%`);
+  if (e.steady != null) {
+    // The mean is what the renderer divides by; the median is what the eye
+    // sees for most of the stance. They have to agree, or the support foot is
+    // sliding for part of every step and making it up at toe-off.
+    const skewPct = 100 * (e.steady - e.groundSpeed) / e.groundSpeed;
+    console.log(`  stance sweep    median ${e.steady.toFixed(2)} m/s (${skewPct.toFixed(0)}% off the mean),` +
+      ` spread ${(e.even * 100).toFixed(0)}% of it` +
+      (Math.abs(skewPct) > 8 || e.even > 0.35 ? '   <-- UNEVEN STANCE' : ''));
+  }
 }
 
 if (argAt > 0) {

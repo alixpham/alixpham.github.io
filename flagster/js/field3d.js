@@ -427,6 +427,8 @@
     }
 
     var _q = new THREE.Quaternion(), _e = new THREE.Euler();
+    // Scratch for the per-frame lean (see the LEAN block in syncPlayer).
+    var _axis = new THREE.Vector3(), _qbank = new THREE.Quaternion(), _qpitch = new THREE.Quaternion();
     /* Blend one arm toward a posed rotation. Weight 0 leaves the clip alone and
        1 takes it over completely, so a pose can fade in and out instead of
        snapping — and slerping the bone means it composes with whatever the
@@ -508,6 +510,22 @@
       });
     }
 
+    /* Bias the chest and the head toward the inside of a turn. The rig's spine
+       bones point +Y with the character's LEFT at +X, so a positive rotation
+       about the bone's own Y turns the nose to the player's left — the same
+       sense as `lead`. Multiplied onto what the clip wrote rather than slerped
+       toward a pose: this is an offset, not a destination, and the gait's own
+       counter-rotation underneath it has to survive. */
+    var _leadQ = new THREE.Quaternion(), _leadAx = new THREE.Vector3(0, 1, 0);
+    function leadTrunk(P, lead) {
+      if (!P.nodes) return;
+      var chest = P.nodes.Chest, head = P.nodes.Head;
+      if (chest) { _leadQ.setFromAxisAngle(_leadAx, lead * 0.55); chest.quaternion.multiply(_leadQ); }
+      // The head goes furthest and gets there first — it is looking at where
+      // the player has decided to be, which is the whole reason the rest turns.
+      if (head) { _leadQ.setFromAxisAngle(_leadAx, lead * 0.85); head.quaternion.multiply(_leadQ); }
+    }
+
     // Flying-flag effect pool (spawned on flag pulls)
     var flags = makeFlagPool(THREE, 10);
     scene.add(flags.group);
@@ -524,13 +542,15 @@
        how big it looks lives here.
 
            td         the whole scoring side, for nearly three seconds: high
-                      jumps, the scorer spins to the camera, three waves of
-                      confetti over the end zone in the team's colours, and a
-                      seven-yard shockwave opening under the scorer.
+                      jumps, the scorer spins to the camera, and a seven-yard
+                      shockwave opening under the scorer.
            firstdown  the carrier and anyone standing within eight yards, for a
                       beat: a bounce, a turn toward the man who moved the
-                      chains, one small puff of confetti and a ring a third the
-                      size.
+                      chains, and a ring a third the size.
+
+       NO CONFETTI. It used to bury the shot in paper — five waves of 130
+       pieces at a touchdown, drifting through the frame for six seconds. The
+       celebration is what the players do; the paper was in front of it.
 
        HOP_RATE is 2*PI on purpose: the baked Celebrate clip hops twice a second
        (tools/build-player-glb.mjs, HOP) and its action is reset when the
@@ -544,16 +564,9 @@
        kill. Celebrations are performed on the spot. */
     var CELEB = {
       td:        { dur: 2.5,  hop: 0.34, radius: Infinity, stagger: 0.13, spin: 0.85,
-                   ring: { r: 7.0, dur: 0.75 },
-                   /* Five waves instead of three, and four times the paper. The
-                      old burst was 46 pieces of 20x30cm confetti thrown once and
-                      then twice more — from a lens eleven yards back that is
-                      perhaps a dozen specks crossing the frame, which is why the
-                      end zone read as empty on a score. A touchdown should bury
-                      the shot. */
-                   waves: [0, 0.22, 0.5, 0.85, 1.3], puff: 130, star: 1.35 },
+                   ring: { r: 7.0, dur: 0.75 }, star: 1.35 },
       firstdown: { dur: 1.25, hop: 0.14, radius: 8,        stagger: 0.05, spin: 0,
-                   ring: { r: 2.6, dur: 0.40 }, waves: [0, 0.25],       puff: 34, star: 1.15 }
+                   ring: { r: 2.6, dur: 0.40 }, star: 1.15 }
     };
     var HOP_RATE = Math.PI * 2;
 
@@ -574,13 +587,10 @@
       if (cel.star) return 'dance';
       return CELEB_LOOPS[(ud.idx * 3 + 1) % CELEB_LOOPS.length];
     }
-    var celeb = { kind: '', cfg: null, t: 0, dur: 0, team: null, x: MID, y: WID / 2, wave: 0 };
+    var celeb = { kind: '', cfg: null, t: 0, dur: 0, team: null, x: MID, y: WID / 2 };
 
-    // Confetti (one InstancedMesh, one draw call) and the shockwave on the turf.
-    // 900 pieces: five waves of 130 at a touchdown is 650 in flight at the peak,
-    // and the drifting three fifths of each wave stay up for six seconds.
-    var confetti = makeConfetti(THREE, 900);
-    scene.add(confetti.group);
+    // The shockwave on the turf — the only thing the celebration draws that
+    // isn't a player.
     var shock = makeShockRing(THREE);
     scene.add(shock.mesh);
 
@@ -588,39 +598,19 @@
       var cfg = CELEB[kind];
       if (!cfg) return;
       celeb.kind = kind; celeb.cfg = cfg;
-      celeb.t = 0; celeb.dur = cfg.dur; celeb.wave = 0;
+      celeb.t = 0; celeb.dur = cfg.dur;
       celeb.team = a.team || null;
       celeb.x = (a.x != null && isFinite(a.x)) ? a.x : MID;
       celeb.y = (a.y != null && isFinite(a.y)) ? a.y : WID / 2;
       shock.fire(wx(celeb.x), wz(celeb.y), cfg.ring.r, cfg.ring.dur);
     }
 
-    function celebColors() {
-      var t = (celeb.team === 'away') ? awayCols : homeCols;
-      /* No pure white. The pool is MeshBasicMaterial with toneMapped off, so a
-         #ffffff piece sits above the bloom threshold and comes out of the
-         composer as a featureless glowing rectangle — which is what turned the
-         first big burst into a handful of light-boxes over the end zone. */
-      return [t[0], t[1] || '#e8e8ea', '#ffd23f', '#e8e8ea', t[0]];
-    }
-
-    /* Advance the celebration clock and fire whatever wave of confetti is due.
-       Called once per frame, before the players are synced, so a celebration
-       that starts this frame is already running when they read it. */
+    /* Advance the celebration clock. Called once per frame, before the players
+       are synced, so a celebration that starts this frame is already running
+       when they read it. */
     function updateCeleb(dt) {
       if (celeb.dur <= 0) return;
-      var prev = celeb.t;
       celeb.t += dt;
-      var cfg = celeb.cfg, cols = celebColors();
-      for (var i = celeb.wave; i < cfg.waves.length; i++) {
-        if (cfg.waves[i] > celeb.t || cfg.waves[i] < prev - 0.001) continue;
-        // Fan the waves out either side of the spot so it reads as the crowd
-        // end of the field going up, not one firework over one man's head.
-        var off = (i === 0) ? 0 : ((i % 2) ? -4.5 : 4.5);
-        confetti.burst(wx(celeb.x), 2.2 + i * 0.35, wz(clamp(celeb.y + off, 1, WID - 1)),
-                       cfg.puff, cols);
-        celeb.wave = i + 1;
-      }
       if (celeb.t >= celeb.dur) { celeb.dur = 0; celeb.kind = ''; celeb.cfg = null; }
     }
 
@@ -648,37 +638,37 @@
     // Human scale: the rig is ~2.39yd tall, so 0.87 puts players at ~6'2".
     // (It was 1.45 — which rendered ~10ft-tall giants.)
 
-    /* STRIDE MATCHING — why the players used to skate.
+    /* STRIDE MATCHING — why the players used to skate, and why they used to
+       whir.
 
        A clip with no root motion only looks planted if the support foot sweeps
-       backward at exactly the speed the ground moves under it. That rate is set
-       by the STANCE phase, not by the whole cycle:
+       backward at exactly the speed the ground moves under it. That rate is a
+       property of the CLIP, and it used to be a pair of constants measured by
+       hand and copied in here under a comment asking whoever edits the gait
+       tables to keep them in step. That is a promise no comment can keep, and
+       it was broken twice — once when the run's stride grew 32% and the divisor
+       didn't, and once, invisibly and for the whole life of the clip, for the
+       BACKPEDAL, which had no constant of its own and borrowed the RUN's.
 
-           natural speed = stanceSweep / (stanceFraction * clipDuration)
+       So nobody measures it here any more: tools/build-player-glb.mjs computes
+       each gait's ground speed from the same kinematics it builds the clip from
+       and bakes it into the .glb, and playermodel.js reads it back.
 
-       This used to be a pair of constants measured by hand and copied in here,
-       under a comment asking whoever edits the gait tables to keep them in
-       step. That is a promise no comment can keep, and it had already been
-       broken twice: once when the run's stride grew 32% and the divisor didn't,
-       and once — invisibly, for the whole life of the clip — for the BACKPEDAL,
-       which had no constant of its own at all and borrowed the RUN's. Its real
-       natural speed was a quarter of the run's, so a defender backpedalling at
-       4yd/s played it at the 0.75 floor instead of the 3.0 the stride needed,
-       and slid backwards for the entire snap.
+       That fixed the skating and left the OTHER half of the problem, which is
+       that a clip can only be played faster. Playback rate changes cadence and
+       nothing else — the baked stride stays exactly as long as it was authored
+       — so a receiver at 8.5yd/s was taking a jogger's steps 45% more often
+       than a runner does, and the whole squad read as wind-up toys. Speed is
+       stride length times stride frequency and both of them rise.
 
-       So nobody measures it here any more. tools/build-player-glb.mjs computes
-       each gait's ground speed from the same kinematics it builds the clip
-       from and bakes it into the .glb; P.naturalSpeed() reads it back and
-       scales it by that player's own build, because a taller athlete's stride
-       really does cover more ground. NATURAL_FALLBACK is only for a rig old
-       enough to carry no measurement.
-
-       One honest limitation remains: a real runner's stance fraction shrinks as
-       they speed up and a baked clip's cannot, so no single rate is right
-       everywhere. The clamps below hold the extremes and take a little slip
-       instead; slip is far less visible at a jog than moon-walking is. */
-    var NATURAL_FALLBACK = { run: 5.78, walk: 1.38, backpedal: 1.30 };
-    var WALK_MAX = 2.4;              // hand over to the run cycle above this
+       So locomotion now goes through P.gait(kind, speed), which blends the two
+       authored strides that bracket that speed out of a four-rung ladder
+       (Walk / Jog / Run / Sprint). See playermodel.js for how the weight is
+       chosen; the short version is that stride length and cadence both come out
+       at the values authored for that speed, and the playback rate stays at
+       1.0. The fallback rigs in player3d.js have no ladder to blend and keep
+       the old behaviour behind the same call — see gaitShim() there. */
+    var WALK_MAX = 2.4;              // "running" for the ball-carry arm drive
     var PLAYER_LIFT = 0.10;    // rig dips slightly below its origin; sit feet on turf
     // A few skin tones rotated through by roster index for visual variety.
     var SKINS = ['#f2c9a0', '#e8b98f', '#d59a6a', '#a9714a', '#8a5a38', '#6f4526'];
@@ -774,16 +764,30 @@
         P.setYaw(seedYaw);
         scene.add(holder);
         var ring = makeRing(); scene.add(ring);
-        // The speed each gait clip travels at 1x, for THIS athlete's build.
-        var nat = {};
-        for (var g in NATURAL_FALLBACK) {
-          nat[g] = (P.naturalSpeed && P.naturalSpeed(g, b.h)) || NATURAL_FALLBACK[g];
-        }
+        /* A taller athlete's stride really does cover more ground, so the gait
+           ladder's rungs are scaled by this player's own build before anything
+           is bracketed against them. */
+        if (P.setBuildScale) P.setBuildScale(b.h);
+        /* TEN MEN, NOT ONE MAN TEN TIMES.
+
+           Every clip in this game starts at time zero, so a formation breaking
+           on the snap used to put ten players into the run cycle within a few
+           frames of each other and then hold them there: identical stride,
+           identical cadence, left feet landing together for the whole play.
+           Nothing else on the field says "animation" as loudly as that.
+
+           A stride phase is the cheapest possible fix and an honest one — real
+           players are not in step either. Deterministic in the player's own id
+           so a given athlete is not re-rolled every formation. */
+        var pseed = 0, pid = String((gp.data && gp.data.id) || gp.last || idx) + ':' + idx;
+        for (var pi = 0; pi < pid.length; pi++) pseed = (pseed * 131 + pid.charCodeAt(pi)) & 0x7fff;
+        if (P.setPhaseOffset) P.setPhaseOffset((pseed % 997) / 997);
         pMeshes.push({
-          P: P, holder: holder, ring: ring, nat: nat,
+          P: P, holder: holder, ring: ring,
           ud: { idx: idx, yaw: seedYaw, celebT: 0, _wasPulled: false, _pulled: false, _threw: false,
                 _caught: false, _juked: false, _spiked: false, clip: 'idle',
-                carryKey: '', carrySide: 0, carryW: 0, carryAmp: 0, grabW: 0 }
+                carryKey: '', carrySide: 0, carryW: 0, carryAmp: 0, grabW: 0,
+                pvx: 0, pvy: 0, bank: 0, pitch: 0, lead: 0 }
         });
       });
       playersRef = players;
@@ -795,7 +799,6 @@
     // Advance one player's Player3D: position, facing, clip selection, one-shots.
     function syncPlayer(entry, gp, dt, state) {
       var P = entry.P, ud = entry.ud, holder = entry.holder;
-      var nat = entry.nat || NATURAL_FALLBACK;
 
       /* Celebrating? Then this player jumps, and how high is the whole
          difference between "we scored" and "we moved the chains". The hop is
@@ -820,6 +823,46 @@
       var vx = (gp.rvx != null ? gp.rvx : (gp.vx || 0));
       var vy = (gp.rvy != null ? gp.rvy : (gp.vy || 0));
       var speed = Math.hypot(vx, vy);
+
+      /* ---- WHAT THE BODY IS DOING TO ITS OWN MOMENTUM --------------------
+         Everything about a change of direction that reads at chase-camera
+         distance comes out of two numbers, and neither of them is in the
+         clips: how hard this player is turning, and how hard they are
+         speeding up or slowing down. So differentiate the velocity the engine
+         publishes and split the result along the line of travel and across it.
+
+         A body that turns without leaning is the single most robotic thing a
+         runner can do — a real one has no choice, because the only way to
+         produce a sideways force is to put the feet outside the centre of mass
+         and fall inward. The lean angle is not a style parameter either; it is
+         atan(lateral acceleration / gravity), which is why it is computed
+         rather than tuned. Same for the fore/aft lean under acceleration and
+         braking: lean forward and the ground reaction pushes you along.
+
+         Both are eased, hard, because a raw frame-to-frame difference of a
+         velocity that the engine itself steers is noisy enough to jitter. */
+      var ax = 0, ay = 0;
+      if (dt > 0.0005) { ax = (vx - ud.pvx) / dt; ay = (vy - ud.pvy) / dt; }
+      ud.pvx = vx; ud.pvy = vy;
+      var ux = speed > 0.2 ? vx / speed : Math.cos(ud.yaw);
+      var uy = speed > 0.2 ? vy / speed : Math.sin(ud.yaw);
+      var aTan = ax * ux + ay * uy;                 // + = speeding up
+      var aLat = ay * ux - ax * uy;                 // + = turning to their LEFT
+      /* Below a walking pace there is no momentum to lean on, and a player
+         standing still differentiating engine noise would wobble. Nor is a
+         celebration locomotion: a man spiking a ball is allowed to throw his
+         weight around without the physics of running commenting on it. */
+      var leanOn = cel ? 0 : clamp((speed - 0.8) / 1.6, 0, 1);
+      var G = 10.73;                                // 9.81 m/s^2, in yards
+      var bankT = clamp(Math.atan2(aLat, G), -0.46, 0.46) * leanOn;
+      var pitchT = clamp(Math.atan2(aTan, G), -0.30, 0.34) * leanOn;
+      /* Attack fast, release slow. A cut is an event — the lean has to be there
+         on the step that makes it, not a beat later — but coming out of one is
+         a recovery and settles over a longer count. */
+      ud.bank += (bankT - ud.bank) * ease(Math.abs(bankT) > Math.abs(ud.bank) ? 13 : 6, dt);
+      ud.pitch += (pitchT - ud.pitch) * ease(7, dt);
+      ud.lead += (clamp(aLat / 24, -0.34, 0.34) * leanOn - ud.lead) * ease(9, dt);
+
       // Only treat players as "moving" while the ball is live — between plays
       // (playcall/presnap/dead/final) residual velocity must NOT keep them running.
       var live = (state.phase === 'live');
@@ -900,7 +943,14 @@
          the default easing or the body arrives after the event it belongs to.
          The wind-up is 374ms long and a quarterback coming out of a dropback
          can be most of a half-turn away from his receiver. */
-      P.face(yawT, (juking || throwing) ? dt * 2.2 : dt);
+      /* A juke is a sidestep and a throw is a turn-and-fire; both have to beat
+         the default easing. So does a hard cut, and for the same reason: the
+         hips arriving a beat after the change of direction is exactly the lag
+         that reads as a body being dragged along behind its own feet. The boost
+         is proportional to how hard the turn actually is, so a gentle drift is
+         still eased and a plant-and-go snaps. */
+      var turnBoost = 1 + clamp(Math.abs(aLat) / 13, 0, 1.3);
+      P.face(yawT, (juking || throwing) ? dt * 2.2 : dt * turnBoost);
 
       /* Backpedal = actual facing roughly opposite to velocity. This was gated
          to the defence, but it isn't a defensive motion, it's a direction of
@@ -973,18 +1023,55 @@
           P.play(celebClipFor(ud, cel));
         } else if (ud.celebT > 0) {
           P.play('celebrate');
-        } else if (live && backpedal) {
-          P.play('backpedal'); P.setSpeed(clamp(speed / nat.backpedal, 0.6, 2.0));
         } else if (live && moving) {
-          // Walk the slow stuff and run the rest, each matched to its own clip.
-          if (speed < WALK_MAX) { P.play('walk'); P.setSpeed(clamp(speed / nat.walk, 0.5, 1.9)); }
-          else { P.play('run'); P.setSpeed(clamp(speed / nat.run, 0.75, 2.4)); }
+          /* One call for every speed and both directions. The ladder inside
+             picks the two authored strides that bracket this player and blends
+             them, so a walk becomes a jog becomes a run becomes a sprint
+             without a threshold anywhere in here to cross and hitch on. */
+          if (P.gait) P.gait(backpedal ? 'backward' : 'forward', speed);
         } else {
           P.play('idle');                       // stand down between/at end of plays
         }
       }
 
+      /* ---- LEAN --------------------------------------------------------
+         Applied to the HOLDER, not to the rig, and that is the whole trick:
+         the holder's origin sits on the turf between the player's feet, so
+         rotating it pivots the body about its contact patch. The feet stay
+         where they were planted and the head swings; rotate the rig instead
+         and the pivot is the pelvis, which drives the inside foot through the
+         ground and lifts the outside one off it.
+
+         Axes are built from the direction of TRAVEL rather than from the
+         facing, because banking is a property of the momentum. Roll about the
+         line of travel is the turn; pitch about the axis across it is the
+         acceleration. */
+      if (Math.abs(ud.bank) > 1e-4 || Math.abs(ud.pitch) > 1e-4) {
+        var dirx = ux, dirz = uy;                       // field y is world z
+        _axis.set(dirx, 0, dirz);
+        _qbank.setFromAxisAngle(_axis, ud.bank);        // + rolls onto their left
+        _axis.set(dirz, 0, -dirx);
+        _qpitch.setFromAxisAngle(_axis, ud.pitch);      // + tips the chest forward
+        holder.quaternion.copy(_qpitch).multiply(_qbank);
+      } else if (holder.quaternion.w !== 1) {
+        holder.quaternion.identity();
+      }
+
       P.update(dt);
+
+      /* ---- THE SHOULDERS GO FIRST ---------------------------------------
+         Watch anyone cut and the order is head, then shoulders, then hips,
+         then feet — the top of the body commits to the new direction before
+         there is any way for the bottom of it to follow. Rotating the whole
+         player as one rigid heading is the thing that makes a turn read as a
+         turret. This gives the chest and the head a few degrees of yaw toward
+         the inside of the turn, over the top of whatever the gait wrote, which
+         puts that ordering back for the price of two slerps.
+
+         It is layered after the mixer for the same reason the ball carry is:
+         the clip has already written these bones this frame, and the point is
+         to bias what it wrote rather than to replace it. */
+      if (Math.abs(ud.lead) > 0.004 && !P._oneShot) leadTrunk(P, ud.lead);
 
       /* ---- CARRY POSE (after the mixer, so it overrides the clip) ---------
          The clip has already written every bone for this frame; the arm around
@@ -1445,7 +1532,8 @@
         homeAbbr: (st0.home && st0.home.id) || 'HOME',
         awayScore: (state.score && state.score.away) || 0,
         homeScore: (state.score && state.score.home) || 0,
-        period: state.overtime ? 'OT' : ('Q' + (state.quarter || 1)),
+        // The game is played in halves; only the jumbotron still said quarters.
+        period: state.overtime ? 'OT' : ((state.halves ? 'H' : 'Q') + (state.quarter || 1)),
         clock: mm + ':' + (ss < 10 ? '0' : '') + ss,
         awayColor: awayCols[0], homeColor: homeCols[0],
         footer: 'FLAGSTER'
@@ -1599,7 +1687,6 @@
       } else { ball.visible = false; ballShadow.visible = false; }
 
       flags.update(dt);
-      confetti.update(dt);
       shock.update(dt);
 
       updateJumbotron(state, dt);
@@ -1613,9 +1700,6 @@
       // would leave with that player's holder and miss the disposal sweep.
       hostBall(null);
       slashInk.dispose();
-      // InstancedMesh holds its own instance buffers; the scene-wide geometry
-      // and material sweep below doesn't reach those.
-      confetti.dispose();
       // Dispose Player3D instances (mixer + geometry/materials) and their rings.
       pMeshes.forEach(function (e) {
         if (e.P) e.P.dispose();
@@ -1652,8 +1736,43 @@
           teams: (playersRef || []).map(function (p) { return p.team; })
         };
       },
+      /* And the same bargain again for locomotion. Every number here is read
+         back OFF the renderer rather than recomputed from the engine: which
+         two rungs of the gait ladder are mounted and at what weight, the
+         playback rate they are actually running at, the stride phase each body
+         is at, how far this player's rendered facing is from their line of
+         travel (the definition of skating), and how far they are leaning.
+         A headless sweep can then assert that the squad is not in lockstep and
+         that nobody is running sideways, instead of asserting that a function
+         was called. */
+      debugPlayers: function () {
+        var frame = _dbgFrame++;
+        var out = [];
+        for (var i = 0; i < pMeshes.length; i++) {
+          var e = pMeshes[i], gp = (playersRef || [])[i];
+          if (!gp) continue;
+          var g = e.P.gaitInfo ? e.P.gaitInfo() : null;
+          var vx = gp.rvx != null ? gp.rvx : (gp.vx || 0);
+          var vy = gp.rvy != null ? gp.rvy : (gp.vy || 0);
+          var sp = Math.hypot(vx, vy);
+          var skew = 0;
+          if (sp > 0.4 && gp.faceYaw != null) {
+            skew = Math.atan2(vy, vx) - gp.faceYaw;
+            while (skew > Math.PI) skew -= Math.PI * 2;
+            while (skew < -Math.PI) skew += Math.PI * 2;
+            // Travelling backwards on purpose is a backpedal, not a skate.
+            if (Math.abs(skew) > Math.PI / 2) skew = (skew > 0 ? Math.PI : -Math.PI) - skew;
+          }
+          out.push({ f: frame, i: i, speed: sp, skew: skew,
+                     bank: e.ud.bank, pitch: e.ud.pitch, lead: e.ud.lead,
+                     a: g ? g.a : '-', b: g ? g.b : '-', blend: g ? g.blend : 0,
+                     rate: g ? g.rate : 0, phase: g ? g.phase : 0, w: g ? g.weight : 0 });
+        }
+        return out;
+      },
       render: render, resize: resize, stop: stop };
   }
+  var _dbgFrame = 0;
 
   /* Route ink. A ribbon of small quads laid flat on the turf rather than a
      THREE.Line, because line width is capped at 1px on almost every WebGL
@@ -1861,146 +1980,6 @@
       });
     }
     return { group: group, burst: burst, update: update };
-  }
-
-  /* ============================= CONFETTI =============================== */
-  /* A fixed pool in ONE InstancedMesh — one draw call whether nothing is
-     falling or two hundred pieces are, and a burst allocates nothing. Dead
-     pieces are scaled to zero rather than removed, because an InstancedMesh
-     draws a contiguous run and a recycled pool never is.
-
-     Colour is per instance (setColorAt) so confetti comes down in the scoring
-     team's colours, and a piece fades by SHRINKING: one material means one
-     opacity, and the pool is shared. */
-  function makeConfetti(THREE, n) {
-    var group = new THREE.Group();
-    // Bigger than life: 0.20 x 0.30 is real confetti at real scale and from
-    // eleven yards back it is two pixels. Paper the size of a hand reads.
-    var geo = new THREE.PlaneGeometry(0.26, 0.36);
-    var mat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, toneMapped: false });
-    var mesh = new THREE.InstancedMesh(geo, mat, n);
-    mesh.frustumCulled = false;
-    mesh.renderOrder = 4;
-    mesh.count = n;
-    group.add(mesh);
-
-    var P = [], i;
-    for (i = 0; i < n; i++) {
-      P.push({ x: 0, y: -50, z: 0, vx: 0, vy: 0, vz: 0, spin: 0, rot: 0, tilt: 0,
-               life: 0, max: 1, drag: 1.2, fall: 9.0, sz: 1 });
-    }
-    var m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
-    var pos = new THREE.Vector3(), scl = new THREE.Vector3(), col = new THREE.Color();
-    var next = 0, live = 0;
-
-    // Hide the whole pool on the first frame; nothing is falling yet.
-    for (i = 0; i < n; i++) { m4.makeScale(0, 0, 0); mesh.setMatrixAt(i, m4); }
-    mesh.instanceMatrix.needsUpdate = true;
-
-    /* A burst is TWO populations, which is the difference between a puff and a
-       stadium going up. The old one had only the first.
-
-         thrown    fired up off the spot, peaking about a yard over the scorer's
-                   head and back down on him inside a second. This is the part
-                   that reads as "something just happened HERE".
-         drifting  released high and wide and left to fall through the whole
-                   shot, slowly, for the length of the celebration. This is the
-                   part that reads as confetti at all: a burst that has landed
-                   is over, and a touchdown is not over in one second.
-
-       Both share the pool. The drift ones get almost no upward velocity, heavy
-       drag and a long life, so they flutter rather than fly. */
-    function burst(x, y, z, count, colors) {
-      colors = colors && colors.length ? colors : ['#ffd23f'];
-      for (var k = 0; k < count; k++) {
-        var slot = next % n; next++;
-        var p = P[slot];
-        var drift = (k % 5) < 3;               // three fifths of every wave
-        if (drift) {
-          p.x = x + (Math.random() - 0.5) * 13;
-          p.y = y + 5.5 + Math.random() * 6.0;
-          p.z = z + (Math.random() - 0.5) * 15;
-          var da = Math.random() * Math.PI * 2, dr = 0.3 + Math.random() * 0.9;
-          p.vx = Math.cos(da) * dr; p.vz = Math.sin(da) * dr;
-          p.vy = -0.4 - Math.random() * 0.8;
-          p.drag = 2.6;                        // flutters down instead of falling
-          p.fall = 2.4;
-          p.spin = (Math.random() - 0.5) * 9;
-          p.max = p.life = 4.5 + Math.random() * 2.5;
-        } else {
-          /* Spread ALONG the goal line, not out of one point. A tight spawn
-             with a tight speed range is a cloud of paper that stays a cloud:
-             every piece keeps its neighbour, and the burst reads as three or
-             four white sheets rather than a hundred pieces of confetti. */
-          p.x = x + (Math.random() - 0.5) * 7;
-          p.y = y + Math.random() * 1.2;
-          p.z = z + (Math.random() - 0.5) * 11;
-          var a = Math.random() * Math.PI * 2, r = 0.6 + Math.random() * 3.6;
-          p.vx = Math.cos(a) * r; p.vz = Math.sin(a) * r;
-          p.vy = 1.6 + Math.random() * 4.0;
-          p.drag = 1.2;
-          p.fall = 9.0;
-          p.spin = (Math.random() - 0.5) * 16;
-          p.max = p.life = 2.4 + Math.random() * 1.6;
-        }
-        // Real confetti is cut to one size and then read at a hundred
-        // distances; a fixed quad is read at one. Vary it.
-        p.sz = 0.6 + Math.random() * 0.6;
-        p.rot = Math.random() * Math.PI; p.tilt = Math.random() * Math.PI;
-        try {
-          col.set(colors[(Math.random() * colors.length) | 0]);
-          /* HOLD IT UNDER THE BLOOM. The pool is MeshBasicMaterial with tone
-             mapping off, so anything at full white sails past the composer's
-             0.86 threshold and comes back as a featureless glowing rectangle —
-             and half the nations in this game wear white. Six hundred of those
-             at once flooded the whole frame. Ceiling every piece at 0.86 keeps
-             the paper looking like paper; the floodlights still glow because
-             they are the only things left above the line. */
-          var mx = Math.max(col.r, col.g, col.b);
-          if (mx > 0.86) col.multiplyScalar(0.86 / mx);
-          mesh.setColorAt(slot, col);
-        } catch (err) { /* colour is decoration; motion is the effect */ }
-      }
-      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-      live = 1;
-    }
-
-    function update(dt) {
-      if (!live) return;
-      var any = 0;
-      for (var k = 0; k < n; k++) {
-        var p = P[k];
-        if (p.life <= 0) { m4.makeScale(0, 0, 0); mesh.setMatrixAt(k, m4); continue; }
-        any = 1;
-        p.life -= dt;
-        // Paper does not fall like a stone: terminal velocity comes from drag
-        // on the same axis as gravity, which is what makes the drifting half of
-        // a burst flutter down through the whole shot instead of dropping out
-        // of frame in half a second.
-        p.vy -= p.fall * dt;
-        var d = 1 - Math.min(0.9, p.drag * dt);
-        p.vx *= d; p.vz *= d;
-        if (p.vy < 0) p.vy *= d;
-        p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
-        p.rot += p.spin * dt; p.tilt += p.spin * 0.6 * dt;
-        if (p.y < 0.04) {                       // settle on the turf and lie flat
-          p.y = 0.04; p.vy = 0; p.vx *= 0.6; p.vz *= 0.6; p.spin *= 0.5;
-        }
-        // Shrink away over the last half second — the pool shares one opacity.
-        var s = clamp(p.life / 0.5, 0, 1) * p.sz;
-        pos.set(p.x, p.y, p.z);
-        e.set(p.tilt, p.rot, p.rot * 0.5);
-        q.setFromEuler(e);
-        scl.set(s, s, s);
-        m4.compose(pos, q, scl);
-        mesh.setMatrixAt(k, m4);
-      }
-      mesh.instanceMatrix.needsUpdate = true;
-      live = any;
-    }
-
-    function dispose() { mesh.dispose(); }
-    return { group: group, burst: burst, update: update, dispose: dispose };
   }
 
   /* ============================= SHOCKWAVE ============================== */
