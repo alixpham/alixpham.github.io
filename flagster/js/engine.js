@@ -494,6 +494,14 @@
       s.playClockLeft = PLAY_CLOCK;
     }
 
+    /* A BALL NOBODY CAUGHT IS STILL SUBJECT TO GRAVITY, and the play being
+       dead is not a reason for it to stop falling. It used to be left exactly
+       where the flight solver ended it — at CATCH_Z, chest height — so every
+       incompletion hung a football in mid-air over an empty patch of turf
+       until the next snap replaced it. This runs BEFORE the early return
+       below, because that return is the whole reason it never landed. */
+    if (s.ball && s.ball.loose) this._updateLoose(dt);
+
     if (s.phase !== 'live') return;
     s.snapT += dt;
     s.playClock += dt;
@@ -1313,7 +1321,7 @@
     if (pt.y < 0 || pt.y > FIELD_WID || pt.x < 0 || pt.x > FIELD_LEN) {
       var edge = { x: clamp(pt.x, 0, FIELD_LEN), y: clamp(pt.y, 0, FIELD_WID) };
       s.clockStops = true;
-      if (b.lateral) { this._flash('Pitch out of bounds'); this._endPlay(edge.x, true); return; }
+      if (b.lateral) { this._flash('Pitch out of bounds'); this._dropBall(edge); this._endPlay(edge.x, true); return; }
       this._incomplete('Incomplete — out of bounds', edge);
       return;
     }
@@ -1362,7 +1370,7 @@
 
     if (!contenders.length) {
       // A pitch nobody gathered is a dead ball at the spot, not an incompletion.
-      if (b.lateral) { this._flash('Pitch goes loose'); this._endPlay(pt.x, true); return; }
+      if (b.lateral) { this._flash('Pitch goes loose'); this._dropBall(pt); this._endPlay(pt.x, true); return; }
       this._incomplete('Incomplete', pt); return;
     }
     contenders.sort(function (a, c) { return c.score - a.score; });
@@ -1393,6 +1401,15 @@
       var scale = this.difficulty ? this.difficulty.intScale : 1;
       // Even a clean read is dropped sometimes; intScale keeps difficulty honest.
       if (Math.random() < clamp(0.55 * scale + 0.35, 0.2, 0.95)) {
+        /* THE MAN WHO PICKED IT OFF IS HOLDING IT. Without this the carrier
+           stays null through the whole dead ball, so the renderer has nobody
+           to hang the football off and draws it hovering at the spot — and the
+           celebration below has no star, because the star is whoever has the
+           ball. Nothing moves while the play is dead, so a carrier here is a
+           statement about who has possession of it, not about the play. */
+        pick.hasBall = true;
+        s.carrier = pick;
+        s.ball.x = pick.x; s.ball.y = pick.y; s.ball.z = 0;
         this._turnover('INTERCEPTED by ' + pick.last + '!', pick);
       } else {
         this._incomplete('Broken up by ' + pick.last + '!', pt);
@@ -1832,26 +1849,84 @@
     this._nextSnap();
   };
 
+  /* THE BALL COMES DOWN. Called wherever a ball stops belonging to anybody —
+     an incompletion, a break-up, a pitch nobody gathered. The flight solver
+     ends a pass at the height it would have been CAUGHT at, which is the right
+     answer for a catch and leaves a football hanging at chest height over
+     nobody when there isn't one, so from here it just keeps falling.
+
+     Restitution is low and the horizontal damping is severe on purpose: a
+     prolate spheroid landing on grass on an unknown axis does not bounce like
+     a basketball, it takes one hard kick in some direction and dies. */
+  var BALL_BOUNCE = 0.36;               // vertical restitution
+  var BALL_ROLL = 0.42;                 // horizontal speed kept per bounce
+  var BALL_REST = 1.1;                  // below this |vz| it stops bouncing
+
+  Engine.prototype._dropBall = function (pt) {
+    var b = this.state.ball;
+    if (!b) return;
+    // The vertical velocity it actually had at the moment the catch failed,
+    // so it continues the same parabola rather than starting a new one.
+    var vz = (b.vz || 0) - GRAVITY * (b.t || 0);
+    b.x = pt && pt.x != null ? pt.x : b.x;
+    b.y = pt && pt.y != null ? pt.y : b.y;
+    b.inAir = false; b.onGround = false; b.loose = true;
+    b.lvz = vz;
+    // A ball that has been dropped, tipped or broken up has had most of its
+    // forward speed taken out of it by whatever failed to catch it.
+    b.lvx = (b.dirx || 0) * (b.hv || 0) * 0.22;
+    b.lvy = (b.diry || 0) * (b.hv || 0) * 0.22;
+  };
+
+  Engine.prototype._updateLoose = function (dt) {
+    var b = this.state.ball;
+    if (!b || !b.loose) return;
+    b.lvz = (b.lvz || 0) - GRAVITY * dt;
+    b.z = (b.z || 0) + b.lvz * dt;
+    b.x = clamp(b.x + (b.lvx || 0) * dt, 0, FIELD_LEN);
+    b.y = clamp(b.y + (b.lvy || 0) * dt, 0, FIELD_WID);
+    if (b.z <= 0) {
+      b.z = 0;
+      if (Math.abs(b.lvz) > BALL_REST) {
+        b.lvz = -b.lvz * BALL_BOUNCE;
+        b.lvx *= BALL_ROLL; b.lvy *= BALL_ROLL;
+      } else {
+        b.loose = false; b.onGround = true;
+        b.lvx = b.lvy = b.lvz = 0;
+      }
+    }
+  };
+
   Engine.prototype._incomplete = function (msg, pt) {
     this.state.clockStops = true;        // incomplete stops it inside two minutes
     this._flash(msg);
     this.anim.push({ type: 'incomplete', x: pt.x, y: pt.y, t: 0, dur: 0.6 });
     var s = this.state;
+    this._dropBall(pt);
     this.onEvent({ type: 'incomplete' });
     s.phase = 'dead';
     // no yardage change; advance down (no midfield gain)
     setTimeout(this._advanceDown.bind(this, 0, false), 800);
   };
 
+  /* Long enough for the takeaway celebration to be a moment rather than a
+     flicker: the next formation is what ends it, and 1.2s put that formation
+     on the field before the men who made the play had finished reacting. */
+  var TAKEAWAY_HOLD = 2400;
+
   Engine.prototype._turnover = function (msg, byPlayer) {
     this._flash(msg);
     var s = this.state;
     this.onEvent({ type: 'turnover' });
+    /* A TAKEAWAY IS THE BIGGEST PLAY THE DEFENCE HAS, and it used to pass in
+       silence — a flash of text, a 1.2s pause, and the ball changed hands. The
+       side that made it celebrates it, around the man who made it. */
+    if (byPlayer) this._celebrate('takeaway', { x: byPlayer.x, y: byPlayer.y }, byPlayer.team);
     s.phase = 'dead';
     // Picked off on a conversion: the conversion simply failed.
-    if (s.patActive) { setTimeout(function () { this._endPAT(false); }.bind(this), 1200); return; }
+    if (s.patActive) { setTimeout(function () { this._endPAT(false); }.bind(this), TAKEAWAY_HOLD); return; }
     if (s.overtime) {
-      setTimeout(function () { if (!this._otPossessionOver()) this._nextSnap(); }.bind(this), 1200);
+      setTimeout(function () { if (!this._otPossessionOver()) this._nextSnap(); }.bind(this), TAKEAWAY_HOLD);
       return;
     }
     setTimeout(function () {
@@ -1861,7 +1936,7 @@
       this.runPlayClock(s.snapT || 0, false);
       this._announceTakeover(s.possession);
       this._nextSnap();
-    }.bind(this), 1200);
+    }.bind(this), TAKEAWAY_HOLD);
   };
 
   Engine.prototype._turnoverOnDowns = function () {
@@ -1913,13 +1988,17 @@
 
      Both go out on the same `anim` queue every other transient effect uses, so
      the 2D fallback gets them too and neither can outlive the play. `kind` is
-     the anim type: 'td' or 'firstdown'. */
-  Engine.prototype._celebrate = function (kind, at) {
+     the anim type: 'td', 'firstdown' or 'takeaway'.
+
+     `team` is who is doing the celebrating, and it is a parameter rather than
+     always the offence because the one thing on this field most worth
+     celebrating — a takeaway — is celebrated by the other side. */
+  Engine.prototype._celebrate = function (kind, at, team) {
     var s = this.state;
     var spot = at || s.deadSpot || { x: s.losX, y: FIELD_WID / 2 };
     this.anim.push({
       type: kind, t: 0, dur: kind === 'td' ? 1.4 : 0.9,
-      team: this.offenseTeam(), x: spot.x, y: spot.y
+      team: team || this.offenseTeam(), x: spot.x, y: spot.y
     });
   };
 

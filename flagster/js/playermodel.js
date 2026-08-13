@@ -356,7 +356,17 @@
     var gaitRate = 1, gaitCycle = 0;
 
     api.setBuildScale = function (k) { buildScale = (k > 0 ? k : 1); };
-    api.setPhaseOffset = function (p) { phase = ((p % 1) + 1) % 1; };
+    /* One number, two jobs. It is where in the STRIDE this athlete starts, and
+       it is also where in any other looping clip they start — because ten men
+       standing in a formation breathing in unison is the same tell as ten men
+       running in lockstep, and the Idle is what the whole squad holds between
+       plays. Kept separately from `phase`, which the gait rewrites every
+       frame, so it stays this athlete's own offset for the life of the body. */
+    var loopOffset = 0;
+    api.setPhaseOffset = function (p) {
+      var f = ((p % 1) + 1) % 1;
+      phase = f; loopOffset = f;
+    };
     /* Ask for locomotion this frame. It is a REQUEST, not a state change: the
        gait owns the body only for as long as something keeps asking, so the
        renderer dropping into a one-shot or a celebration needs no matching
@@ -500,7 +510,12 @@
         next.setEffectiveWeight(1); next.play();
       }
       current = next;
-      if (LOOPING[key]) api.setSpeed(api._speed);
+      if (LOOPING[key]) {
+        // Start this athlete somewhere of their own in the cycle.
+        var lc = next.getClip && next.getClip();
+        if (lc && lc.duration > 0) next.time = loopOffset * lc.duration;
+        api.setSpeed(api._speed);
+      }
     };
 
     api.oneShot = function (name, returnTo, fade) {
