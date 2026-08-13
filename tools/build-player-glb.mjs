@@ -999,8 +999,13 @@ function cyclicGait(name, dur, cfg) {
   // dropped the pelvis to `hipsY`, so a sole point's height above the field is
   // its height in the HIP_Y frame plus (hipsY - 1.000).
   const rise = (i, right) => hipsY[i] - 1.000 + (right ? -hipRise[i] : hipRise[i]);
-  CLIPS.push({ name, duration: dur, tracks, extras: gaitMetrics(dur, legAt, rise) });
+  const extras = gaitMetrics(dur, legAt, rise, name);
+  CLIPS.push({ name, duration: dur, tracks, extras: extras });
+  // Kept so blendMetrics() can build the pose HALFWAY between two gaits and
+  // measure it the same way this measured them.
+  GAIT_SOLVE[name] = { dur: dur, legAt: legAt, rise: rise, extras: extras };
 }
+const GAIT_SOLVE = {};
 
 /* HOW FAST THE GROUND GOES BY, measured rather than asserted.
 
@@ -1020,10 +1025,25 @@ function cyclicGait(name, dur, cfg) {
    the same shoe one sample later, not whichever point happens to be lowest then
    — and average over the whole cycle. Both feet count when both are down, which
    is what makes a walk's double-support come out right.                      */
-function gaitMetrics(dur, legAt, riseAt) {
+function gaitMetrics(dur, legAt, riseAt, label) {
   const dt = dur / STEPS;
-  const ON = 0.004;                                // within 4mm of the turf
+  /* Within 4mm of the turf — or of the closest this cycle ever gets to it, if
+     that is worse. An authored gait is solved onto the ground and the two are
+     the same number; a BLENDED one (see blendMetrics) is not solved at all, so
+     its lowest sole can hover a centimetre up for the whole cycle, and a fixed
+     4mm would then find no stance phase and report a ground speed of zero. */
+  let floor = Infinity;
+  for (let i = 0; i < STEPS; i++) {
+    for (const right of [false, true]) {
+      const p = solePoints(...legAt(i, right));
+      let k = 0;
+      for (let m = 1; m < 3; m++) if (p[m].y < p[k].y) k = m;
+      floor = Math.min(floor, p[k].y + riseAt(i, right));
+    }
+  }
+  const ON = 0.004 + Math.max(0, floor);
   let sum = 0, n = 0, stanceL = 0, anyDown = 0;
+  const rates = [];
   for (let i = 0; i < STEPS; i++) {
     const j = (i + 1) % STEPS;
     let down = 0;
@@ -1036,14 +1056,41 @@ function gaitMetrics(dur, legAt, riseAt) {
       if (now[k].y + riseAt(i, right) > ON) continue;
       down = 1;
       if (!right) stanceL++;
-      sum += -(nxt[k].z - now[k].z) / dt;          // ground travels backward under it
+      const v = -(nxt[k].z - now[k].z) / dt;       // ground travels backward under it
+      sum += v; rates.push({ v, at: i / STEPS, k, right });
       n++;
     }
     anyDown += down;
   }
+  /* HOW EVENLY THE STANCE SWEEPS, not just how far.
+
+     `groundSpeed` is a mean, and a mean is exactly the wrong summary if the
+     support foot does not travel at a constant rate: a stance that sweeps
+     slowly for most of its length and then whips through toe-off averages out
+     to the right number while sliding forward under the player for the part of
+     it the eye is actually watching. That is a micro-skate, it is invisible in
+     any still frame, and the mean cannot see it.
+
+     So report the middle of the distribution as well. `steady` is the median
+     sweep and `even` is the interquartile spread as a fraction of the mean; a
+     clip whose stance is honest has steady within a few percent of groundSpeed
+     and `even` well under 0.3. Anything worse means the stance rows need
+     re-spacing, not the divisor changing. */
+  const sorted = rates.map(r => r.v).sort((a, b) => a - b);
+  const at = q => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] : 0);
+  const mean = n ? sum / n : 0;
+  /* GAIT_DEBUG=1 prints the whole series rather than its summary, which is the
+     only way to see WHERE a stance is uneven — and therefore which authored row
+     to move. The contact point is named: h(eel), b(all), t(ip). */
+  if (process.env.GAIT_DEBUG && label) {
+    console.log('    ' + label.padEnd(10) + ' sweep  ' + rates.filter(r => !r.right)
+      .map(r => `${(r.at * 100).toFixed(0)}%:${r.v.toFixed(1)}${'hbt'[r.k]}`).join(' '));
+  }
   return {
     gait: 1,
-    groundSpeed: n ? sum / n : 0,   // metres/sec at the model's authored scale
+    groundSpeed: mean,              // metres/sec at the model's authored scale
+    steady: at(0.5),                // the median of the same measurement
+    even: mean ? (at(0.75) - at(0.25)) / mean : 0,
     stance: stanceL / STEPS,        // fraction of the cycle one given foot is down
     flight: 1 - anyDown / STEPS,    // fraction with neither foot down
     cycle: dur
@@ -1072,6 +1119,79 @@ clip('Idle', 2.4, [
   rot('Flag_R', [0, 1.2, 2.4], [[-0.02, 0, -0.02], [0.03, 0, -0.04], [-0.02, 0, -0.02]])
 ]);
 
+/* ================== THE GAIT LADDER: WALK, JOG, RUN, SPRINT ===============
+
+   FOUR CLIPS RATHER THAN TWO, BECAUSE A CLIP CAN ONLY BE PLAYED FASTER.
+
+   A single run cycle scaled by playback rate changes CADENCE and nothing else:
+   the stride stays exactly as long as it was authored, so a player at 8yd/s
+   takes the same 1.9m steps as one at 5.8yd/s, 40% more often. Real running
+   does not work like that. Speed is stride length times stride frequency and
+   both of them rise — over the range this game covers, roughly two thirds of
+   the extra speed comes from a longer stride and one third from a faster
+   turnover. Getting that from playback rate alone gives a sprinter with the
+   twinkling feet of a cartoon and a jogger who wades.
+
+   So the ladder covers the range with four authored strides:
+
+       Walk    1.8 m/s   120 steps/min   0.9m steps    heel strike, no flight
+       Jog     3.5 m/s   167 steps/min   1.2m steps    midfoot, a little flight
+       Run     6.1 m/s   194 steps/min   1.9m steps    the old clip
+       Sprint  8.5 m/s   250 steps/min   2.0m steps    forefoot, front-side
+
+   and the renderer blends the two that bracket a player's actual speed
+   (flagster/js/playermodel.js, api.gait). Because the blend weight is chosen so
+   that the pair's own natural speeds interpolate TO the player's speed, both
+   the stride length and the cadence come out at the authored values for that
+   speed, and the playback rate stays near 1.0 everywhere in the range instead
+   of being stretched to 2.4x at the top.
+
+   Blending only works if the clips agree about where the cycle starts. All four
+   put the LEFT FOOT'S CONTACT AT PHASE 0 and the right foot's half a cycle
+   later, so a blend never has one clip landing while the other is airborne.
+   `node tools/measure-clip.mjs <clip>` prints both contact phases; keep them at
+   0% and 50%.                                                               */
+
+/* ------------------------------------------------------------------- Jog */
+/* Between a walk and a run, and NOT a slow version of either. It has a flight
+   phase, so it is a run; the flight is a tenth of the cycle rather than a
+   third, the knee never drives above the horizontal, and the heel recovers to
+   about half the height the run's does. The foot lands nearly flat and close
+   under the hips, which is the thing that separates a jog from a run at a
+   glance: no reach out in front. */
+cyclicGait('Jog', 0.72, {
+  leg: [
+    //  phase  hip  knee  ankle  toe
+    [0.00, 26, 12, 0, 4],      // contact, midfoot, close under the hips
+    [0.08, 18, 26, 4, 1],      // loading
+    [0.16, 7, 32, 10, 0],      // mid-stance
+    [0.26, -11, 22, 4, 10],    // the heel comes up
+    [0.38, -32, 10, -22, 40],  // toe-off over a flat forefoot
+    [0.46, -14, 62, -8, 18],   // early flight, the knee folds
+    [0.56, 6, 88, 6, 3],       // recovery — heel to mid-thigh, not to the glute
+    [0.70, 40, 76, 12, 0],     // knee drive, thigh no higher than 40
+    [0.84, 37, 44, 9, 0],
+    [0.92, 34, 22, 3, 2],      // reach
+    [1.00, 26, 12, 0, 4]
+  ],
+  arm: [
+    [0.00, -27, 70, 9],        // left foot lands — left hand behind the hip
+    [0.06, -25, 69, 9],
+    [0.20, -6, 76, 9],
+    [0.34, 12, 82, 8],
+    [0.46, 20, 86, 8],         // shoulder furthest forward
+    [0.54, 16, 90, 8],         // ...elbow peaks a beat later
+    [0.68, 2, 82, 9],
+    [0.84, -20, 73, 10],
+    [0.95, -30, 70, 10],       // shoulder furthest back
+    [1.00, -27, 70, 9]
+  ],
+  lift: 0.015, stanceEnd: 0.38,
+  lean: 0.15, head: -0.09,
+  yaw: 0.085, yawPhase: 0.25,
+  obliq: 0.080, sway: 0.022, tilt: 0.058, splay: 0.02
+});
+
 /* ------------------------------------------------------------------- Run */
 /* THE RUNNING GAIT, one leg, as fractions of a stride. Stance runs 0.00 ->
    ~0.30 and swing fills the rest; because the other leg is half a cycle behind,
@@ -1090,39 +1210,115 @@ cyclicGait('Run', 0.62, {
   leg: [
     //  phase  hip  knee  ankle  toe
     [0.00, 34, 20, -4, 6],     // 1. initial contact, midfoot, just ahead of the hips
-    [0.06, 22, 30, 4, 2],      // 2. loading — the ankle collapses under the weight
-    [0.13, 5, 39, 11, 0],      // 3. mid-stance — knee deepest, hips lowest
-    [0.21, -14, 27, 3, 14],    // 4. the heel comes up, the MTP starts to extend
+    [0.06, 25, 30, 4, 2],      // 2. loading — the ankle collapses under the weight
+    [0.13, 9, 39, 11, 0],      // 3. mid-stance — knee deepest, hips lowest
+    [0.21, -16, 27, 3, 14],    // 4. the heel comes up, the MTP starts to extend
     [0.30, -38, 11, -30, 48],  // 5. toe-off — everything extends over a flat forefoot
     [0.38, -19, 79, -13, 22],  // 6. early flight, the trailing knee folds
     [0.48, 11, 123, 5, 4],     // 7. recovery — heel snaps up under the glute
     [0.62, 61, 96, 14, 0],     // 8. knee drive — hip flexors carry the knee through
-    [0.78, 61, 55, 10, 0],
+    [0.78, 57, 55, 10, 0],
     [0.90, 50, 30, 2, 2],      // 9. reach — the shin unfolds toward the next contact
     [1.00, 34, 20, -4, 6]
   ],
-  /* The left knee drives at 0.62, so the left ARM is furthest BACK there and
-     furthest forward half a cycle away — contralateral, which is what cancels
-     the rotation the hips put into the trunk. Both extremes of the elbow are
-     placed a beat AFTER the shoulder's: the forearm is dragged round by the
-     upper arm and arrives late, and that lag is most of what separates an arm
-     from a lever. Hand travels roughly sternum-to-hip-pocket. */
+  /* CONTRALATERAL, AND MEASURED TO BE.
+
+     At the instant the left foot lands, the RIGHT hand is at the front of its
+     swing and the LEFT hand is behind the hip. That is not a stylistic
+     preference — it is what cancels the angular momentum the legs put into the
+     trunk, and it is the most recognisable single fact about a running human.
+
+     This table used to be a third of a cycle early, which is a mistake no
+     individual frame shows: every pose in it was a good pose, the arms swung
+     the right distance at the right rate, and they arrived at the wrong time.
+     Measured, the left hand reached the back of its swing at 67% of the cycle
+     when the left foot had landed at 0%. The result reads as a wind-up toy
+     rather than a runner, and it survived several passes of authoring-by-eye
+     because looking at it frame by frame is exactly how you miss it.
+
+     `node tools/measure-clip.mjs Run` now reports that number — foot contact
+     phase against rearmost-hand phase, per side. Keep it inside a few percent.
+
+     Both extremes of the elbow are placed a beat AFTER the shoulder's: the
+     forearm is dragged round by the upper arm and arrives late, and that lag is
+     most of what separates an arm from a lever. Hand travels roughly
+     sternum-to-hip-pocket. */
   arm: [
     //  phase  shoulder  elbow  abduct
-    [0.00, 20, 94, 9],
-    [0.12, 30, 104, 8],        // shoulder furthest forward
-    [0.20, 24, 110, 8],        // ...elbow peaks here, a beat later
-    [0.34, 2, 94, 10],
-    [0.50, -34, 74, 13],
-    [0.62, -52, 68, 14],       // shoulder furthest back, hand past the hip
-    [0.72, -43, 66, 13],       // ...elbow bottoms out here
-    [0.86, -8, 80, 11],
-    [1.00, 20, 94, 9]
+    [0.00, -47, 67, 13],       // LEFT FOOT LANDS — left hand behind the hip
+    [0.05, -43, 66, 13],       // ...elbow bottoms out a beat later
+    [0.19, -8, 80, 11],
+    [0.33, 20, 94, 9],
+    [0.45, 30, 104, 8],        // shoulder furthest forward (right foot landing)
+    [0.53, 24, 110, 8],        // ...elbow peaks a beat later
+    [0.67, 2, 94, 10],
+    [0.83, -34, 74, 13],
+    [0.95, -52, 68, 14],       // shoulder furthest back
+    [1.00, -47, 67, 13]
   ],
   lift: 0.030, stanceEnd: 0.30,
   lean: 0.22, head: -0.13,
   yaw: 0.10, yawPhase: 0.25,
   obliq: 0.075, sway: 0.016, tilt: 0.055, splay: 0.02
+});
+
+/* ---------------------------------------------------------------- Sprint */
+/* FLAT OUT. The kinematic differences from the run are not a matter of degree —
+   they are the specific things the sprint literature calls "front-side
+   mechanics", and they are what makes a sprint read as a sprint:
+
+     * the foot lands on the FOREFOOT, under the hips rather than ahead of them,
+       with the ankle already plantarflexed and held stiff through the impact
+       (contact ankle -12 rather than the run's -4, and it collapses 18 degrees
+       instead of 15 across a stance half as long);
+     * stance is a fifth of the cycle rather than a third, so the two flight
+       phases together fill nearly 60% of it;
+     * the recovery heel comes all the way to the glute — 140 degrees of knee
+       flexion, the deepest fold of any clip here — because a folded leg is a
+       short pendulum and swings through faster;
+     * peak thigh flexion is 74 degrees, well above the horizontal, and peak
+       extension behind the body is no greater than the run's. That asymmetry
+       IS front-side mechanics: faster runners do not reach further back, they
+       carry the knee further forward;
+     * the arms swing hand-to-chin and hand-past-the-hip, roughly a third again
+       the run's amplitude, with the elbow held tighter.
+
+   Authored at 250 steps/min and ~2m steps, which is where a fast athlete is at
+   this speed. Above it the renderer runs out of ladder and goes back to
+   stretching playback rate, but the top of the game's speed range (9.2 yd/s)
+   is inside this clip, so that only bites for a downhill kick-return dream. */
+cyclicGait('Sprint', 0.48, {
+  leg: [
+    //  phase  hip  knee  ankle  toe
+    [0.00, 22, 16, -12, 10],   // contact — forefoot, UNDER the hips, ankle stiff
+    [0.05, 13, 26, -2, 4],     // loading — a fraction of the run's collapse
+    [0.11, 1, 33, 6, 0],       // mid-stance
+    [0.16, -17, 26, 0, 16],    // the heel comes up early
+    [0.21, -34, 8, -32, 52],   // toe-off — full extension over a flat forefoot
+    [0.30, -24, 92, -18, 26],  // the trailing knee folds hard
+    [0.42, 4, 140, 2, 6],      // heel to the glute
+    [0.60, 56, 122, 12, 0],
+    [0.70, 74, 92, 14, 0],     // peak knee drive — front-side
+    [0.84, 64, 48, 10, 0],
+    [0.93, 46, 24, 0, 4],      // the shin unfolds and starts coming back down
+    [1.00, 22, 16, -12, 10]
+  ],
+  arm: [
+    [0.00, -60, 82, 12],       // left foot lands — left hand behind the hip
+    [0.05, -55, 80, 12],
+    [0.19, -18, 92, 10],
+    [0.33, 22, 104, 8],
+    [0.45, 42, 112, 7],        // shoulder furthest forward, hand to the chin
+    [0.53, 34, 120, 7],        // ...elbow peaks a beat later
+    [0.67, 8, 104, 9],
+    [0.83, -42, 88, 12],
+    [0.95, -66, 80, 13],       // shoulder furthest back, hand past the hip
+    [1.00, -60, 82, 12]
+  ],
+  lift: 0.055, stanceEnd: 0.21,
+  lean: 0.20, head: -0.15,
+  yaw: 0.115, yawPhase: 0.25,
+  obliq: 0.070, sway: 0.014, tilt: 0.060, splay: 0.02
 });
 
 /* ------------------------------------------------------------------ Walk */
@@ -1135,10 +1331,10 @@ cyclicGait('Walk', 1.0, {
   leg: [
     //  phase  hip  knee  ankle  toe
     [0.00, 28, 4, 5, 0],       // heel strike — toes held up, knee almost straight
-    [0.08, 21, 17, -7, 0],     // loading response — the forefoot slaps flat
-    [0.20, 9, 17, -1, 0],      // the shin begins to roll forward over the foot
-    [0.32, -6, 5, 9, 3],       // mid-stance — tallest point, leg nearly straight
-    [0.46, -21, 7, 12, 24],    // terminal stance — heel off, MTP extending
+    [0.08, 23, 17, -7, 0],     // loading response — the forefoot slaps flat
+    [0.20, 7, 17, -1, 0],      // the shin begins to roll forward over the foot
+    [0.32, -9, 5, 9, 3],       // mid-stance — tallest point, leg nearly straight
+    [0.46, -22, 7, 12, 24],    // terminal stance — heel off, MTP extending
     [0.58, -15, 36, -16, 48],  // toe-off — ankle plantarflexes over a flat forefoot
     [0.70, 6, 68, -2, 14],     // early swing — the knee folds
     [0.82, 24, 45, 10, 2],     // mid-swing — toes up to clear the turf
@@ -1179,24 +1375,29 @@ cyclicGait('Walk', 1.0, {
    thing left to fix is the stride itself: 0.44s and a 30/-34 sweep puts the
    natural speed near 3.4yd/s, which is the middle of the range a defensive
    back actually backpedals at.                                              */
-cyclicGait('Backpedal', 0.44, {
+cyclicGait('Backpedal', 0.58, {
   leg: [
     //  phase  hip  knee  ankle  toe
-    [0.00, 30, 52, 6, 2],      // knee up in front, foot about to reach back
-    [0.14, 16, 34, -6, 4],
-    [0.26, -2, 22, -14, 8],    // the forefoot lands behind and drives the body back
-    [0.40, -18, 24, -10, 8],
-    [0.52, -34, 34, -2, 4],    // hip fully extended behind, the knee begins to fold
-    [0.68, -16, 62, 6, 0],     // the knee folds and swings through under the hips
-    [0.84, 12, 70, 10, 0],
-    [1.00, 30, 52, 6, 2]
+    [0.00, 34, 64, 12, 0],     // knee up in front, foot about to reach back
+    [0.14, 16, 40, -4, 4],
+    [0.26, -4, 24, -16, 8],    // the forefoot lands behind and drives the body back
+    [0.40, -24, 24, -13, 8],
+    [0.52, -44, 34, -4, 4],    // hip fully extended behind, the knee begins to fold
+    [0.68, -20, 68, 8, 0],     // the knee folds and swings through under the hips
+    [0.84, 12, 84, 14, 0],
+    [1.00, 34, 64, 12, 0]
   ],
+  /* Contralateral, same rule and same check as the run — this table was a
+     quarter of a cycle early too. A backpedalling defender's arms are short and
+     high (they are being kept out of the way of the hips, and they are ready to
+     break on the ball), so the amplitude is small; the TIMING still has to be
+     right or the whole thing paddles. */
   arm: [
-    [0.00, 8, 78, 15],
-    [0.26, 12, 86, 17],
-    [0.50, -10, 70, 16],
-    [0.72, -20, 62, 14],
-    [1.00, 8, 78, 15]
+    [0.00, -18, 62, 14],
+    [0.24, 6, 74, 15],
+    [0.48, 14, 86, 17],
+    [0.74, -4, 72, 16],
+    [1.00, -18, 62, 14]
   ],
   lift: 0.012, stanceEnd: 0.42,
   lean: 0.20, head: -0.16,
@@ -1797,6 +1998,57 @@ for (const r of REGIONS) {
 }
 
 /* ---- animations ---- */
+/* ================ HOW FAST A BLEND OF TWO GAITS ACTUALLY IS ===============
+
+   The renderer does not play one of these clips. It plays two, blended, and it
+   picks the blend weight on the assumption that a half-and-half mix of a jog
+   and a run covers the ground at the average of their two speeds.
+
+   That assumption is wrong, and it is wrong by more than it sounds. A blended
+   pose is not the pose halfway between two gaits in any sense the ground cares
+   about: the legs interpolate, the pelvis height interpolates SEPARATELY (it is
+   a translation track, and nothing re-solves it against the blended legs), and
+   the ground speed of the result is whatever falls out of those two facts
+   together. Measured end to end in the browser, a half-blended jog-run swept
+   the turf 13% slower than the average of the two — which is a support foot
+   sliding forward under a player for the whole of every stance, at exactly the
+   speeds a receiver spends most of a play at.
+
+   It can be predicted here rather than measured there, and exactly, because of
+   a property of this rig: every joint a gait animates in the sagittal plane
+   rotates about ONE axis, and a slerp between two rotations about a common axis
+   is a plain interpolation of the angle. So the blended pose the mixer will
+   produce is the interpolation of these tables, and the same kinematics that
+   measured each clip can measure the mix.
+
+   What comes out is a small correction curve per adjacent pair, baked onto the
+   slower clip as `blendUp`, sampled at w = 0, 0.25, 0.5, 0.75, 1. playermodel
+   divides by it. Anyone re-authoring a stride gets a new curve for free, which
+   is the entire reason it is computed here and not typed into the renderer —
+   this file has had two hand-copied constants drift out of step already. */
+const BLEND_LADDER = ['Walk', 'Jog', 'Run', 'Sprint'];
+for (let i = 0; i < BLEND_LADDER.length - 1; i++) {
+  const A = GAIT_SOLVE[BLEND_LADDER[i]], B = GAIT_SOLVE[BLEND_LADDER[i + 1]];
+  if (!A || !B) continue;
+  const mix = (a, b, w) => a + (b - a) * w;
+  const curve = [1];
+  for (const w of [0.25, 0.5, 0.75]) {
+    const legAt = (k, right) => {
+      const p = A.legAt(k, right), q = B.legAt(k, right);
+      return [mix(p[0], q[0], w), mix(p[1], q[1], w), mix(p[2], q[2], w), mix(p[3], q[3], w)];
+    };
+    const rise = (k, right) => mix(A.rise(k, right), B.rise(k, right), w);
+    const m = gaitMetrics(mix(A.dur, B.dur, w), legAt, rise,
+      process.env.GAIT_DEBUG ? BLEND_LADDER[i] + '+' + w : null);
+    const linear = mix(A.extras.groundSpeed, B.extras.groundSpeed, w);
+    curve.push(linear > 0 ? m.groundSpeed / linear : 1);
+  }
+  curve.push(1);
+  A.extras.blendUp = curve.map(v => +v.toFixed(4));
+  console.log('  blend ' + (BLEND_LADDER[i] + '->' + BLEND_LADDER[i + 1]).padEnd(14) +
+    A.extras.blendUp.map(v => v.toFixed(3)).join('  '));
+}
+
 for (const c of CLIPS) {
   const samplers = [], channels = [];
   for (const tr of c.tracks) {

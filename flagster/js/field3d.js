@@ -427,6 +427,8 @@
     }
 
     var _q = new THREE.Quaternion(), _e = new THREE.Euler();
+    // Scratch for the per-frame lean (see the LEAN block in syncPlayer).
+    var _axis = new THREE.Vector3(), _qbank = new THREE.Quaternion(), _qpitch = new THREE.Quaternion();
     /* Blend one arm toward a posed rotation. Weight 0 leaves the clip alone and
        1 takes it over completely, so a pose can fade in and out instead of
        snapping — and slerping the bone means it composes with whatever the
@@ -506,6 +508,22 @@
         _q.setFromEuler(_e.set(r.lo[0], r.lo[1], r.lo[2]));
         lo.quaternion.slerp(_q, w);
       });
+    }
+
+    /* Bias the chest and the head toward the inside of a turn. The rig's spine
+       bones point +Y with the character's LEFT at +X, so a positive rotation
+       about the bone's own Y turns the nose to the player's left — the same
+       sense as `lead`. Multiplied onto what the clip wrote rather than slerped
+       toward a pose: this is an offset, not a destination, and the gait's own
+       counter-rotation underneath it has to survive. */
+    var _leadQ = new THREE.Quaternion(), _leadAx = new THREE.Vector3(0, 1, 0);
+    function leadTrunk(P, lead) {
+      if (!P.nodes) return;
+      var chest = P.nodes.Chest, head = P.nodes.Head;
+      if (chest) { _leadQ.setFromAxisAngle(_leadAx, lead * 0.55); chest.quaternion.multiply(_leadQ); }
+      // The head goes furthest and gets there first — it is looking at where
+      // the player has decided to be, which is the whole reason the rest turns.
+      if (head) { _leadQ.setFromAxisAngle(_leadAx, lead * 0.85); head.quaternion.multiply(_leadQ); }
     }
 
     // Flying-flag effect pool (spawned on flag pulls)
@@ -648,37 +666,37 @@
     // Human scale: the rig is ~2.39yd tall, so 0.87 puts players at ~6'2".
     // (It was 1.45 — which rendered ~10ft-tall giants.)
 
-    /* STRIDE MATCHING — why the players used to skate.
+    /* STRIDE MATCHING — why the players used to skate, and why they used to
+       whir.
 
        A clip with no root motion only looks planted if the support foot sweeps
-       backward at exactly the speed the ground moves under it. That rate is set
-       by the STANCE phase, not by the whole cycle:
+       backward at exactly the speed the ground moves under it. That rate is a
+       property of the CLIP, and it used to be a pair of constants measured by
+       hand and copied in here under a comment asking whoever edits the gait
+       tables to keep them in step. That is a promise no comment can keep, and
+       it was broken twice — once when the run's stride grew 32% and the divisor
+       didn't, and once, invisibly and for the whole life of the clip, for the
+       BACKPEDAL, which had no constant of its own and borrowed the RUN's.
 
-           natural speed = stanceSweep / (stanceFraction * clipDuration)
+       So nobody measures it here any more: tools/build-player-glb.mjs computes
+       each gait's ground speed from the same kinematics it builds the clip from
+       and bakes it into the .glb, and playermodel.js reads it back.
 
-       This used to be a pair of constants measured by hand and copied in here,
-       under a comment asking whoever edits the gait tables to keep them in
-       step. That is a promise no comment can keep, and it had already been
-       broken twice: once when the run's stride grew 32% and the divisor didn't,
-       and once — invisibly, for the whole life of the clip — for the BACKPEDAL,
-       which had no constant of its own at all and borrowed the RUN's. Its real
-       natural speed was a quarter of the run's, so a defender backpedalling at
-       4yd/s played it at the 0.75 floor instead of the 3.0 the stride needed,
-       and slid backwards for the entire snap.
+       That fixed the skating and left the OTHER half of the problem, which is
+       that a clip can only be played faster. Playback rate changes cadence and
+       nothing else — the baked stride stays exactly as long as it was authored
+       — so a receiver at 8.5yd/s was taking a jogger's steps 45% more often
+       than a runner does, and the whole squad read as wind-up toys. Speed is
+       stride length times stride frequency and both of them rise.
 
-       So nobody measures it here any more. tools/build-player-glb.mjs computes
-       each gait's ground speed from the same kinematics it builds the clip
-       from and bakes it into the .glb; P.naturalSpeed() reads it back and
-       scales it by that player's own build, because a taller athlete's stride
-       really does cover more ground. NATURAL_FALLBACK is only for a rig old
-       enough to carry no measurement.
-
-       One honest limitation remains: a real runner's stance fraction shrinks as
-       they speed up and a baked clip's cannot, so no single rate is right
-       everywhere. The clamps below hold the extremes and take a little slip
-       instead; slip is far less visible at a jog than moon-walking is. */
-    var NATURAL_FALLBACK = { run: 5.78, walk: 1.38, backpedal: 1.30 };
-    var WALK_MAX = 2.4;              // hand over to the run cycle above this
+       So locomotion now goes through P.gait(kind, speed), which blends the two
+       authored strides that bracket that speed out of a four-rung ladder
+       (Walk / Jog / Run / Sprint). See playermodel.js for how the weight is
+       chosen; the short version is that stride length and cadence both come out
+       at the values authored for that speed, and the playback rate stays at
+       1.0. The fallback rigs in player3d.js have no ladder to blend and keep
+       the old behaviour behind the same call — see gaitShim() there. */
+    var WALK_MAX = 2.4;              // "running" for the ball-carry arm drive
     var PLAYER_LIFT = 0.10;    // rig dips slightly below its origin; sit feet on turf
     // A few skin tones rotated through by roster index for visual variety.
     var SKINS = ['#f2c9a0', '#e8b98f', '#d59a6a', '#a9714a', '#8a5a38', '#6f4526'];
@@ -774,16 +792,30 @@
         P.setYaw(seedYaw);
         scene.add(holder);
         var ring = makeRing(); scene.add(ring);
-        // The speed each gait clip travels at 1x, for THIS athlete's build.
-        var nat = {};
-        for (var g in NATURAL_FALLBACK) {
-          nat[g] = (P.naturalSpeed && P.naturalSpeed(g, b.h)) || NATURAL_FALLBACK[g];
-        }
+        /* A taller athlete's stride really does cover more ground, so the gait
+           ladder's rungs are scaled by this player's own build before anything
+           is bracketed against them. */
+        if (P.setBuildScale) P.setBuildScale(b.h);
+        /* TEN MEN, NOT ONE MAN TEN TIMES.
+
+           Every clip in this game starts at time zero, so a formation breaking
+           on the snap used to put ten players into the run cycle within a few
+           frames of each other and then hold them there: identical stride,
+           identical cadence, left feet landing together for the whole play.
+           Nothing else on the field says "animation" as loudly as that.
+
+           A stride phase is the cheapest possible fix and an honest one — real
+           players are not in step either. Deterministic in the player's own id
+           so a given athlete is not re-rolled every formation. */
+        var pseed = 0, pid = String((gp.data && gp.data.id) || gp.last || idx) + ':' + idx;
+        for (var pi = 0; pi < pid.length; pi++) pseed = (pseed * 131 + pid.charCodeAt(pi)) & 0x7fff;
+        if (P.setPhaseOffset) P.setPhaseOffset((pseed % 997) / 997);
         pMeshes.push({
-          P: P, holder: holder, ring: ring, nat: nat,
+          P: P, holder: holder, ring: ring,
           ud: { idx: idx, yaw: seedYaw, celebT: 0, _wasPulled: false, _pulled: false, _threw: false,
                 _caught: false, _juked: false, _spiked: false, clip: 'idle',
-                carryKey: '', carrySide: 0, carryW: 0, carryAmp: 0, grabW: 0 }
+                carryKey: '', carrySide: 0, carryW: 0, carryAmp: 0, grabW: 0,
+                pvx: 0, pvy: 0, bank: 0, pitch: 0, lead: 0 }
         });
       });
       playersRef = players;
@@ -795,7 +827,6 @@
     // Advance one player's Player3D: position, facing, clip selection, one-shots.
     function syncPlayer(entry, gp, dt, state) {
       var P = entry.P, ud = entry.ud, holder = entry.holder;
-      var nat = entry.nat || NATURAL_FALLBACK;
 
       /* Celebrating? Then this player jumps, and how high is the whole
          difference between "we scored" and "we moved the chains". The hop is
@@ -820,6 +851,46 @@
       var vx = (gp.rvx != null ? gp.rvx : (gp.vx || 0));
       var vy = (gp.rvy != null ? gp.rvy : (gp.vy || 0));
       var speed = Math.hypot(vx, vy);
+
+      /* ---- WHAT THE BODY IS DOING TO ITS OWN MOMENTUM --------------------
+         Everything about a change of direction that reads at chase-camera
+         distance comes out of two numbers, and neither of them is in the
+         clips: how hard this player is turning, and how hard they are
+         speeding up or slowing down. So differentiate the velocity the engine
+         publishes and split the result along the line of travel and across it.
+
+         A body that turns without leaning is the single most robotic thing a
+         runner can do — a real one has no choice, because the only way to
+         produce a sideways force is to put the feet outside the centre of mass
+         and fall inward. The lean angle is not a style parameter either; it is
+         atan(lateral acceleration / gravity), which is why it is computed
+         rather than tuned. Same for the fore/aft lean under acceleration and
+         braking: lean forward and the ground reaction pushes you along.
+
+         Both are eased, hard, because a raw frame-to-frame difference of a
+         velocity that the engine itself steers is noisy enough to jitter. */
+      var ax = 0, ay = 0;
+      if (dt > 0.0005) { ax = (vx - ud.pvx) / dt; ay = (vy - ud.pvy) / dt; }
+      ud.pvx = vx; ud.pvy = vy;
+      var ux = speed > 0.2 ? vx / speed : Math.cos(ud.yaw);
+      var uy = speed > 0.2 ? vy / speed : Math.sin(ud.yaw);
+      var aTan = ax * ux + ay * uy;                 // + = speeding up
+      var aLat = ay * ux - ax * uy;                 // + = turning to their LEFT
+      /* Below a walking pace there is no momentum to lean on, and a player
+         standing still differentiating engine noise would wobble. Nor is a
+         celebration locomotion: a man spiking a ball is allowed to throw his
+         weight around without the physics of running commenting on it. */
+      var leanOn = cel ? 0 : clamp((speed - 0.8) / 1.6, 0, 1);
+      var G = 10.73;                                // 9.81 m/s^2, in yards
+      var bankT = clamp(Math.atan2(aLat, G), -0.46, 0.46) * leanOn;
+      var pitchT = clamp(Math.atan2(aTan, G), -0.30, 0.34) * leanOn;
+      /* Attack fast, release slow. A cut is an event — the lean has to be there
+         on the step that makes it, not a beat later — but coming out of one is
+         a recovery and settles over a longer count. */
+      ud.bank += (bankT - ud.bank) * ease(Math.abs(bankT) > Math.abs(ud.bank) ? 13 : 6, dt);
+      ud.pitch += (pitchT - ud.pitch) * ease(7, dt);
+      ud.lead += (clamp(aLat / 24, -0.34, 0.34) * leanOn - ud.lead) * ease(9, dt);
+
       // Only treat players as "moving" while the ball is live — between plays
       // (playcall/presnap/dead/final) residual velocity must NOT keep them running.
       var live = (state.phase === 'live');
@@ -900,7 +971,14 @@
          the default easing or the body arrives after the event it belongs to.
          The wind-up is 374ms long and a quarterback coming out of a dropback
          can be most of a half-turn away from his receiver. */
-      P.face(yawT, (juking || throwing) ? dt * 2.2 : dt);
+      /* A juke is a sidestep and a throw is a turn-and-fire; both have to beat
+         the default easing. So does a hard cut, and for the same reason: the
+         hips arriving a beat after the change of direction is exactly the lag
+         that reads as a body being dragged along behind its own feet. The boost
+         is proportional to how hard the turn actually is, so a gentle drift is
+         still eased and a plant-and-go snaps. */
+      var turnBoost = 1 + clamp(Math.abs(aLat) / 13, 0, 1.3);
+      P.face(yawT, (juking || throwing) ? dt * 2.2 : dt * turnBoost);
 
       /* Backpedal = actual facing roughly opposite to velocity. This was gated
          to the defence, but it isn't a defensive motion, it's a direction of
@@ -973,18 +1051,55 @@
           P.play(celebClipFor(ud, cel));
         } else if (ud.celebT > 0) {
           P.play('celebrate');
-        } else if (live && backpedal) {
-          P.play('backpedal'); P.setSpeed(clamp(speed / nat.backpedal, 0.6, 2.0));
         } else if (live && moving) {
-          // Walk the slow stuff and run the rest, each matched to its own clip.
-          if (speed < WALK_MAX) { P.play('walk'); P.setSpeed(clamp(speed / nat.walk, 0.5, 1.9)); }
-          else { P.play('run'); P.setSpeed(clamp(speed / nat.run, 0.75, 2.4)); }
+          /* One call for every speed and both directions. The ladder inside
+             picks the two authored strides that bracket this player and blends
+             them, so a walk becomes a jog becomes a run becomes a sprint
+             without a threshold anywhere in here to cross and hitch on. */
+          if (P.gait) P.gait(backpedal ? 'backward' : 'forward', speed);
         } else {
           P.play('idle');                       // stand down between/at end of plays
         }
       }
 
+      /* ---- LEAN --------------------------------------------------------
+         Applied to the HOLDER, not to the rig, and that is the whole trick:
+         the holder's origin sits on the turf between the player's feet, so
+         rotating it pivots the body about its contact patch. The feet stay
+         where they were planted and the head swings; rotate the rig instead
+         and the pivot is the pelvis, which drives the inside foot through the
+         ground and lifts the outside one off it.
+
+         Axes are built from the direction of TRAVEL rather than from the
+         facing, because banking is a property of the momentum. Roll about the
+         line of travel is the turn; pitch about the axis across it is the
+         acceleration. */
+      if (Math.abs(ud.bank) > 1e-4 || Math.abs(ud.pitch) > 1e-4) {
+        var dirx = ux, dirz = uy;                       // field y is world z
+        _axis.set(dirx, 0, dirz);
+        _qbank.setFromAxisAngle(_axis, ud.bank);        // + rolls onto their left
+        _axis.set(dirz, 0, -dirx);
+        _qpitch.setFromAxisAngle(_axis, ud.pitch);      // + tips the chest forward
+        holder.quaternion.copy(_qpitch).multiply(_qbank);
+      } else if (holder.quaternion.w !== 1) {
+        holder.quaternion.identity();
+      }
+
       P.update(dt);
+
+      /* ---- THE SHOULDERS GO FIRST ---------------------------------------
+         Watch anyone cut and the order is head, then shoulders, then hips,
+         then feet — the top of the body commits to the new direction before
+         there is any way for the bottom of it to follow. Rotating the whole
+         player as one rigid heading is the thing that makes a turn read as a
+         turret. This gives the chest and the head a few degrees of yaw toward
+         the inside of the turn, over the top of whatever the gait wrote, which
+         puts that ordering back for the price of two slerps.
+
+         It is layered after the mixer for the same reason the ball carry is:
+         the clip has already written these bones this frame, and the point is
+         to bias what it wrote rather than to replace it. */
+      if (Math.abs(ud.lead) > 0.004 && !P._oneShot) leadTrunk(P, ud.lead);
 
       /* ---- CARRY POSE (after the mixer, so it overrides the clip) ---------
          The clip has already written every bone for this frame; the arm around
@@ -1652,8 +1767,43 @@
           teams: (playersRef || []).map(function (p) { return p.team; })
         };
       },
+      /* And the same bargain again for locomotion. Every number here is read
+         back OFF the renderer rather than recomputed from the engine: which
+         two rungs of the gait ladder are mounted and at what weight, the
+         playback rate they are actually running at, the stride phase each body
+         is at, how far this player's rendered facing is from their line of
+         travel (the definition of skating), and how far they are leaning.
+         A headless sweep can then assert that the squad is not in lockstep and
+         that nobody is running sideways, instead of asserting that a function
+         was called. */
+      debugPlayers: function () {
+        var frame = _dbgFrame++;
+        var out = [];
+        for (var i = 0; i < pMeshes.length; i++) {
+          var e = pMeshes[i], gp = (playersRef || [])[i];
+          if (!gp) continue;
+          var g = e.P.gaitInfo ? e.P.gaitInfo() : null;
+          var vx = gp.rvx != null ? gp.rvx : (gp.vx || 0);
+          var vy = gp.rvy != null ? gp.rvy : (gp.vy || 0);
+          var sp = Math.hypot(vx, vy);
+          var skew = 0;
+          if (sp > 0.4 && gp.faceYaw != null) {
+            skew = Math.atan2(vy, vx) - gp.faceYaw;
+            while (skew > Math.PI) skew -= Math.PI * 2;
+            while (skew < -Math.PI) skew += Math.PI * 2;
+            // Travelling backwards on purpose is a backpedal, not a skate.
+            if (Math.abs(skew) > Math.PI / 2) skew = (skew > 0 ? Math.PI : -Math.PI) - skew;
+          }
+          out.push({ f: frame, i: i, speed: sp, skew: skew,
+                     bank: e.ud.bank, pitch: e.ud.pitch, lead: e.ud.lead,
+                     a: g ? g.a : '-', b: g ? g.b : '-', blend: g ? g.blend : 0,
+                     rate: g ? g.rate : 0, phase: g ? g.phase : 0, w: g ? g.weight : 0 });
+        }
+        return out;
+      },
       render: render, resize: resize, stop: stop };
   }
+  var _dbgFrame = 0;
 
   /* Route ink. A ribbon of small quads laid flat on the turf rather than a
      THREE.Line, because line width is capped at 1px on almost every WebGL
