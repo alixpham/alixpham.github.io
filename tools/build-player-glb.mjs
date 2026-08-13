@@ -1097,24 +1097,48 @@ function gaitMetrics(dur, legAt, riseAt, label) {
   };
 }
 
-/* ------------------------------------------------------------------ Idle */
-const IDLE_DROP = soleHeight(16, 28, 11);
+/* ------------------------------------------------------------------ Idle
+
+   A FOOTBALL PLAYER WAITING FOR A SNAP IS NOT STANDING STILL, and this clip
+   used to have him doing exactly that: 16 degrees of hip, 28 of knee and the
+   arms 6 degrees off vertical with the elbows barely folded. Rendered, that is
+   a man standing to attention with his hands by his pockets — feet together,
+   legs locked, arms hanging down the sides — and with ten of them in a
+   formation holding it, the pre-snap read as a row of stalks rather than as a
+   team about to play.
+
+   What replaces it is the stance the sport is actually played from: feet
+   roughly shoulder width, knees loaded past 40 degrees, chest out over them,
+   and the hands UP — off the ribs, in front of the body, elbows near a right
+   angle, where a pair of hands has to be if it is going to catch anything or
+   rip a flag off anybody.
+
+   The stagger is deliberate and small. A stance square to the world is a
+   diagram; every athlete waiting on a whistle has one foot a little behind the
+   other, and 5 degrees of difference between the legs is enough to read as
+   weight on one side without looking like a lunge.                          */
+const IDLE_L = [28, 42, 19];                    // hip, knee, ankle — trail leg
+const IDLE_R = [33, 45, 21];                    // lead leg, a touch deeper
+const IDLE_STAND = standHipY(IDLE_L, IDLE_R);
+const IDLE_SPREAD = 0.13;                       // hip abduction -> feet apart
 clip('Idle', 2.4, [
-  hipY([0, 1.2, 2.4], [0.998 - IDLE_DROP, 1.010 - IDLE_DROP, 0.998 - IDLE_DROP]),
-  rot('Spine', [0, 1.2, 2.4], [[0.20, 0, 0], [0.23, 0.02, 0], [0.20, 0, 0]]),
-  rot('Chest', [0, 1.2, 2.4], [[0.05, 0, 0], [0.02, -0.03, 0], [0.05, 0, 0]]),
-  rot('Head', [0, 1.2, 2.4], [[-0.16, 0, 0], [-0.14, 0.06, 0], [-0.16, 0, 0]]),
-  rot('UpperArm_L', [0, 1.2, 2.4], [[shoulder(6), 0, 0.19], [shoulder(3), 0, 0.22], [shoulder(6), 0, 0.19]]),
-  rot('LowerArm_L', [0, 1.2, 2.4], [[elbow(48), 0, 0.05], [elbow(53), 0, 0.05], [elbow(48), 0, 0.05]]),
-  rot('UpperArm_R', [0, 1.2, 2.4], [[shoulder(6), 0, -0.19], [shoulder(3), 0, -0.22], [shoulder(6), 0, -0.19]]),
-  rot('LowerArm_R', [0, 1.2, 2.4], [[elbow(48), 0, -0.05], [elbow(53), 0, -0.05], [elbow(48), 0, -0.05]]),
-  // Athletic ready stance: weight forward over slightly bent knees.
-  rot('UpperLeg_L', [0, 2.4], [[hip(16), 0, 0.03], [hip(16), 0, 0.03]]),
-  rot('LowerLeg_L', [0, 2.4], [[knee(28), 0, 0], [knee(28), 0, 0]]),
-  rot('Foot_L', [0, 2.4], [[ankle(11), 0, 0], [ankle(11), 0, 0]]),
-  rot('UpperLeg_R', [0, 2.4], [[hip(16), 0, -0.03], [hip(16), 0, -0.03]]),
-  rot('LowerLeg_R', [0, 2.4], [[knee(28), 0, 0], [knee(28), 0, 0]]),
-  rot('Foot_R', [0, 2.4], [[ankle(11), 0, 0], [ankle(11), 0, 0]]),
+  // The breathing is the only motion in here, and it is 12mm of it.
+  hipY([0, 1.2, 2.4], [IDLE_STAND - 0.002, IDLE_STAND + 0.010, IDLE_STAND - 0.002]),
+  rot('Spine', [0, 1.2, 2.4], [[0.26, 0, 0], [0.29, 0.02, 0], [0.26, 0, 0]]),
+  rot('Chest', [0, 1.2, 2.4], [[0.10, 0, 0], [0.07, -0.03, 0], [0.10, 0, 0]]),
+  // Head counter-rotated against the forward lean so the eyes stay downfield
+  // rather than on the man's own boots.
+  rot('Head', [0, 1.2, 2.4], [[-0.30, 0, 0], [-0.28, 0.06, 0], [-0.30, 0, 0]]),
+  rot('UpperArm_L', [0, 1.2, 2.4], [[shoulder(-2), 0, 0.26], [shoulder(-5), 0, 0.29], [shoulder(-2), 0, 0.26]]),
+  rot('LowerArm_L', [0, 1.2, 2.4], [[elbow(66), -0.28, 0.06], [elbow(71), -0.28, 0.06], [elbow(66), -0.28, 0.06]]),
+  rot('UpperArm_R', [0, 1.2, 2.4], [[shoulder(-2), 0, -0.26], [shoulder(-5), 0, -0.29], [shoulder(-2), 0, -0.26]]),
+  rot('LowerArm_R', [0, 1.2, 2.4], [[elbow(66), 0.28, -0.06], [elbow(71), 0.28, -0.06], [elbow(66), 0.28, -0.06]]),
+  rot('UpperLeg_L', [0, 2.4], [[hip(IDLE_L[0]), 0, IDLE_SPREAD], [hip(IDLE_L[0]), 0, IDLE_SPREAD]]),
+  rot('LowerLeg_L', [0, 2.4], [[knee(IDLE_L[1]), 0, 0], [knee(IDLE_L[1]), 0, 0]]),
+  rot('Foot_L', [0, 2.4], [[ankle(IDLE_L[2]), 0, 0], [ankle(IDLE_L[2]), 0, 0]]),
+  rot('UpperLeg_R', [0, 2.4], [[hip(IDLE_R[0]), 0, -IDLE_SPREAD], [hip(IDLE_R[0]), 0, -IDLE_SPREAD]]),
+  rot('LowerLeg_R', [0, 2.4], [[knee(IDLE_R[1]), 0, 0], [knee(IDLE_R[1]), 0, 0]]),
+  rot('Foot_R', [0, 2.4], [[ankle(IDLE_R[2]), 0, 0], [ankle(IDLE_R[2]), 0, 0]]),
   rot('Flag_L', [0, 1.2, 2.4], [[0.02, 0, 0.04], [-0.03, 0, 0.02], [0.02, 0, 0.04]]),
   rot('Flag_R', [0, 1.2, 2.4], [[-0.02, 0, -0.02], [0.03, 0, -0.04], [-0.02, 0, -0.02]])
 ]);

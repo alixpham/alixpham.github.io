@@ -566,7 +566,13 @@
       td:        { dur: 2.5,  hop: 0.34, radius: Infinity, stagger: 0.13, spin: 0.85,
                    ring: { r: 7.0, dur: 0.75 }, star: 1.35 },
       firstdown: { dur: 1.25, hop: 0.14, radius: 8,        stagger: 0.05, spin: 0,
-                   ring: { r: 2.6, dur: 0.40 }, star: 1.15 }
+                   ring: { r: 2.6, dur: 0.40 }, star: 1.15 },
+      /* A takeaway is the defence's touchdown. It gets the whole side, like a
+         score, but a beat shorter and without the spin: the man holding the
+         ball has just turned upfield out of habit and the celebration is the
+         other four arriving at him, not a pose for the camera. */
+      takeaway:  { dur: 2.1,  hop: 0.30, radius: Infinity, stagger: 0.10, spin: 0.35,
+                   ring: { r: 5.5, dur: 0.65 }, star: 1.30 }
     };
     var HOP_RATE = Math.PI * 2;
 
@@ -787,7 +793,7 @@
           ud: { idx: idx, yaw: seedYaw, celebT: 0, _wasPulled: false, _pulled: false, _threw: false,
                 _caught: false, _juked: false, _spiked: false, clip: 'idle',
                 carryKey: '', carrySide: 0, carryW: 0, carryAmp: 0, grabW: 0,
-                pvx: 0, pvy: 0, bank: 0, pitch: 0, lead: 0 }
+                pvx: 0, pvy: 0, fLat: 0, fTan: 0, bank: 0, pitch: 0, lead: 0 }
         });
       });
       playersRef = players;
@@ -854,14 +860,34 @@
          weight around without the physics of running commenting on it. */
       var leanOn = cel ? 0 : clamp((speed - 0.8) / 1.6, 0, 1);
       var G = 10.73;                                // 9.81 m/s^2, in yards
-      var bankT = clamp(Math.atan2(aLat, G), -0.46, 0.46) * leanOn;
-      var pitchT = clamp(Math.atan2(aTan, G), -0.30, 0.34) * leanOn;
+
+      /* FILTER THE FORCE, NOT JUST THE ANGLE. atan(lateral acceleration / g)
+         is the right formula and the wrong input to feed it raw: what comes
+         out of differentiating the engine's velocity is a steering controller
+         riding its own cross-acceleration limit, plus the separation nudges
+         that keep bodies apart, and neither is a cut. Measured, that put the
+         median player at a 12.6-degree bank with a THIRD of all running frames
+         past 20 and the peak pinned to the clamp — ten men leaning like
+         motorcycles for most of every play.
+
+         A lean is the body's answer to a force it has to hold for long enough
+         to fall into, so the acceleration is low-passed first (~0.28s) and
+         only what survives that leans anybody. Spikes that last a frame or two
+         now produce almost nothing, and a genuine sustained cut still produces
+         the full angle. */
+      ud.fLat += (aLat - ud.fLat) * ease(3.6, dt);
+      ud.fTan += (aTan - ud.fTan) * ease(3.6, dt);
+      /* And a ceiling a running human actually reaches. 0.46rad is 26 degrees,
+         which is tan = 0.49g held through the whole turn — a speed skater, not
+         a flag footballer changing direction on grass in trainers. */
+      var bankT = clamp(Math.atan2(ud.fLat, G), -0.27, 0.27) * leanOn;
+      var pitchT = clamp(Math.atan2(ud.fTan, G), -0.20, 0.24) * leanOn;
       /* Attack fast, release slow. A cut is an event — the lean has to be there
          on the step that makes it, not a beat later — but coming out of one is
          a recovery and settles over a longer count. */
       ud.bank += (bankT - ud.bank) * ease(Math.abs(bankT) > Math.abs(ud.bank) ? 13 : 6, dt);
       ud.pitch += (pitchT - ud.pitch) * ease(7, dt);
-      ud.lead += (clamp(aLat / 24, -0.34, 0.34) * leanOn - ud.lead) * ease(9, dt);
+      ud.lead += (clamp(ud.fLat / 24, -0.30, 0.30) * leanOn - ud.lead) * ease(9, dt);
 
       // Only treat players as "moving" while the ball is live — between plays
       // (playcall/presnap/dead/final) residual velocity must NOT keep them running.
@@ -1013,7 +1039,7 @@
          arms-wide finish the Dance it hands over to begins from — which is what
          keeps the crossfade out of it from swinging both arms down and straight
          back up again. */
-      if (cel && cel.star && cel.cfg.radius === Infinity && !ud._spiked) {
+      if (cel && cel.star && cel.cfg.radius === Infinity && celeb.kind === 'td' && !ud._spiked) {
         P.oneShot('spike', 'dance'); ud._spiked = true;
       }
       if (!cel) ud._spiked = false;
@@ -1561,7 +1587,7 @@
       if (engine && engine.anim && engine.anim.length) {
         for (var ai = 0; ai < engine.anim.length; ai++) {
           var av = engine.anim[ai];
-          if (av.type === 'td' || av.type === 'firstdown') startCeleb(av.type, av);
+          if (av.type === 'td' || av.type === 'firstdown' || av.type === 'takeaway') startCeleb(av.type, av);
         }
         engine.anim.length = 0;
       }
@@ -1680,8 +1706,27 @@
             ball.rotation.set(0, -(c.ang || 0), 0.4);
           }
         } else {
+          /* LOOSE — nobody has it. Drawn at the height the engine says it is,
+             which is the whole point: this used to be a hard-coded 1.0, so an
+             incompletion left a football hovering a yard off the turf over an
+             empty patch of grass until the next snap. The engine keeps it
+             falling and bouncing now (Engine._updateLoose), and it lies where
+             it stops. */
           hostBall(null);
-          ball.position.set(wx(state.ball.x), 1.0, wz(state.ball.y));
+          var lz = state.ball.z || 0;
+          ball.position.set(wx(state.ball.x), Math.max(0.11, lz), wz(state.ball.y));
+          // Tumbling while it falls, flat on its side once it has stopped.
+          if (state.ball.loose) {
+            spin = (spin + dt * 9) % (Math.PI * 2);
+            ball.rotation.set(spin * 0.7, spin, Math.PI / 2 - spin * 0.25);
+            ballShadow.visible = true;
+            ballShadow.position.set(wx(state.ball.x), 0.02, wz(state.ball.y));
+            var lk = clamp(lz / 3, 0, 1);
+            ballShadow.scale.setScalar(1 + lk * 1.2);
+            ballShadow.material.opacity = 0.34 * (1 - 0.6 * lk);
+          } else {
+            ball.rotation.set(0, 0, Math.PI / 2);
+          }
         }
         applyTransfer(state, dt);
       } else { ball.visible = false; ballShadow.visible = false; }
