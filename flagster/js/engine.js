@@ -502,7 +502,14 @@
        below, because that return is the whole reason it never landed. */
     if (s.ball && s.ball.loose) this._updateLoose(dt);
 
-    if (s.phase !== 'live') return;
+    /* BODIES DO NOT STOP BEING BODIES WHEN THE WHISTLE GOES. Separation used
+       to live below this return, so the instant a play ended it stopped
+       running and whatever overlap existed at that moment was frozen for the
+       whole dead ball — which is exactly when the camera settles and everyone
+       is looking at it. Positions only here, no velocity: nobody is steering,
+       so a shove would have nothing to damp it and the formation would drift
+       apart after the whistle. A pile just unstacks and then stands still. */
+    if (s.phase !== 'live') { this._separate(dt, true); return; }
     s.snapT += dt;
     s.playClock += dt;
     this._updateStamina(dt);
@@ -1647,7 +1654,7 @@
   var SEP_SLIDE_MAX = 0.5;               // cap on any single positional correction
   var SEP_PASSES = 4;                    // relaxation iterations per frame
 
-  Engine.prototype._separate = function (dt) {
+  Engine.prototype._separate = function (dt, posOnly) {
     var ps = this.state.players;
     if (!ps) return;
     /* Relaxed a few times over. One pass fixes each pair in isolation, but
@@ -1656,17 +1663,24 @@
        0.098yd apart in a 0.9yd body). Iterating settles the whole pile, and
        costs nothing to do because the renderer now animates real displacement,
        so a firm positional correction no longer shows up as a slide. */
-    for (var pass = 0; pass < SEP_PASSES; pass++) this._separatePass(dt / SEP_PASSES);
+    for (var pass = 0; pass < SEP_PASSES; pass++) this._separatePass(dt / SEP_PASSES, posOnly);
   };
 
-  Engine.prototype._separatePass = function (dt) {
+  Engine.prototype._separatePass = function (dt, posOnly) {
     var ps = this.state.players;
     for (var i = 0; i < ps.length; i++) {
       var a = ps[i];
-      if (a.flagPulled) continue;
       for (var j = i + 1; j < ps.length; j++) {
         var b = ps[j];
-        if (b.flagPulled) continue;
+        /* A PLAYER WHOSE FLAG IS GONE IS STILL A PERSON STANDING THERE. Both
+           of these used to `continue`, which took the de-flagged carrier out
+           of separation entirely — so the four defenders converging on the
+           pull walked straight into him and stood inside his body, and the
+           frame everybody looks at was a red shirt buried in a pile of white
+           ones. He keeps his volume; he just doesn't get shoved out of the
+           way, because he isn't running any more. */
+        var aFixed = !!a.flagPulled, bFixed = !!b.flagPulled;
+        if (aFixed && bFixed) continue;              // two statues, leave them
         var dx = b.x - a.x, dy = b.y - a.y;
         var d2 = dx * dx + dy * dy;
         var min = BODY_R * 2;
@@ -1685,9 +1699,11 @@
 
            Still not a block: it is equal and opposite, it scales only with how
            far inside each other they are, and neither player can aim it. */
-        var push = SEP_PUSH * overlap * dt;
-        a.vx -= ux * push; a.vy -= uy * push;
-        b.vx += ux * push; b.vy += uy * push;
+        if (!posOnly) {
+          var push = SEP_PUSH * overlap * dt;
+          if (!aFixed) { a.vx -= ux * push; a.vy -= uy * push; }
+          if (!bFixed) { b.vx += ux * push; b.vy += uy * push; }
+        }
 
         /* And a hard positional guarantee, because the avoidance above can
            never win against an AI that is deliberately seeking the very player
@@ -1696,8 +1712,14 @@
            figure; it no longer causes a slide because the renderer animates
            actual displacement (rvx/rvy below) rather than intent. */
         var fix = Math.min((min - d) * 0.5, SEP_SLIDE_MAX);
-        a.x = clamp(a.x - ux * fix, 0, FIELD_LEN); a.y = clamp(a.y - uy * fix, 0, FIELD_WID);
-        b.x = clamp(b.x + ux * fix, 0, FIELD_LEN); b.y = clamp(b.y + uy * fix, 0, FIELD_WID);
+        /* Split evenly between two players who can both move; if one of them
+           has been de-flagged he is standing still, so the whole correction
+           goes to the one who is walking into him. He is an obstacle to be
+           gone round, not a body to be pushed off the spot. */
+        var aShare = aFixed ? 0 : (bFixed ? 2 : 1);
+        var bShare = bFixed ? 0 : (aFixed ? 2 : 1);
+        if (aShare) { a.x = clamp(a.x - ux * fix * aShare, 0, FIELD_LEN); a.y = clamp(a.y - uy * fix * aShare, 0, FIELD_WID); }
+        if (bShare) { b.x = clamp(b.x + ux * fix * bShare, 0, FIELD_LEN); b.y = clamp(b.y + uy * fix * bShare, 0, FIELD_WID); }
       }
     }
   };
