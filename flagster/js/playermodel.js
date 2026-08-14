@@ -503,9 +503,21 @@
         next.setEffectiveWeight(1); next.play();
         current.crossFadeTo(next, f, false);
       } else if (gaitW > 0.002 && pair) {
-        // Coming off the blend space. It fades itself out — this frame nothing
-        // asked for a gait — so this only has to fade in against it.
-        next.setEffectiveWeight(0); next.play(); next.fadeIn(f);
+        /* Coming off the blend space. It fades itself out — this frame nothing
+           asked for a gait — so this only has to fade in against it.
+
+           The weight goes to ONE, not zero, and that is not a typo. three.js
+           computes an action's effective weight as `this.weight * fade
+           interpolant`, so setEffectiveWeight(0) before a fadeIn multiplies
+           the ramp by zero and pins the clip at zero for good — and
+           setEffectiveWeight() also calls stopFading(), so it cancels any
+           ramp already scheduled. fadeIn() starts its own interpolant at 0,
+           which is what actually does the fading; weight 1 is the value it
+           fades TOWARD. Getting this backwards left every player stuck in the
+           bind pose from the end of their first run onward: arms straight
+           down, knees locked, feet together — standing to attention on a
+           football field. */
+        next.setEffectiveWeight(1); next.play(); next.fadeIn(f);
       } else {
         next.setEffectiveWeight(1); next.play();
       }
@@ -526,7 +538,10 @@
       var f = fade == null ? 0.15 : fade;
       a.reset(); a.enabled = true; a.timeScale = 1;
       if (current && current !== a) { a.setEffectiveWeight(1); a.play(); current.crossFadeTo(a, f, false); }
-      else if (gaitW > 0.002 && pair) { a.setEffectiveWeight(0); a.play(); a.fadeIn(f); }
+      // Weight 1 then fadeIn, for the reason spelled out in play() above:
+      // effective weight is weight x fade interpolant, so fading in from a
+      // weight of zero never leaves zero.
+      else if (gaitW > 0.002 && pair) { a.setEffectiveWeight(1); a.play(); a.fadeIn(f); }
       else { a.setEffectiveWeight(1); a.play(); }
       current = a; api._oneShot = a;
     };
