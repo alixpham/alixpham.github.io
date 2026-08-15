@@ -91,10 +91,17 @@
 
   // Which materials each option tints. Anything not listed keeps its baked
   // colour, so setting a jersey never repaints skin, shoes or the flags.
+  // One key may drive several materials: the head carries the face texture and
+  // so lives in its own material, but it is the same person's skin.
   var TINTABLE = {
-    jersey: 'jersey', trim: 'trim', skin: 'skin', hair: 'hair',
-    shorts: 'shorts', socks: 'socks', shoes: 'shoes', flagColor: 'flag'
+    jersey: ['jersey'], trim: ['trim'], skin: ['skin', 'head'], hair: ['hair'],
+    shorts: ['shorts'], socks: ['socks'], shoes: ['shoes'], flagColor: ['flag']
   };
+
+  // Baked appearance variants. Exactly one of each group is shown; the rest
+  // are hidden, and a hidden mesh costs no draw call.
+  var HAIR_STYLES = ['buzz', 'crop', 'fade', 'afro', 'locs', 'long'];
+  var FACIAL_HAIR = ['goatee', 'full'];
 
   function canon(name) {
     if (!name) return 'Idle';
@@ -177,6 +184,270 @@
     return spr;
   }
 
+  /* ====================================================== WHO THIS IS =======
+     One appearance, derived from one stable seed.
+
+     Skin tone used to be `SKINS[idx % SKINS.length]` — keyed on the player's
+     slot in the lineup, so a complexion changed when the lineup reordered and
+     index 0 on both teams always matched. Hair colour was never passed at all,
+     which is why all ten players wore the same near-black.
+
+     Hair colour is drawn from a shortlist attached to each tone rather than
+     from one global list, because the combinations have to stay plausible:
+     picking independently puts platinum blond on the darkest player on the
+     field roughly one roster in eight.                                       */
+  var TONES = [
+    { skin: '#f7d9be', hair: ['#2b2018', '#59371f', '#8c5a2b', '#b98b4e', '#d9b273'], light: 1.00 },
+    { skin: '#f0c8a4', hair: ['#241a12', '#4a2f1c', '#7a4b24', '#a5773c'],            light: 0.90 },
+    { skin: '#e3b085', hair: ['#1d1510', '#3a2517', '#5e3a1e', '#8a5a2c'],            light: 0.74 },
+    { skin: '#cf9464', hair: ['#171009', '#2e1f13', '#4a2f1a'],                       light: 0.58 },
+    { skin: '#b1774a', hair: ['#140e08', '#241810', '#3a2413'],                       light: 0.44 },
+    { skin: '#8f5a34', hair: ['#100b06', '#1c130c', '#2c1d11'],                       light: 0.30 },
+    { skin: '#6d4226', hair: ['#0d0906', '#17100a', '#241810'],                       light: 0.18 },
+    { skin: '#4e2f1b', hair: ['#0b0705', '#130d08'],                                  light: 0.08 }
+  ];
+  // Light eyes track fair skin in the real world; drawing them independently
+  // is the other half of the implausible-combination problem.
+  var IRIS_DARK = ['#4a3323', '#3b2a1d', '#5a4028', '#2e2118'];
+  var IRIS_LIGHT = ['#6b7f5e', '#7a8ea6', '#8a7f5c', '#5f7c8a', '#8f9aa6'];
+
+  function seedOf(str) {
+    var s = 0, t = String(str == null ? '' : str);
+    for (var i = 0; i < t.length; i++) s = (s * 31 + t.charCodeAt(i)) >>> 0;
+    return s || 1;
+  }
+  // Small deterministic generator; each call advances it, so the draws below
+  // are independent but wholly determined by the seed.
+  function rngOf(seed) {
+    var a = seed >>> 0;
+    return function () {
+      a = (a + 0x6D2B79F5) >>> 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function pick(rnd, list) { return list[Math.floor(rnd() * list.length) % list.length]; }
+
+  /* Everything the renderer needs to make this seed a specific person.
+     `gender` is honoured today only where it changes something real — style
+     pool and facial hair — and is the hook a women's build hangs off later. */
+  function appearanceOf(seed, gender) {
+    var rnd = rngOf(seedOf(seed));
+    var female = String(gender || 'M').toUpperCase().charAt(0) === 'F';
+    var tone = TONES[Math.floor(rnd() * TONES.length) % TONES.length];
+    var styles = female ? ['crop', 'locs', 'long', 'afro'] : HAIR_STYLES;
+    var iris = rnd() < 0.22 + tone.light * 0.42 ? pick(rnd, IRIS_LIGHT) : pick(rnd, IRIS_DARK);
+    var beardRoll = rnd();
+    return {
+      skin: tone.skin,
+      hair: pick(rnd, tone.hair),
+      hairStyle: pick(rnd, styles),
+      facialHair: female ? null : (beardRoll < 0.17 ? 'full' : beardRoll < 0.40 ? 'goatee' : null),
+      headband: rnd() < 0.38,
+      // The head is weighted w1('Head') so this scales cleanly, but the top
+      // neck ring carries 45% Head weight — keep it small or the seam pulls.
+      headScale: 1 + (rnd() - 0.5) * 0.06,
+      gender: female ? 'F' : 'M',
+      face: {
+        brow: +rnd().toFixed(3),
+        browAngle: +(rnd() * 2 - 1).toFixed(3),
+        eyeGap: +(rnd() * 2 - 1).toFixed(3),
+        iris: iris,
+        lip: +rnd().toFixed(3),
+        stubble: female ? 0 : +(Math.max(0, rnd() - 0.35) * 1.1).toFixed(3)
+      }
+    };
+  }
+
+  /* ============================================================ THE FACE ====
+     Brows, eyelids and lashes, irises, the lip line, nose and cheek shading
+     and stubble are DRAWN, not modelled — the same trick as the nameplate and
+     the number decal below, generated at runtime so nothing is baked into the
+     .glb and every player can differ without the file growing.
+
+     The head's UVs (see tools/build-player-glb.mjs) put the face in the middle
+     half of the map: u = 0.25 is the character's left silhouette edge, u = 0.5
+     the centre line, u = 0.75 the right edge, and the outer quarters are the
+     back of the skull, left blank. v maps the head's height linearly, chin
+     (y = 1.600 m) at v = 0 to crown (1.850 m) at v = 1 — so a feature's canvas
+     position can be written straight from the metre height it sits at.
+
+     Everything is drawn on WHITE, because material.color MULTIPLIES the map:
+     white passes the skin tone through untouched and every feature is a value
+     below it. Two consequences worth knowing:
+       * eye whites are painted at ~0.95, not 1.0 — pure white reads as a blown
+         highlight once the surrounding skin is darkened, not as sclera;
+       * anything that must keep its own HUE rather than merely darken the skin
+         (the iris, and brows that should be hair-coloured) is pre-divided by
+         the tone it will be multiplied by, so the product lands on target. The
+         tones are therefore part of the cache key.                           */
+  /* 256 rather than 512. A head is about 40 px tall in game and a couple of
+     hundred on the hero screen, so 256 resolves every feature drawn below —
+     and the cache holds one texture per distinct appearance, which over a
+     match is both squads' rosters. At 512 that was ~24 MB of texture for
+     something nobody can see the pixels of. */
+  var FACE_SIZE = 256;
+  var faceCache = {};                          // key -> THREE.CanvasTexture
+
+  function rgbOf(hex) {
+    var s = String(hex).replace('#', '');
+    if (s.length === 3) s = s[0] + s[0] + s[1] + s[1] + s[2] + s[2];
+    var n = parseInt(s, 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  // target / base, clamped — draw this and the multiply lands on `target`.
+  function over(target, base) {
+    var t = rgbOf(target), b = rgbOf(base), o = [0, 0, 0];
+    for (var i = 0; i < 3; i++) o[i] = Math.round(Math.min(255, 255 * t[i] / Math.max(8, b[i])));
+    return 'rgb(' + o[0] + ',' + o[1] + ',' + o[2] + ')';
+  }
+  function shade(v, a) { return 'rgba(' + v + ',' + v + ',' + v + ',' + a + ')'; }
+
+  function faceTexture(THREE, skin, hair, f) {
+    f = f || {};
+    var key = [skin, hair, f.brow, f.browAngle, f.eyeGap, f.iris, f.lip, f.stubble].join('|');
+    if (faceCache[key]) return faceCache[key];
+
+    var S = FACE_SIZE;
+    var c = document.createElement('canvas'); c.width = S; c.height = S;
+    var x = c.getContext('2d');
+    x.fillStyle = '#ffffff'; x.fillRect(0, 0, S, S);
+
+    // metres -> canvas. The head spans 1.600 m (v=0, bottom) to 1.850 m (v=1),
+    // and a CanvasTexture is flipped, so v = 1 is the TOP row of the canvas.
+    var Y = function (m) { return (1 - (m - 1.600) / 0.250) * S; };
+    var U = function (u) { return u * S; };
+    var CX = U(0.5);
+    // u = 0.5 - 0.25 * (x / halfWidth): the face maps edge-to-edge onto
+    // u 0.25..0.75 at every height, so a lateral offset is a fraction of the
+    // head's own width at that height rather than an absolute distance.
+    var LX = function (frac) { return U(0.5 - 0.25 * frac); };
+
+    var gap = 0.383 + (f.eyeGap || 0) * 0.055;          // fraction of half-width
+    var eyeY = Y(1.7265), eyeRX = S * 0.038, eyeRY = S * 0.020;
+    var eyes = [LX(gap), LX(-gap)];
+
+    function ellipse(cx, cy, rx, ry, rot) {
+      x.beginPath(); x.ellipse(cx, cy, rx, ry, rot || 0, 0, Math.PI * 2); x.fill();
+    }
+    /* Shading has to be SOFT. A flat fill of 10% black is a grey oval with a
+       hard rim, and on a face that is exactly what it looks like — the first
+       pass of this texture put four of them on the chin, the lip and the eyes
+       and they read as stickers. Every tonal mark below is a radial gradient
+       falling to nothing at its edge. */
+    function soft(cx, cy, rx, ry, a, rgb) {
+      x.save();
+      x.translate(cx, cy); x.scale(rx, ry);
+      var col = rgb || '0,0,0';
+      var g = x.createRadialGradient(0, 0, 0, 0, 0, 1);
+      g.addColorStop(0.00, 'rgba(' + col + ',' + a + ')');
+      g.addColorStop(0.45, 'rgba(' + col + ',' + (a * 0.72).toFixed(3) + ')');
+      g.addColorStop(1.00, 'rgba(' + col + ',0)');
+      x.fillStyle = g;
+      x.beginPath(); x.arc(0, 0, 1, 0, Math.PI * 2); x.fill();
+      x.restore();
+    }
+
+    /* ---- broad shading first, so features sit on top ---------------------- */
+    // The silhouette edges fall away from the light: a soft darkening at
+    // u 0.25 / 0.75 is what stops the face reading as a flat decal.
+    var g = x.createLinearGradient(U(0.22), 0, U(0.78), 0);
+    g.addColorStop(0.00, 'rgba(0,0,0,0.30)'); g.addColorStop(0.16, 'rgba(0,0,0,0.05)');
+    g.addColorStop(0.50, 'rgba(0,0,0,0)');
+    g.addColorStop(0.84, 'rgba(0,0,0,0.05)'); g.addColorStop(1.00, 'rgba(0,0,0,0.30)');
+    x.fillStyle = g; x.fillRect(U(0.22), Y(1.850), U(0.56), S);
+
+    // Eye sockets and the shadow the brow casts into them.
+    eyes.forEach(function (ex) { soft(ex, eyeY - S * 0.006, eyeRX * 1.55, eyeRY * 2.1, 0.13); });
+    // Under the nose, under the lower lip, and down the sides of the bridge.
+    soft(CX, Y(1.6995), S * 0.062, S * 0.018, 0.16);
+    soft(CX, Y(1.6595), S * 0.062, S * 0.017, 0.13);
+    soft(CX - S * 0.028, Y(1.7225), S * 0.017, S * 0.048, 0.09);
+    soft(CX + S * 0.028, Y(1.7225), S * 0.017, S * 0.048, 0.09);
+    // Hollow under the cheekbones, which is most of what makes a face a face.
+    soft(CX - S * 0.088, Y(1.6905), S * 0.048, S * 0.038, 0.10);
+    soft(CX + S * 0.088, Y(1.6905), S * 0.048, S * 0.038, 0.10);
+
+    /* ---- eyes ------------------------------------------------------------- */
+    eyes.forEach(function (ex, i) {
+      var tilt = (i === 0 ? 1 : -1) * 0.10;
+      // Sclera at 0.95 rather than white (see the note above).
+      x.fillStyle = 'rgb(242,242,240)';
+      ellipse(ex, eyeY, eyeRX, eyeRY, tilt);
+      // Iris and pupil. Pre-divided so the hue survives the skin multiply.
+      x.fillStyle = over(f.iris || '#4a3323', skin);
+      ellipse(ex, eyeY, eyeRY * 0.92, eyeRY * 0.92);
+      x.fillStyle = over('#140f0c', skin);
+      ellipse(ex, eyeY, eyeRY * 0.40, eyeRY * 0.40);
+      // Upper lid + lashes: a wedge that thickens toward the outer corner.
+      x.strokeStyle = over('#20160f', skin);
+      x.lineWidth = S * 0.011; x.lineCap = 'round';
+      x.beginPath();
+      x.ellipse(ex, eyeY, eyeRX, eyeRY, tilt, Math.PI * 1.06, Math.PI * 1.94);
+      x.stroke();
+      // Lower lid, much lighter.
+      x.strokeStyle = shade(0, 0.22); x.lineWidth = S * 0.005;
+      x.beginPath();
+      x.ellipse(ex, eyeY, eyeRX * 0.96, eyeRY * 0.96, tilt, Math.PI * 0.10, Math.PI * 0.90);
+      x.stroke();
+    });
+
+    /* ---- brows ------------------------------------------------------------ */
+    var bw = 0.6 + (f.brow == null ? 0.5 : f.brow) * 0.9;      // thickness scale
+    var ba = (f.browAngle || 0) * 0.16;                        // + = angrier
+    x.strokeStyle = over(hair || '#1a1310', skin);
+    x.lineWidth = S * 0.020 * bw; x.lineCap = 'round';
+    eyes.forEach(function (ex, i) {
+      var s = i === 0 ? 1 : -1;
+      var inner = ex + s * eyeRX * 0.95, outer = ex - s * eyeRX * 1.05;
+      var by = Y(1.7455);
+      x.beginPath();
+      x.moveTo(inner, by + S * 0.010 * bw + ba * S * 0.05);
+      x.quadraticCurveTo(ex, by - S * 0.016 * bw, outer, by + S * 0.004);
+      x.stroke();
+    });
+
+    /* ---- nose -------------------------------------------------------------
+       The geometry carries the bridge and the tip; the map supplies the two
+       things a 24-column loft cannot resolve at this size — the nostrils and
+       the shadow the tip throws onto the lip. */
+    soft(CX, Y(1.7075), S * 0.038, S * 0.012, 0.14);
+    x.fillStyle = shade(0, 0.55);
+    ellipse(CX - S * 0.021, Y(1.7045), S * 0.0085, S * 0.0052, -0.25);
+    ellipse(CX + S * 0.021, Y(1.7045), S * 0.0085, S * 0.0052, 0.25);
+
+    /* ---- mouth ------------------------------------------------------------ */
+    var lw = S * (0.048 + (f.lip == null ? 0.5 : f.lip) * 0.022);
+    soft(CX, Y(1.6755), lw * 1.15, S * 0.026, 0.09);           // lip body
+    x.strokeStyle = shade(0, 0.42); x.lineWidth = S * 0.008;   // the lip line
+    x.lineCap = 'round';
+    x.beginPath();
+    x.moveTo(CX - lw, Y(1.6742));
+    x.quadraticCurveTo(CX, Y(1.6728), CX + lw, Y(1.6742));
+    x.stroke();
+
+    /* ---- stubble ----------------------------------------------------------
+       Also soft: a hard-edged oval of beard shadow on the chin is a sticker,
+       and it is the mark most likely to be seen because it is the largest. */
+    if (f.stubble > 0.02) {
+      var sc = over(hair || '#1a1310', skin).replace(/rgb\(|\)/g, '');
+      var sa = 0.16 + f.stubble * 0.34;
+      soft(CX, Y(1.6395), S * 0.150, S * 0.082, sa, sc);       // jaw + chin
+      soft(CX, Y(1.6875), S * 0.082, S * 0.026, sa * 0.85, sc); // moustache shelf
+    }
+
+    var tex = new THREE.CanvasTexture(c);
+    if ('colorSpace' in tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    /* Shared between every player who draws the same face, so dispose() must
+       leave it alone — the first player torn down would otherwise blank
+       everybody else's face. */
+    tex.userData.shared = true;
+    faceCache[key] = tex;
+    return tex;
+  }
+
   /* ------------------------------------------------- chest/back number decal */
   function numberDecal(THREE, num, color) {
     if (num == null || num === '') return null;
@@ -228,18 +499,56 @@
       parts[o.name || key] = o;
     });
     function tint(key, hex) {
-      var m = mats[key];
-      if (m && m.color && hex != null) m.color.set(hex);
+      var list = TINTABLE[key] || [key];
+      for (var i = 0; i < list.length; i++) {
+        var m = mats[list[i]];
+        if (m && m.color && hex != null) m.color.set(hex);
+      }
     }
-    for (var k in TINTABLE) { if (opts[k] != null) tint(TINTABLE[k], opts[k]); }
+    for (var k in TINTABLE) { if (opts[k] != null) tint(k, opts[k]); }
     // Sensible defaults so a bare build() still looks like a team kit.
     if (opts.jersey == null) tint('jersey', '#2b5cff');
     if (opts.trim == null) tint('trim', '#ffffff');
-    if (opts.skin == null) tint('skin', '#e8b98f');
+    var skinHex = opts.skin != null ? opts.skin : '#e8b98f';
+    if (opts.skin == null) tint('skin', skinHex);
+    var hairHex = opts.hair != null ? opts.hair : '#1a1310';
+    if (opts.hair == null) tint('hair', hairHex);
     // Shorts default to a darkened jersey so kits read as one uniform.
     if (opts.shorts == null && opts.jersey != null && mats.shorts) {
       mats.shorts.color.set(opts.jersey).multiplyScalar(0.42);
     }
+
+    /* --- the face ---------------------------------------------------------
+       Shared across players with the same appearance, so ten players on the
+       field cost far fewer than ten canvases. */
+    var faceTex = null;
+    if (mats.head && opts.face !== false) {
+      try {
+        faceTex = faceTexture(THREE, skinHex, hairHex, opts.face || {});
+        mats.head.map = faceTex;
+        mats.head.needsUpdate = true;
+      } catch (e) { /* no canvas: the head keeps its flat skin tone */ }
+    }
+
+    /* --- appearance variants: show exactly one of each group --------------
+       `gender` is threaded through even though every roster today is male:
+       LA28 fields a women's tournament as well, and the flag is what a
+       women's build hangs off later. Right now it does one concrete thing —
+       nobody in the women's tournament grows a beard — rather than sitting in
+       the data unused. */
+    var female = String(opts.gender || 'M').toUpperCase().charAt(0) === 'F';
+    function showOne(prefix, list, pick) {
+      for (var i = 0; i < list.length; i++) {
+        var mesh = parts[prefix + list[i]];
+        if (mesh) mesh.visible = (list[i] === pick);
+      }
+    }
+    var hairStyle = opts.hairStyle;
+    if (HAIR_STYLES.indexOf(hairStyle) === -1) hairStyle = 'crop';
+    showOne('hair_', HAIR_STYLES, hairStyle);
+    var beard = female ? null : opts.facialHair;
+    showOne('beard_', FACIAL_HAIR, FACIAL_HAIR.indexOf(beard) === -1 ? null : beard);
+    if (parts.band) parts.band.visible = !!opts.headband;
 
     /* --- bone lookup + sockets --- */
     var nodes = {};
@@ -254,6 +563,10 @@
     /* --- chest / back numbers --- */
     var deco = numberDecal(THREE, opts.number, opts.trim || '#ffffff');
     if (deco && nodes.Chest) nodes.Chest.add(deco);
+
+    // A little head-size variation. Kept under a few percent: the top ring of
+    // the neck carries 45% Head weight, so a big number drags the collar.
+    if (opts.headScale && nodes.Head) nodes.Head.scale.setScalar(opts.headScale);
 
     /* --- scaling + root --------------------------------------------------
        `facer` carries the metres->world-units scale so the caller's root stays
@@ -648,9 +961,12 @@
       mixer.uncacheRoot(clone);
       // Geometry is shared across every SkeletonUtils clone — only the
       // per-instance materials and canvas textures created here are ours.
+      // The face texture is deliberately NOT: it is cached and shared between
+      // every player wearing the same face, so disposing it with the first
+      // player torn down would blank everyone else.
       for (var key in mats) {
         var m = mats[key];
-        if (m.map) m.map.dispose();
+        if (m.map && !(m.map.userData && m.map.userData.shared)) m.map.dispose();
         m.dispose();
       }
       if (deco && deco.userData.decalMat) {
@@ -676,11 +992,19 @@
     isReady: function () { return !!MODEL.ready; },
     isFailed: function () { return !!MODEL.failed; },
     build: build,
+    appearanceOf: appearanceOf,
+    // How many distinct faces are resident. Bounded by the number of distinct
+    // appearances on screen, not by how often players are rebuilt — which is
+    // the property the headless sweep checks.
+    faceCacheSize: function () { return Object.keys(faceCache).length; },
     model: MODEL,
     url: MODEL_URL,
-    clipNames: ['Idle', 'Run', 'Walk', 'Backpedal', 'Throw', 'Catch', 'Dive', 'FlagGrab',
-      'FlagPulled', 'Celebrate', 'Spike', 'Dance', 'Flex', 'HighStep', 'Juke'],
-    materialNames: ['jersey', 'trim', 'skin', 'hair', 'shorts', 'socks', 'shoes', 'belt', 'flag'],
+    clipNames: ['Idle', 'Run', 'Walk', 'Backpedal', 'Jog', 'Sprint', 'Throw', 'Catch',
+      'Dive', 'FlagGrab', 'FlagPulled', 'Celebrate', 'Spike', 'Dance', 'Flex',
+      'HighStep', 'Juke'],
+    materialNames: ['jersey', 'trim', 'skin', 'head', 'hair', 'shorts', 'socks', 'shoes', 'belt', 'flag'],
+    hairStyles: HAIR_STYLES.slice(),
+    facialHairStyles: FACIAL_HAIR.slice(),
     socketNames: ['Socket_Hand_L', 'Socket_Hand_R', 'Socket_Flag_L', 'Socket_Flag_R'],
     heightMetres: AUTHOR_HEIGHT_M,
     setScale: function (s) { SCALE = s; },

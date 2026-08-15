@@ -87,8 +87,12 @@ class Region {
   constructor(name, material) {
     this.name = name; this.material = material;
     this.P = []; this.U = []; this.J = []; this.W = []; this.I = [];
+    /* Per-vertex "do not weld" flag. The cap rims below are duplicated ON
+       PURPOSE so a cap shades flat against the tube it closes; the normal
+       weld must leave those alone or every cleat and cuff rounds off. */
+    this.H = [];
   }
-  vert(pos, uv, w) {
+  vert(pos, uv, w, hard) {
     const i = this.P.length / 3;
     this.P.push(pos[0], pos[1], pos[2]);
     this.U.push(uv[0], uv[1]);
@@ -98,7 +102,7 @@ class Region {
     for (const [a, b] of list) sum += b;
     if (sum <= 0) throw new Error('zero weight in ' + this.name);
     list.forEach(([a, b], k) => { j[k] = a; wt[k] = b / sum; });
-    this.J.push(...j); this.W.push(...wt);
+    this.J.push(...j); this.W.push(...wt); this.H.push(hard ? 1 : 0);
     return i;
   }
   quad(a, b, c, d) { this.I.push(a, b, c, a, c, d); }
@@ -135,33 +139,44 @@ function ramp(stops, y) {
    Rings must advance along a direction `dir` with dir . (u x v) < 0 so the
    quad(A, B, B', A') winding faces outward. For the vertical tubes used here
    u = +X and v = +Z, which satisfies that for dir = +Y.
-   opts: { seg, p, capStart, capEnd, poleEnd, poleStart, uv0, uv1 }            */
+
+   Each ring emits seg + 1 columns: the last DUPLICATES the first in position
+   and weights but carries u = 1. Without it the closing quad runs from
+   u = (seg-1)/seg straight back to u = 0 and smears the entire texture across
+   one column — invisible while every material was a flat colour, and the first
+   thing you would see once the head carries a face.
+
+   opts: { seg, p, phase, capStart, capEnd, poleEnd, poleStart, uv0, uv1, uv } */
 function loft(R, rings, opts = {}) {
   const seg = opts.seg || 12;
   const P = opts.p == null ? 1 : opts.p;
   const uv0 = opts.uv0 == null ? 0 : opts.uv0;
   const uv1 = opts.uv1 == null ? 1 : opts.uv1;
+  const phase = opts.phase || 0;
   const idx = [];
   for (let r = 0; r < rings.length; r++) {
     const ring = rings[r];
     const row = [];
     const vv = lerp(uv0, uv1, rings.length === 1 ? 0 : r / (rings.length - 1));
-    for (let k = 0; k < seg; k++) {
-      const t = (k / seg) * TAU;
+    for (let k = 0; k <= seg; k++) {
+      const t = ((k % seg) / seg) * TAU + phase;
       const [a, b] = se(t, ring.p == null ? P : ring.p);
-      row.push(R.vert([
+      const pos = [
         ring.c[0] + ring.u[0] * a + ring.v[0] * b,
         ring.c[1] + ring.u[1] * a + ring.v[1] * b,
         ring.c[2] + ring.u[2] * a + ring.v[2] * b
-      ], [k / seg, vv], ring.w));
+      ];
+      const uv = opts.uv
+        ? opts.uv({ pos, a, b, k, seg, r, rows: rings.length, last: k === seg })
+        : [k / seg, vv];
+      row.push(R.vert(pos, uv, ring.w));
     }
     idx.push(row);
   }
   for (let r = 0; r < rings.length - 1; r++) {
     const A = idx[r], B = idx[r + 1];
     for (let k = 0; k < seg; k++) {
-      const k2 = (k + 1) % seg;
-      R.quad(A[k], B[k], B[k2], A[k2]);
+      R.quad(A[k], B[k], B[k + 1], A[k + 1]);
     }
   }
   const last = rings[rings.length - 1], first = rings[0];
@@ -174,32 +189,32 @@ function loft(R, rings, opts = {}) {
   const dEnd = rings.length > 1 ? dirOf(rings[rings.length - 2], last) : [0, 1, 0];
   const dStart = rings.length > 1 ? dirOf(rings[1], first) : [0, -1, 0];
 
+  const rimOf = (ring, vv) => {
+    const rim = [];
+    for (let k = 0; k <= seg; k++) {
+      const t = ((k % seg) / seg) * TAU + phase, [a, b] = se(t, ring.p == null ? P : ring.p);
+      rim.push(R.vert([ring.c[0] + ring.u[0] * a + ring.v[0] * b, ring.c[1] + ring.u[1] * a + ring.v[1] * b, ring.c[2] + ring.u[2] * a + ring.v[2] * b], [k / seg, vv], ring.w, true));
+    }
+    return rim;
+  };
+
   if (opts.poleEnd != null) {
     const c = R.vert([last.c[0] + dEnd[0] * opts.poleEnd, last.c[1] + dEnd[1] * opts.poleEnd, last.c[2] + dEnd[2] * opts.poleEnd], [0.5, uv1], last.w);
     const B = idx[idx.length - 1];
-    for (let k = 0; k < seg; k++) R.tri(c, B[(k + 1) % seg], B[k]);
+    for (let k = 0; k < seg; k++) R.tri(c, B[k + 1], B[k]);
   } else if (opts.capEnd) {
-    // duplicated rim so the cap shades flat
-    const rim = [];
-    for (let k = 0; k < seg; k++) {
-      const t = (k / seg) * TAU, [a, b] = se(t, last.p == null ? P : last.p);
-      rim.push(R.vert([last.c[0] + last.u[0] * a + last.v[0] * b, last.c[1] + last.u[1] * a + last.v[1] * b, last.c[2] + last.u[2] * a + last.v[2] * b], [k / seg, uv1], last.w));
-    }
-    const c = R.vert(last.c.slice(), [0.5, uv1], last.w);
-    for (let k = 0; k < seg; k++) R.tri(c, rim[(k + 1) % seg], rim[k]);
+    const rim = rimOf(last, uv1);              // duplicated rim so the cap shades flat
+    const c = R.vert(last.c.slice(), [0.5, uv1], last.w, true);
+    for (let k = 0; k < seg; k++) R.tri(c, rim[k + 1], rim[k]);
   }
   if (opts.poleStart != null) {
     const c = R.vert([first.c[0] + dStart[0] * opts.poleStart, first.c[1] + dStart[1] * opts.poleStart, first.c[2] + dStart[2] * opts.poleStart], [0.5, uv0], first.w);
     const A = idx[0];
-    for (let k = 0; k < seg; k++) R.tri(c, A[k], A[(k + 1) % seg]);
+    for (let k = 0; k < seg; k++) R.tri(c, A[k], A[k + 1]);
   } else if (opts.capStart) {
-    const rim = [];
-    for (let k = 0; k < seg; k++) {
-      const t = (k / seg) * TAU, [a, b] = se(t, first.p == null ? P : first.p);
-      rim.push(R.vert([first.c[0] + first.u[0] * a + first.v[0] * b, first.c[1] + first.u[1] * a + first.v[1] * b, first.c[2] + first.u[2] * a + first.v[2] * b], [k / seg, uv0], first.w));
-    }
-    const c = R.vert(first.c.slice(), [0.5, uv0], first.w);
-    for (let k = 0; k < seg; k++) R.tri(c, rim[k], rim[(k + 1) % seg]);
+    const rim = rimOf(first, uv0);
+    const c = R.vert(first.c.slice(), [0.5, uv0], first.w, true);
+    for (let k = 0; k < seg; k++) R.tri(c, rim[k], rim[k + 1]);
   }
   return idx;
 }
@@ -209,14 +224,32 @@ const ringY = (y, rx, rz, w, cx = 0, cz = 0, p) => ({ c: [cx, y, cz], u: [rx, 0,
 /* Ring in the XY plane advancing along +Z (used for the shoe): u=+Y, v=+X. */
 const ringZ = (z, hy, hx, w, cx = 0, cy = 0, p) => ({ c: [cx, cy, z], u: [0, hy, 0], v: [hx, 0, 0], w, p });
 
-/* Ellipsoid built as stacked vertical rings between yFrom and yTo. */
-function ellipsoidRings(cy, rx, ry, rz, ys, w, cx = 0, cz = 0) {
-  return ys.map(y => {
-    const d = (y - cy) / ry;
-    const s = Math.sqrt(Math.max(0, 1 - d * d));
-    return ringY(y, rx * s, rz * s, typeof w === 'function' ? w(y) : w, cx, cz);
-  });
+/* Post-loft displacement.
+
+   Everything on the face that must not break the head's silhouette is a
+   DISPLACEMENT of the skull surface rather than a mesh stuck on top of it.
+   The old head lofted small ellipsoids for eyes, brows, nose and mouth onto
+   the outside of the skin, and from three-quarter and profile views they
+   protruded past the head's outline and merged into one dark smear. A surface
+   that is pushed in or pulled out cannot do that.
+
+   `grid` is the vertex index table loft() returned; `fn` takes a position and
+   returns a delta. Because it is a pure function of position, the duplicated
+   seam column always moves with its twin, so the seam can never open.        */
+function sculpt(R, grid, fn) {
+  for (const row of grid) {
+    for (const vi of row) {
+      const o = vi * 3;
+      const d = fn(R.P[o], R.P[o + 1], R.P[o + 2]);
+      if (!d) continue;
+      R.P[o] += d[0]; R.P[o + 1] += d[1]; R.P[o + 2] += d[2];
+    }
+  }
 }
+/* Smooth falloff: 1 at the centre, 0 at d >= 1, flat-topped and flat-tailed. */
+const fall = d => (d >= 1 ? 0 : Math.pow(Math.cos(d * Math.PI / 2), 2));
+const norm = (...v) => Math.hypot(...v);
+const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 /* ==================================================== 3. BUILD THE FIGURE */
 
@@ -226,7 +259,11 @@ const R = (name, material) => { const r = new Region(name, material); REGIONS.pu
 const jersey = R('jersey', 'jersey');
 const trim   = R('trim', 'trim');
 const skin   = R('skin', 'skin');
-const hair   = R('hair', 'hair');
+/* The head is its own region because it is the only part of the body that
+   carries a texture. Neck, arms and legs all share one 0..1 UV space (loft
+   writes [k/seg, v]), so a face map applied to `skin` would smear a mouth
+   across somebody's forearm. */
+const head   = R('head', 'head');
 const shorts = R('shorts', 'shorts');
 const socks  = R('socks', 'socks');
 const shoes  = R('shoes', 'shoes');
@@ -313,62 +350,378 @@ for (const side of [1, -1]) {
   }
 }
 
-/* ---- SKIN: neck ---- */
+const SEG_HEAD = 24;
+/* k = 0 lands at the BACK of the skull, so the UV seam — and any imprecision
+   where the texture wraps — hides in the hair instead of running down a
+   cheek. It also puts the face centre at exactly u = 0.5. */
+const HEAD_PHASE = -Math.PI / 2;
+const CHIN_Y = 1.600, CROWN_Y = 1.850;
+/* The neck's top ring and the head's bottom ring are THE SAME RING — same
+   radii, same centre, same superellipse, same segment count and phase, same
+   skin weights. They are separate meshes only because the head carries a
+   texture and the neck does not, and two surfaces that merely overlap
+   interleave: the first cut of this had the jaw and the neck crossing within
+   two millimetres of each other over a 2 cm band, which rendered as a ragged
+   stair-stepped line under the chin. Sharing the ring means there is nothing
+   to intersect — just a material seam, tucked under the jaw, between two
+   surfaces tinted the same colour. */
+const NECK_TOP = [1.606, 0.054, 0.050, -0.012, 0.90];
+const NECK_W = wraw(['Neck', 0.5], ['Head', 0.5]);
+
+/* ---- SKIN: neck ----
+   The bottom ring flares into the trapezius instead of ending as a straight
+   tube: without it the collar had nothing to sit on and read as a ring
+   floating in front of a gap. The top ring is deliberately NARROWER than the
+   jaw above it, so the head emerges from the neck around y = 1.61 the way a
+   jaw actually does, and the neck's open top rim is hidden inside the skull
+   rather than showing as a hard circle under the chin. */
 loft(skin, [
-  ringY(1.480, 0.079, 0.074, wraw(['Chest', 0.65], ['Neck', 0.35])),
-  ringY(1.545, 0.070, 0.065, w1('Neck')),
-  ringY(1.610, 0.066, 0.061, wraw(['Neck', 0.55], ['Head', 0.45]))
-], { seg: SEG_LIMB });
+  ringY(1.448, 0.100, 0.090, w1('Chest'), 0, -0.004, 0.85),
+  ringY(1.490, 0.082, 0.074, wraw(['Chest', 0.70], ['Neck', 0.30]), 0, -0.006),
+  ringY(1.545, 0.065, 0.060, w1('Neck'), 0, -0.008),
+  ringY(1.578, 0.058, 0.054, wraw(['Neck', 0.75], ['Head', 0.25]), 0, -0.011),
+  ringY(NECK_TOP[0], NECK_TOP[1], NECK_TOP[2], NECK_W, 0, NECK_TOP[3], NECK_TOP[4])
+], { seg: SEG_HEAD, phase: HEAD_PHASE, capStart: true });
 
-/* ---- SKIN + HAIR: head ---- */
-{
-  const HC = 1.735, HRX = 0.094, HRY = 0.115, HRZ = 0.101, HCZ = 0.008;
-  // Skin covers the face up to mid-headband; hair takes the crown above it, so
-  // the material seam is hidden under the band.
-  const skinYs = [1.632, 1.660, 1.688, 1.714, 1.740, 1.766, 1.795];
-  const hairYs = [1.795, 1.815, 1.833];
-  loft(skin, ellipsoidRings(HC, HRX, HRY, HRZ, skinYs, w1('Head'), 0, HCZ),
-    { seg: SEG_BODY, capStart: true });
-  loft(hair, ellipsoidRings(HC, HRX * 1.02, HRY * 1.02, HRZ * 1.02, hairYs, w1('Head'), 0, HCZ),
-    { seg: SEG_BODY, poleEnd: 0.017 });
+/* ============================================================== THE HEAD ===
+   The old head was an ellipsoid: 7 rings lofted through a sphere equation, no
+   jawline, no chin, no brow, no cheekbone. In profile it was an egg, and the
+   features were separate blobs floating on its surface.
 
-  // hair at the nape / back of the skull, so it doesn't read as a bald head
-  loft(hair, ellipsoidRings(1.716, 0.084, 0.078, 0.062,
-    [1.660, 1.688, 1.716, 1.744, 1.772], w1('Head'), 0, -0.052),
-    { seg: 10, capStart: true, capEnd: true });
+   This one is a PROFILE, sampled. Every horizontal slice of a skull has its
+   own half-width, half-depth, forward offset and squareness, and stating all
+   four as data gives cranium -> temple -> cheekbone -> jaw -> chin for free,
+   in the same style as the torso and limb tables above. The superellipse
+   exponent doing most of the work: squarer (p < 0.8) at the jaw where a face
+   is flat and angular, round (p -> 1) over the cranium.
 
-  // nose — the forward marker, keeps the facing readable at game distance
-  loft(skin, ellipsoidRings(1.716, 0.017, 0.026, 0.026,
-    [1.694, 1.705, 1.716, 1.727, 1.736], w1('Head'), 0, 0.097),
-    { seg: 8, capStart: true, capEnd: true });
+   Head width comes out at 0.162 m and depth 0.194 m, against 0.155/0.195 for
+   an adult male — the old one was 0.188 wide, which is part of why it read as
+   a ball rather than a head.                                                 */
 
-  // eyes + brows + mouth (dark, share the hair material)
-  for (const side of [1, -1]) {
-    loft(hair, ellipsoidRings(1.752, 0.021, 0.015, 0.012,
-      [1.739, 1.746, 1.752, 1.759, 1.766], w1('Head'), side * 0.037, 0.090),
-      { seg: 8, capStart: true, capEnd: true });
-    loft(hair, ellipsoidRings(1.772, 0.027, 0.008, 0.011,
-      [1.765, 1.769, 1.772, 1.776, 1.779], w1('Head'), side * 0.039, 0.086),
-      { seg: 8, capStart: true, capEnd: true });
-  }
-  loft(hair, ellipsoidRings(1.678, 0.026, 0.007, 0.012,
-    [1.672, 1.675, 1.678, 1.682, 1.685], w1('Head'), 0, 0.083),
-    { seg: 8, capStart: true, capEnd: true });
+/* [y, halfWidth, halfDepth, centreZ, superellipse p] */
+const HEAD_PROF = [
+  NECK_TOP,                              // shared with the neck's top ring
+  [1.616, 0.055, 0.056,  0.000, 0.84],   // under the jaw
+  [1.628, 0.059, 0.070,  0.012, 0.72],   // chin / jaw underside
+  [1.641, 0.064, 0.074,  0.008, 0.75],   // chin front
+  [1.654, 0.069, 0.077,  0.004, 0.76],   // jawline — squarest slice
+  [1.667, 0.074, 0.083,  0.000, 0.78],   // mouth
+  [1.680, 0.077, 0.088, -0.003, 0.78],
+  [1.694, 0.080, 0.094, -0.006, 0.80],   // cheekbone
+  [1.708, 0.081, 0.096, -0.006, 0.84],
+  [1.722, 0.081, 0.097, -0.007, 0.88],   // eye line — widest
+  [1.736, 0.080, 0.096, -0.008, 0.91],   // brow ridge
+  [1.752, 0.079, 0.094, -0.009, 0.94],   // forehead
+  [1.770, 0.077, 0.091, -0.010, 0.96],   // hairline
+  [1.790, 0.073, 0.086, -0.011, 0.98],   // cranium
+  [1.812, 0.065, 0.077, -0.011, 1.00],
+  [1.832, 0.048, 0.058, -0.011, 1.00],
+  [1.843, 0.030, 0.036, -0.011, 1.00],
+  [1.8475, 0.017, 0.020, -0.011, 1.00]
+];
+const profOf = col => {
+  const stops = HEAD_PROF.map(r => [r[0], r[col]]);
+  return y => ramp(stops, y);
+};
+const hrx = profOf(1), hrz = profOf(2), hcz = profOf(3), hp = profOf(4);
 
-  // ears — set back on the skull so they read as ears, not lumps
-  for (const side of [1, -1]) {
-    loft(skin, ellipsoidRings(1.734, 0.012, 0.025, 0.017,
-      [1.712, 1.723, 1.734, 1.745, 1.754], w1('Head'), side * 0.091, -0.014),
-      { seg: 8, capStart: true, capEnd: true });
-  }
+/* Face UVs. u is derived from the ring's own normalised X rather than from
+   the angle, so every slice maps edge-to-edge onto the same u range and a
+   feature drawn at a given u stays proportionally placed as the head narrows
+   toward the chin. Going around the ring from the back the path is
+   back -> +X -> front -> -X -> back, and u runs 0 -> 0.25 -> 0.5 -> 0.75 -> 1
+   monotonically, so the face owns the middle half of the texture and the back
+   of the skull is parked in the outer quarters.
 
-  // ---- TRIM: headband, sitting across the forehead on the hair/skin seam ----
-  loft(trim, [
-    ringY(1.782, 0.0910, 0.0975, w1('Head'), 0, HCZ, 0.95),
-    ringY(1.798, 0.0895, 0.0960, w1('Head'), 0, HCZ, 0.95),
-    ringY(1.814, 0.0800, 0.0860, w1('Head'), 0, HCZ, 0.95)
-  ], { seg: SEG_BODY });
+   +X is the character's LEFT, which is the viewer's RIGHT, so u increases
+   toward the character's right — worth knowing before drawing anything
+   deliberately asymmetric. */
+function headUV(a, b, y, last) {
+  const v = clamp01((y - CHIN_Y) / (CROWN_Y - CHIN_Y));
+  let u;
+  if (last) u = 1;
+  else if (b >= 0) u = 0.5 - 0.25 * a;                 // front half
+  else u = a >= 0 ? 0.25 * a : 1 + 0.25 * a;           // back half
+  return [u, v];
 }
+const faceUV = ctx => headUV(ctx.a, ctx.b, ctx.pos[1], ctx.last);
+
+/* Enough to clear the skin, too little to read as a step.
+
+   It can be this small because every shell is tessellated at least as finely
+   as the skull under it — same column count and phase, more rows — and of two
+   polygonal surfaces inscribed in the same true surface the finer one lies
+   outside the coarser one. When this was 2.6 mm the boundary of every shell
+   showed as a faint ledge: a rectangle around the ear, a step around the
+   goatee, a rim along the fade. */
+const TH_EDGE = 0.0008;
+
+{
+  const HEAD_YS = HEAD_PROF.map(r => r[0]);
+  /* Weights blend out of the neck over the bottom two rings so the shared
+     ring above deforms identically on both sides of the material seam — get
+     this wrong and the seam opens the moment anybody turns their head. */
+  const headW = y => (y >= 1.641 ? w1('Head')
+    : y <= NECK_TOP[0] ? NECK_W
+      : wmix('Neck', 'Head', 0.5 + 0.5 * clamp01((y - NECK_TOP[0]) / 0.035)));
+  const headGrid = loft(head,
+    HEAD_YS.map(y => ringY(y, hrx(y), hrz(y), headW(y), 0, hcz(y), hp(y))),
+    { seg: SEG_HEAD, phase: HEAD_PHASE, poleEnd: 0.0028, uv: faceUV });
+
+  /* ---- FACE, sculpted into the surface -----------------------------------
+     All of it scaled by how front-facing the vertex is, so nothing bleeds
+     around onto the sides of the skull. */
+  const nostrilW = y => ramp([[1.696, 0.028], [1.712, 0.025], [1.728, 0.016], [1.746, 0.013], [1.762, 0.012]], y);
+  /* The nose is a continuation of the brow ridge — the bridge starts between
+     the eyes and swells to the tip — not the detached capsule it used to be,
+     which is what let it float off the face in profile. It is still the
+     forward marker that keeps facing readable at game distance: the tip ends
+     up 24 mm proud of the cheeks. */
+  const noseOut = y => ramp([
+    [1.694, 0.000], [1.702, 0.015], [1.712, 0.028], [1.722, 0.024],
+    [1.734, 0.014], [1.746, 0.008], [1.760, 0.002], [1.770, 0.000]], y);
+
+  sculpt(head, headGrid, (x, y, z) => {
+    const front = clamp01((z - hcz(y)) / (hrz(y) * 0.62));
+    if (front <= 0.02) return null;
+    let dz = 0;
+
+    // Eye sockets: the eyes have to sit IN the face, so the face goes in.
+    for (const sx of [1, -1]) {
+      dz -= 0.0085 * fall(norm((x - sx * 0.031) / 0.034, (y - 1.727) / 0.017));
+    }
+    // Brow ridge over them, heaviest above the inner corners.
+    dz += 0.0060 * fall(clamp01((Math.abs(x) - 0.006) / 0.052)) * fall(Math.abs(y - 1.744) / 0.015);
+    // Nose.
+    dz += noseOut(y) * fall(Math.abs(x) / nostrilW(y));
+    // Chin point, lips, and a hollow under the cheekbones.
+    dz += 0.0060 * fall(norm(x / 0.030, (y - 1.633) / 0.017));
+    dz += 0.0028 * fall(norm(x / 0.027, (y - 1.673) / 0.010));
+    for (const sx of [1, -1]) {
+      dz -= 0.0035 * fall(norm((x - sx * 0.056) / 0.028, (y - 1.686) / 0.020));
+    }
+    return [0, 0, dz * front];
+  });
+
+  /* ---- EARS: helix rim, concha, lobe --------------------------------------
+     Built as a PATCH raised off the skull, not a tube parked against it. A
+     separate tube has to end somewhere, and wherever it ends is a rim you can
+     see; this one's thickness falls to nothing at the patch border, so it
+     merges into the side of the head and the only edges in it are the ones an
+     ear actually has — the helix standing proud, the concha hollow inside it,
+     and a lobe at the bottom.
+
+     Ears get a flat UV in the plain-skin margin of the face texture; an ear
+     wants tone, not features.                                                */
+  for (const side of [1, -1]) {
+    /* Tessellated FINER than the skull under it, in both directions. Two
+       polygonal surfaces inscribed in the same true surface: the finer one
+       lies outside the coarser one everywhere, so the patch needs almost no
+       lift to sit clear of the head — and it is the lift, not the shape, that
+       showed as a faint rectangle around the ear when it was TH_EDGE. */
+    const SEGE = 24, ROWE = 14, EAR_EDGE = 0.0004;
+    const HALF = 0.062, EY0 = 1.692, EY1 = 1.752;
+    const centre = side > 0 ? 0.25 : 0.75;      // frac 0.25 is +X, dead side-on
+    const grid = [];
+    for (let r = 0; r <= ROWE; r++) {
+      const row = [];
+      for (let k = 0; k <= SEGE; k++) {
+        const cu = k / SEGE, s = r / ROWE;
+        const px = (cu - 0.5) * 2, py = (s - 0.5) * 2;      // patch space, -1..1
+        // The outline: an ellipse pulled slightly forward and down, which is
+        // the difference between an ear and a disc.
+        const rr = norm(px * 1.06 + py * 0.10, py);
+        const helix = fall(Math.abs(rr - 0.70) / 0.30);     // the rim
+        const body = fall(rr) * 0.34;
+        const concha = fall(norm((px + 0.18) / 0.44, (py - 0.06) / 0.46)) * 0.42;
+        const lobe = fall(norm((px + 0.10) / 0.55, (py + 0.80) / 0.34)) * 0.30;
+        const th = Math.max(EAR_EDGE, 0.0128 * (helix * 0.92 + body + lobe - concha));
+        const frac = centre + (side > 0 ? 1 : -1) * lerp(-HALF, HALF, cu);
+        const y = lerp(EY0, EY1, s);
+        const [a, b] = se(frac * TAU + HEAD_PHASE, hp(y));
+        // Same mapping as the skull under it: a constant UV made the ear a
+        // pale rectangle, because the face map shades toward the silhouette
+        // and a flat sample does not.
+        row.push(head.vert([(hrx(y) + th) * a, y, hcz(y) + (hrz(y) + th) * b],
+          headUV(a, b, y, false), w1('Head')));
+      }
+      grid.push(row);
+    }
+    for (let r = 0; r < ROWE; r++) {
+      for (let k = 0; k < SEGE; k++) head.quad(grid[r][k], grid[r + 1][k], grid[r + 1][k + 1], grid[r][k + 1]);
+    }
+  }
+}
+
+/* ================================================ HAIR, BEARDS, HEADBAND ===
+   All baked, all optional, exactly one of each group shown per player.
+   SkeletonUtils.clone shares geometry between instances, so the variants cost
+   file size once and nothing per player, and a hidden mesh is skipped by the
+   renderer — draw calls per player do not move.
+
+   Every one of them is a SHELL OFFSET FROM THE SAME SKULL PROFILE, which is
+   the fix for the old hair: that was a skullcap sitting above y = 1.795 plus
+   an entirely separate ellipsoid at the nape, and the second one read from
+   behind and in profile as a hard-edged dark slab hovering off the head.
+   Following the skull it cannot hover, and tapering the thickness to almost
+   nothing at the boundary makes a hairline a hairline instead of a rim. */
+
+/* Angular distance from the front of the head, 0 (front) .. 0.5 (back). */
+const fromFront = frac => { const d = frac - 0.5; return Math.abs(d - Math.round(d)); };
+
+/* A cap running from a per-column hairline up over the crown. */
+function hairShell(R, opts) {
+  const seg = opts.seg || SEG_HEAD, rows = opts.rows || 6, top = 1.8475;
+  const grid = [];
+  for (let r = 0; r <= rows; r++) {
+    const row = [];
+    for (let k = 0; k <= seg; k++) {
+      const kk = k % seg, frac = kk / seg;
+      /* Rows crowd toward the crown. Spacing them evenly meant a column whose
+         hairline starts low took ~2 cm steps, and a 2 cm chord across the
+         crown's curvature cuts a corner deeper than the hair is thick — which
+         is skin poking through the hair, in a thin bright wedge. The extra
+         clearance term does the same job for what is left. */
+      const s = Math.pow(r / rows, 0.8);
+      const y = lerp(opts.low(frac), top, s);
+      const th = Math.max(TH_EDGE, opts.thick(fromFront(frac), s, frac) + 0.0022 * s * s);
+      const [a, b] = se((kk / seg) * TAU + HEAD_PHASE, hp(y));
+      row.push(R.vert([(hrx(y) + th) * a, y, hcz(y) + (hrz(y) + th) * b],
+        [k / seg, s], w1('Head')));
+    }
+    grid.push(row);
+  }
+  for (let r = 0; r < rows; r++) {
+    for (let k = 0; k < seg; k++) R.quad(grid[r][k], grid[r + 1][k], grid[r + 1][k + 1], grid[r][k + 1]);
+  }
+  const apex = R.vert([0, CROWN_Y + Math.max(0.003, opts.thick(0, 1, 0.5) * 0.8), hcz(CROWN_Y)], [0.5, 1], w1('Head'));
+  const B = grid[rows];
+  for (let k = 0; k < seg; k++) R.tri(apex, B[k + 1], B[k]);
+  return grid;
+}
+
+/* A patch bounded on all four sides — beards. Thickness falls to TH_EDGE at
+   every border, so the patch welds itself onto the skin and never shows an
+   open rim. */
+function facePatch(R, opts) {
+  const seg = opts.seg || SEG_HEAD, rows = opts.rows || 10;
+  const grid = [];
+  for (let r = 0; r <= rows; r++) {
+    const row = [];
+    for (let k = 0; k <= seg; k++) {
+      const cu = k / seg, s = r / rows;
+      const frac = 0.5 + lerp(-opts.half, opts.half, cu);       // 0.5 = front
+      const d = fromFront(frac);
+      /* The patch is a LENS, and it is a lens in the geometry rather than in
+         the thickness. Tapering thickness alone only makes the shape lie flat
+         against the skin — it still paints every square millimetre of itself
+         beard-coloured, which is how the first cut produced a rectangular bib
+         with a notch out of it. Collapsing each column's height to the
+         ellipse is what actually stops the shape where it should stop. */
+      const dcu = (cu - 0.5) * 2;
+      const hh = Math.sqrt(Math.max(0, 1 - dcu * dcu));
+      const mid = (opts.low(d) + opts.high(d)) / 2;
+      const span = (opts.high(d) - opts.low(d)) / 2;
+      const y = mid + (s * 2 - 1) * span * hh;
+      const th = Math.max(TH_EDGE, opts.thick * fall(norm(dcu, s * 2 - 1)));
+      const [a, b] = se(frac * TAU + HEAD_PHASE, hp(y));
+      row.push(R.vert([(hrx(y) + th) * a, y, hcz(y) + (hrz(y) + th) * b], [cu, s], w1('Head')));
+    }
+    grid.push(row);
+  }
+  for (let r = 0; r < rows; r++) {
+    for (let k = 0; k < seg; k++) R.quad(grid[r][k], grid[r + 1][k], grid[r + 1][k + 1], grid[r][k + 1]);
+  }
+  return grid;
+}
+
+/* Hairlines as data: how far down the hair reaches at the front, the temple,
+   the side and the nape, plus how thick it is and how much it ribs. */
+const HAIR_STYLES = [
+  { id: 'buzz',  front: 1.772, temple: 1.744, side: 1.722, back: 1.706, th: 0.0035, rib: 0 },
+  { id: 'crop',  front: 1.774, temple: 1.742, side: 1.718, back: 1.700, th: 0.0090, rib: 0 },
+  { id: 'fade',  front: 1.776, temple: 1.730, side: 1.694, back: 1.684, th: 0.0110, rib: 0, taper: 1 },
+  { id: 'afro',  front: 1.778, temple: 1.744, side: 1.720, back: 1.704, th: 0.0280, rib: 0.15, ribs: 9, curl: 1, seg: 36 },
+  { id: 'locs',  front: 1.776, temple: 1.740, side: 1.706, back: 1.664, th: 0.0190, rib: 0.32, ribs: 9, seg: 36 },
+  { id: 'long',  front: 1.780, temple: 1.732, side: 1.688, back: 1.646, th: 0.0150, rib: 0.06 }
+];
+for (const st of HAIR_STYLES) {
+  const Rg = R('hair_' + st.id, 'hair');
+  /* A hairline is FLAT across the forehead and then drops at the temples. A
+     straight ramp from the centre gives a widow's peak on everybody, which is
+     what the first cut of this looked like. */
+  const lowOf = d => ramp([
+    [0.00, st.front], [0.085, st.front], [0.16, lerp(st.front, st.temple, 0.55)],
+    [0.25, st.temple], [0.35, st.side], [0.44, st.back], [0.50, st.back]], d);
+  /* The hair shell is offset from the SKULL, and the ear stands up to 12 mm
+     proud of it — so any hairline crossing the ear band has the ear poking
+     straight through the hair. Real short cuts go around the ear rather than
+     over it, so the hairline is lifted clear of it, which is both the fix and
+     the correct shape.
+
+     Plus a few millimetres of wander, because a hairline that is exactly the
+     curve above is a swimming cap. Kept to low frequencies: at 24 columns
+     anything faster than about 5 cycles reads as a zigzag, not as hair. */
+  const earGuard = d => 1.761 - (1 - fall(Math.abs(d - 0.25) / 0.135)) * 0.16;
+  const lowWander = frac => {
+    const d = fromFront(frac);
+    return Math.max(lowOf(d), earGuard(d))
+      + 0.0022 * Math.cos(frac * TAU * 5) - 0.0014 * Math.cos(frac * TAU * 3);
+  };
+  hairShell(Rg, {
+    seg: st.seg || SEG_HEAD, rows: st.rib ? 12 : 9,
+    low: lowWander,
+    /* s = 0 at the hairline, 1 at the crown. Ramping in over the first
+       quarter is what turns a rim into a hairline; `taper` holds a fade short
+       at the bottom all the way up its own boundary. */
+    thick: (d, s, frac) => {
+      let t = st.th * (0.10 + 0.90 * clamp01(s / 0.28));
+      if (st.taper) t *= 0.30 + 0.70 * clamp01((s - 0.10) / 0.55);
+      /* Ribbing needs columns to resolve it: at 24 the old 10-cycle ripple
+         had 2.4 columns per rib and simply aliased away, which is why locs
+         rendered as a smooth cap. Ribbed styles get a finer shell instead. */
+      if (st.rib) t *= 1 + st.rib * Math.cos(frac * TAU * st.ribs) * (st.curl ? Math.cos(s * Math.PI * 3) : 1);
+      return t;
+    }
+  });
+}
+
+/* A beard is more than one patch. Drawn as a single lens from the jaw to the
+   nose it swallows the mouth and reads as a muzzle, so the chin and the
+   moustache are separate shapes with the lip left bare between them — which
+   is what both of these actually look like. */
+const BEARDS = [
+  { id: 'goatee', patches: [
+    { half: 0.058, th: 0.011,                                  // chin
+      low: d => ramp([[0.00, 1.618], [0.058, 1.646]], d),
+      high: d => ramp([[0.00, 1.666], [0.058, 1.660]], d) },
+    { half: 0.050, th: 0.009,                                  // moustache
+      low: d => ramp([[0.00, 1.679], [0.050, 1.684]], d),
+      high: d => ramp([[0.00, 1.697], [0.050, 1.694]], d) }
+  ] },
+  { id: 'full', patches: [
+    { half: 0.170, th: 0.013,                                  // jaw + chin
+      low: d => ramp([[0.00, 1.616], [0.08, 1.630], [0.13, 1.650], [0.170, 1.672]], d),
+      high: d => ramp([[0.00, 1.668], [0.08, 1.690], [0.13, 1.714], [0.170, 1.740]], d) },
+    { half: 0.062, th: 0.010,                                  // moustache
+      low: d => ramp([[0.00, 1.678], [0.062, 1.686]], d),
+      high: d => ramp([[0.00, 1.699], [0.062, 1.696]], d) }
+  ] }
+];
+for (const bd of BEARDS) {
+  const Rg = R('beard_' + bd.id, 'hair');
+  for (const pt of bd.patches) {
+    facePatch(Rg, { seg: SEG_HEAD, rows: 12, half: pt.half, thick: pt.th, low: pt.low, high: pt.high });
+  }
+}
+
+/* ---- TRIM: headband, across the forehead on the hairline ---- */
+loft(R('band', 'trim'), [
+  ringY(1.770, hrx(1.770) + 0.0045, hrz(1.770) + 0.0045, w1('Head'), 0, hcz(1.770), hp(1.770)),
+  ringY(1.784, hrx(1.784) + 0.0060, hrz(1.784) + 0.0060, w1('Head'), 0, hcz(1.784), hp(1.784)),
+  ringY(1.797, hrx(1.797) + 0.0045, hrz(1.797) + 0.0045, w1('Head'), 0, hcz(1.797), hp(1.797))
+], { seg: SEG_HEAD, phase: HEAD_PHASE });
 
 /* ---- SKIN: arms (upper arm under the sleeve -> forearm -> hand) ---- */
 for (const side of [1, -1]) {
@@ -482,7 +835,13 @@ for (const side of [1, -1]) {
   loft(flag, rings, { seg: SEG_FLAG, capStart: true, capEnd: true });
 }
 
-/* =============================================== 4. NORMALS (accumulated) */
+/* =============================================== 4. NORMALS (accumulated)
+   Accumulated PER POSITION, not per vertex index. Two vertices can sit at the
+   same point and still be separate — the duplicated UV seam column is exactly
+   that, and so is the ring the head and the neck share. Accumulating per index
+   gives each of them only the faces on its own side of the split, and the
+   normals disagree: the back of the head came out with a hard vertical crease
+   straight down the middle, lit as though the skull were folded.             */
 function computeNormals(r) {
   const N = new Float32Array(r.P.length);
   for (let i = 0; i < r.I.length; i += 3) {
@@ -492,12 +851,41 @@ function computeNormals(r) {
     const n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
     for (const o of [a, b, c]) { N[o] += n[0]; N[o + 1] += n[1]; N[o + 2] += n[2]; }
   }
-  for (let i = 0; i < N.length; i += 3) {
-    const L = Math.hypot(N[i], N[i + 1], N[i + 2]);
-    if (L > 1e-9) { N[i] /= L; N[i + 1] /= L; N[i + 2] /= L; }
-    else { N[i] = 0; N[i + 1] = 1; N[i + 2] = 0; }
-  }
   return N;
+}
+
+/* Weld across EVERY region at once (0.1 mm buckets), then normalise. Across,
+   because the head and the neck deliberately share a ring over a material
+   boundary — a per-region pass cannot see that pair and the seam creases. */
+function normalsFor(regions) {
+  const raw = new Map();
+  for (const r of regions) raw.set(r, computeNormals(r));
+  const bucket = new Map();
+  for (const r of regions) {
+    const N = raw.get(r);
+    for (let v = 0; v < r.P.length / 3; v++) {
+      if (r.H[v]) continue;                        // cap rim: keep it hard
+      const o = v * 3;
+      const k = Math.round(r.P[o] * 1e4) + ',' + Math.round(r.P[o + 1] * 1e4) + ',' + Math.round(r.P[o + 2] * 1e4);
+      const list = bucket.get(k);
+      if (list) list.push([N, o]); else bucket.set(k, [[N, o]]);
+    }
+  }
+  for (const list of bucket.values()) {
+    if (list.length < 2) continue;
+    let sx = 0, sy = 0, sz = 0;
+    for (const [N, o] of list) { sx += N[o]; sy += N[o + 1]; sz += N[o + 2]; }
+    for (const [N, o] of list) { N[o] = sx; N[o + 1] = sy; N[o + 2] = sz; }
+  }
+  for (const r of regions) {
+    const N = raw.get(r);
+    for (let i = 0; i < N.length; i += 3) {
+      const L = Math.hypot(N[i], N[i + 1], N[i + 2]);
+      if (L > 1e-9) { N[i] /= L; N[i + 1] /= L; N[i + 2] /= L; }
+      else { N[i] = 0; N[i + 1] = 1; N[i + 2] = 0; }
+    }
+  }
+  return raw;
 }
 
 /* ================================================== 5. ANIMATION AUTHORING */
@@ -1955,6 +2343,11 @@ const MATDEF = [
   ['jersey', [0.17, 0.36, 1.00], 0.72, 0.02],
   ['trim',   [1.00, 1.00, 1.00], 0.60, 0.02],
   ['skin',   [0.91, 0.72, 0.56], 0.78, 0.00],
+  /* The head baseColor multiplies the runtime face texture, so it carries the
+     skin tone exactly like `skin` does; the map supplies the features as dark
+     values on white. Baked as skin rather than white so a head still looks
+     like a head if the texture never gets generated. */
+  ['head',   [0.91, 0.72, 0.56], 0.78, 0.00],
   ['hair',   [0.10, 0.075, 0.055], 0.85, 0.00],
   ['shorts', [0.125, 0.19, 0.29], 0.85, 0.00],
   ['socks',  [0.95, 0.95, 0.95], 0.88, 0.00],
@@ -1998,9 +2391,10 @@ gltf.skins.push({
 /* ---- mesh nodes, one per region so THREE names each SkinnedMesh ---- */
 gltf.scenes[0].nodes.push(BI.Hips);
 let totalTris = 0, totalVerts = 0;
+const NORMALS = normalsFor(REGIONS.filter(r => r.I.length));
 for (const r of REGIONS) {
   if (!r.I.length) continue;
-  const N = computeNormals(r);
+  const N = NORMALS.get(r);
   const prim = {
     attributes: {
       POSITION: accessor(new Float32Array(r.P), 'VEC3', COMP.f32, 34962, { minmax: true }),

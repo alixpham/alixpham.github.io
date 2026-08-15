@@ -641,6 +641,7 @@
     // Realistic rigged players (FLAGSTER.Player3D) are (re)built whenever the
     // roster array changes. Each entry: { P, ring, ud }.
     var PLAYER3D = global.FLAGSTER && global.FLAGSTER.Player3D;
+    var PM = global.FLAGSTER && global.FLAGSTER.PlayerModel;
     // Human scale: the rig is ~2.39yd tall, so 0.87 puts players at ~6'2".
     // (It was 1.45 — which rendered ~10ft-tall giants.)
 
@@ -676,8 +677,6 @@
        the old behaviour behind the same call — see gaitShim() there. */
     var WALK_MAX = 2.4;              // "running" for the ball-carry arm drive
     var PLAYER_LIFT = 0.10;    // rig dips slightly below its origin; sit feet on turf
-    // A few skin tones rotated through by roster index for visual variety.
-    var SKINS = ['#f2c9a0', '#e8b98f', '#d59a6a', '#a9714a', '#8a5a38', '#6f4526'];
 
     var pMeshes = [];          // parallel to state.players (entry objects)
     var playersRef = null;
@@ -711,6 +710,13 @@
       RUSH: { h: -0.010, w:  0.055 },
       C:    { h: -0.028, w:  0.070 }
     };
+    /* One identity per player, and the SAME one everywhere. Build and
+       appearance both hang off this, so a player's height and their face are
+       two views of the same person — and neither changes when the lineup
+       reorders, which is exactly what keying on the roster index did. */
+    function seedOf(gp, idx) {
+      return String((gp.data && gp.data.id) || gp.last || ('slot-' + idx));
+    }
     function bodyOf(gp, idx) {
       var key = gp.pos || gp.slot || 'QB';
       var d = BUILD[key] || BUILD.QB;
@@ -718,7 +724,7 @@
       // Faster players carry less: a little taller, a little leaner.
       var lean = (spd - 70) / 60;                    // roughly -0.5 .. +0.5
       // A stable per-player wobble so a squad isn't ten clones of two moulds.
-      var seed = 0, id = String((gp.data && gp.data.id) || gp.last || idx);
+      var seed = 0, id = seedOf(gp, idx);
       for (var i = 0; i < id.length; i++) seed = (seed * 31 + id.charCodeAt(i)) & 0xffff;
       var jitter = ((seed % 1000) / 1000 - 0.5) * 0.030;
       var h = PLAYER_SCALE * (1 + d.h + lean * 0.020 + jitter);
@@ -737,9 +743,19 @@
       (players || []).forEach(function (gp, idx) {
         var cols = gp.team === 'home' ? homeCols : awayCols;
         var isOff = engine.offenseTeam ? (gp.team === engine.offenseTeam()) : true;
+        /* Who this player looks like. Skin tone used to be
+           SKINS[idx % SKINS.length] — keyed on where they stood in the lineup,
+           so a complexion changed when the lineup reordered and slot 0 on both
+           teams always matched — and hair colour was never passed at all, so
+           all ten wore the same near-black. */
+        var look = (PM && PM.appearanceOf)
+          ? PM.appearanceOf(seedOf(gp, idx), gp.data && gp.data.gender)
+          : {};
         var P = PLAYER3D.build(THREE, {
           jersey: cols[0], trim: cols[1] || '#ffffff',
-          skin: SKINS[idx % SKINS.length],
+          skin: look.skin, hair: look.hair, hairStyle: look.hairStyle,
+          facialHair: look.facialHair, headband: look.headband,
+          headScale: look.headScale, gender: look.gender, face: look.face,
           // The jersey number — NOT gp.ovr, which is what used to be painted
           // here and is why every 80-rated receiver wore 80.
           number: (gp.num != null ? gp.num : ''),

@@ -93,8 +93,17 @@
     // sets the inner root's rotation.y and survives for every clip except the
     // brief 'dive' (which authors its own forward pitch — acceptable).
     function makeP3D(cfg, name, number, x, z) {
+      /* Three players stood on the menu with one face between them. They get
+         the same seeded appearance the field does, keyed on the name, so the
+         landing screen shows three different people — which is the first thing
+         anyone sees of the roster. */
+      var PMod = global.FLAGSTER && global.FLAGSTER.PlayerModel;
+      var look = (PMod && PMod.appearanceOf) ? PMod.appearanceOf('hero:' + name) : {};
       var P = P3D.build(THREE, {
-        jersey: cfg.jersey, trim: cfg.trim, skin: cfg.skin, number: number, name: name
+        jersey: cfg.jersey, trim: cfg.trim, number: number, name: name,
+        skin: cfg.skin || look.skin, hair: look.hair, hairStyle: look.hairStyle,
+        facialHair: look.facialHair, headband: look.headband,
+        headScale: look.headScale, gender: look.gender, face: look.face
       });
       var carrier = new THREE.Group();
       carrier.scale.setScalar(PSCALE);
@@ -107,9 +116,9 @@
     }
 
     var COL = {
-      blue:  { jersey: '#2b5cff', trim: '#ffffff', skin: '#e8b98f' },
-      red:   { jersey: '#d80621', trim: '#ffdf00', skin: '#c68a5e' },
-      green: { jersey: '#2ec77a', trim: '#08331d', skin: '#f2d3b3' }
+      blue:  { jersey: '#2b5cff', trim: '#ffffff' },
+      red:   { jersey: '#d80621', trim: '#ffdf00' },
+      green: { jersey: '#2ec77a', trim: '#08331d' }
     };
 
     var ball = makeBall(THREE);
