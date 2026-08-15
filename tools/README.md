@@ -266,3 +266,40 @@ needs no matching "stop" call.
 It scales metres to world units (1 unit = 1 yard) by `1 / 0.9144 = 1.0936`,
 giving a 2.023-unit-tall player, and uses the game's heading convention
 `root.rotation.y = Math.PI / 2 - yaw`.
+
+---
+
+## `headshot.mjs` — the head, at a distance the game never shows it
+
+Renders the built rig's head through the real `playermodel.js` build path, from
+four angles, for as many seeded appearances as you ask for.
+
+```sh
+node tools/headshot.mjs                     # 6 seeds x 4 angles -> .headshots/
+node tools/headshot.mjs --seeds 12 --out /tmp/heads
+node tools/headshot.mjs --angles front,profile
+```
+
+It prints each seed's resolved appearance — tone, hair colour and style, facial
+hair, the face parameters — so a bad one can be reproduced exactly, and writes
+a `contact-sheet.html` for comparing several at once.
+
+Unlike everything else in this directory it needs Playwright and the
+pre-installed Chromium, because it renders. Nothing under `flagster/` imports
+it; it is a dev tool.
+
+### Why it exists
+
+Every earlier round of head work was judged from a 40-pixel-tall player jogging
+past a broadcast camera, and at that size everything reads as "a head". That is
+how a skull with no jaw, eyes stuck to the outside of the face, and a hair
+patch hovering off the back of the scalp all survived several passes. Rendering
+the thing at 400 px, from the back and in profile as well as head-on, is what
+makes those visible — and the four angles are chosen for what each catches:
+
+* **front** — feature placement, brow, eye spacing, the hairline
+* **three-quarter** — whether the cheekbone and jaw have any form at all
+* **profile** — anything that breaks the silhouette; the ear; the nose
+* **back** — the hairline at the nape, and shading seams down the skull
+
+`measure-clip.mjs` does the equivalent job for motion; this one is for form.

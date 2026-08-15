@@ -122,7 +122,7 @@
     var shortMat  = mkMat(THREE, '#20304a', { rough: 0.9 });
     var sockMat   = mkMat(THREE, '#f2f2f2', { rough: 0.9 });
     var shoeMat   = mkMat(THREE, '#141414', { rough: 0.6 });
-    var hairMat   = mkMat(THREE, '#241a12', { rough: 0.9 });
+    var hairMat   = mkMat(THREE, opts.hair || '#241a12', { rough: 0.9 });
 
     var root = new THREE.Group(); root.name = 'root';
     var nodes = {};
@@ -154,14 +154,37 @@
     chest.add(numberPlate(THREE, opts.number, opts.trim || '#fff', 0.3));
 
     // --- neck / head ---
+    /* --- neck / head ---
+       This is the no-Three.js-addons fallback: it must boot and it must accept
+       the same appearance vocabulary as the rigged rig, so a caller never has
+       to ask which one answered. It does NOT try to match it detail for
+       detail — there is no face texture and no baked hair variants here, so
+       skin, hair colour, how much hair, facial hair and the headband are the
+       parts that carry across. */
     var neck = node('neck', chest, 0, 0.46, 0);
     var head = node('head', neck, 0, 0.12, 0);
+    var headScale = opts.headScale || 1;
+    head.scale.setScalar(headScale);
     var skull = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 14), skinMat); skull.position.y = 0.1; head.add(skull);
-    var hair = new THREE.Mesh(new THREE.SphereGeometry(0.205, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.6), hairMat); hair.position.y = 0.12; head.add(hair);
+    // Hair volume follows the chosen style rather than one fixed skullcap.
+    var HAIR_VOL = { buzz: 0.202, crop: 0.208, fade: 0.207, afro: 0.228, locs: 0.220, long: 0.216 };
+    var HAIR_ARC = { buzz: 0.55, crop: 0.60, fade: 0.52, afro: 0.66, locs: 0.72, long: 0.74 };
+    var hs = HAIR_VOL[opts.hairStyle] ? opts.hairStyle : 'crop';
+    var hair = new THREE.Mesh(
+      new THREE.SphereGeometry(HAIR_VOL[hs], 16, 12, 0, Math.PI * 2, 0, Math.PI * HAIR_ARC[hs]), hairMat);
+    hair.position.y = 0.11; head.add(hair);
     var faceNub = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 8), skinMat); faceNub.position.set(0, 0.08, 0.18); head.add(faceNub); // nose = forward marker (+X)
-    // team headband
-    var band = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.028, 8, 18), mkMat(THREE, opts.trim || '#ffffff', { rough: 0.7 }));
-    band.rotation.x = Math.PI / 2; band.position.y = 0.05; head.add(band);
+    if (opts.facialHair) {
+      var beard = new THREE.Mesh(
+        new THREE.SphereGeometry(opts.facialHair === 'full' ? 0.185 : 0.13, 12, 10,
+          0, Math.PI * 2, Math.PI * 0.55, Math.PI * 0.45), hairMat);
+      beard.position.set(0, 0.10, opts.facialHair === 'full' ? 0.02 : 0.06);
+      head.add(beard);
+    }
+    if (opts.headband) {
+      var band = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.028, 8, 18), mkMat(THREE, opts.trim || '#ffffff', { rough: 0.7 }));
+      band.rotation.x = Math.PI / 2; band.position.y = 0.05; head.add(band);
+    }
 
     // --- arms (shoulder → upperArm → forearm → hand) ---
     function arm(side) {
@@ -501,8 +524,13 @@
     if (PM && PM.isReady && PM.isReady()) {
       try {
         return PM.build(THREE, {
-          jersey: opts.jersey, trim: opts.trim, skin: opts.skin,
+          jersey: opts.jersey, trim: opts.trim, skin: opts.skin, hair: opts.hair,
           number: opts.number, name: opts.name,
+          // Appearance: forwarded verbatim, so a caller only ever has to know
+          // one vocabulary whichever rig ends up answering.
+          hairStyle: opts.hairStyle, facialHair: opts.facialHair,
+          headband: opts.headband, headScale: opts.headScale,
+          gender: opts.gender, face: opts.face,
           scale: 2.385 / 1.850      // metres -> match the procedural rig's height
         });
       } catch (e) { /* fall through to the procedural rig */ }

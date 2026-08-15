@@ -66,6 +66,22 @@
     JPN: ['Y.','H.','K.','R.','T.','S.','D.','N.','M.','A.','K.','R.']
   };
 
+  /* ---- DIVISIONS ----------------------------------------------------------
+     LA28 fields a men's and a women's flag football tournament. Only the men's
+     is generated today — there is one body in the rig — but every player
+     carries their division as `gender`, so the renderer and the appearance
+     rules key off a real field instead of assuming. Standing the women's
+     tournament up then means generating its rosters and building the
+     proportions, not retrofitting a flag through six files first.
+
+     The name pools need nothing for it: first names are initials and last
+     names do not carry gender. */
+  var DIVISIONS = [
+    { id: 'M', name: "Men's" },
+    { id: 'F', name: "Women's" }
+  ];
+  var DEFAULT_DIVISION = 'M';
+
   // Deterministic pseudo-random so rosters are stable across sessions.
   function seeded(seed) {
     var s = seed % 2147483647;
@@ -75,7 +91,7 @@
   function hashStr(str) { var h = 0, i; for (i = 0; i < str.length; i++) { h = (h * 31 + str.charCodeAt(i)) | 0; } return Math.abs(h) + 1; }
 
   // Player template. Ratings scale with nation strength.
-  function makePlayer(nationId, idx, pos, rnd, baseline) {
+  function makePlayer(nationId, idx, pos, rnd, baseline, division) {
     var lasts = LAST_NAMES[nationId];
     var firsts = FIRST_NAMES[nationId] || FIRST_NAMES.common;
     var last = lasts[idx % lasts.length];
@@ -98,6 +114,7 @@
       name: first + ' ' + last,
       last: last,
       pos: pos,
+      gender: division || DEFAULT_DIVISION,
       ovr: ovr,
       speed: speed, catch: catch_, throw: thr, agi: agi, aware: aware, pull: pull,
       nation: nationId
@@ -144,12 +161,15 @@
   }
 
   // Build a full roster (12 players covering both units + depth).
-  function buildRoster(nation) {
-    var rnd = seeded(hashStr(nation.id));
+  function buildRoster(nation, division) {
+    division = division || DEFAULT_DIVISION;
+    // Seeded per division as well, so the women's tournament is not the men's
+    // squad with a flag flipped once it exists.
+    var rnd = seeded(hashStr(nation.id + ':' + division));
     var baseline = 60 + (nation.rating - 75) * 0.9;
     var slots = ['QB', 'C', 'WR', 'WR', 'RB', 'WR', 'RUSH', 'MLB', 'CB', 'CB', 'S', 'RB'];
     return assignNumbers(
-      slots.map(function (pos, i) { return makePlayer(nation.id, i, pos, rnd, baseline); }), rnd);
+      slots.map(function (pos, i) { return makePlayer(nation.id, i, pos, rnd, baseline, division); }), rnd);
   }
 
   var ROSTERS = {};
@@ -316,6 +336,7 @@
     OFFENSE_POS: OFFENSE_POS, DEFENSE_POS: DEFENSE_POS, POS_INFO: POS_INFO,
     NATIONS: NATIONS, ROSTERS: ROSTERS, ROUTES: R, PLAYS: PLAYS, DEF_PLAYS: DEF_PLAYS,
     ARCHETYPES: ARCHETYPES, RTG_POSITIONS: RTG_POSITIONS,
+    DIVISIONS: DIVISIONS, DEFAULT_DIVISION: DEFAULT_DIVISION,
     starters: starters, teamOvr: teamOvr, jerseysFor: jerseysFor,
     rosterOf: rosterOf, setRosterOverride: setRosterOverride, clearOverrides: clearOverrides,
     assignNumbers: assignNumbers,
