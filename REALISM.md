@@ -15,7 +15,8 @@ and a prioritised plan to close the gap. Written against **v2.11.0**
 | 3 — Ball (C1–C3) | v2.14.0 | Gravity and launch angle, contested catch resolved in space, ball shadow and a real spiral. |
 | 4 — AI (D1–D4) | v2.15.0 | Coverage no longer empties on the throw, leverage, QB progression under pressure, leverage-aware breaks — and the undercut, which is what finally produced interceptions. |
 | 5 — Presentation (E1–E3) | v2.16.0 | Body variance by position and ratings, a real snap off the turf, ball spot and down marker. **E3 partial** — benches, coaches, officials, chain crew and a non-static crowd were left. |
-| 6 — Clock (A6–A8) | v2.17.0 | Two 20-minute halves, continuously running clock with last-two-minute stoppages, alternating-possession overtime, flag guarding, real laterals. |
+| 6 — Clock (A6–A8) | v2.17.0 | Two 20-minute halves, continuously running clock with last-two-minute stoppages, alternating-possession overtime, real laterals. **A7 was not actually shipped** — see below. |
+| A7 redone (penalties) | v2.31.0 | The illegal rush rebuilt on measured eligibility and a live ball (v2.30.0), and flag guarding finally *called* rather than merely written. |
 
 ### Where the numbers ended up
 
@@ -269,6 +270,25 @@ Worth adding at least the two that change how you play:
 - **Flag guarding** (the carrier shielding their flags) — the defining offensive
   foul of the sport.
 - **Illegal rush** — falls out of A2 for free.
+
+**Recorded as shipped in v2.17.0, and it was not.** Both fouls were written and
+neither worked, which is exactly the failure mode a box score cannot see: an
+average over a season looks the same whether a rule fires correctly, fires on
+the wrong player, or never fires at all.
+
+- `_flagGuard` was pushed with **no call sites**. It sat in `engine.js` for
+  thirteen releases and never once ran.
+- The illegal rush ran, and every flag it threw was wrong: measured at 3.9% of
+  plays, 24 of 25 the middle linebacker, all under Man coverage, not one of
+  them a rusher. It was catching a linebacker following his man into the
+  backfield on a swing route. It also ended the play on the spot and charged
+  the offence the down, which made fouling *profitable* for the defence on
+  fourth down.
+
+Both are fixed in v2.30.0 (rush) and v2.31.0 (guarding), on a shared model: the
+marker goes down, the play runs to its end, and the side that did not foul
+accepts or declines. `tools/ruletest.mjs` asserts the behaviour directly, which
+is the lesson — `tools/simstats.mjs` could not have caught either of these.
 
 ### A8. Laterals
 
