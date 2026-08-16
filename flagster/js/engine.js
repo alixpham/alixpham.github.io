@@ -28,6 +28,7 @@
   var RUSH_LINE = 7;                     // a rusher must start this far off the LOS
   var RUSH_LINE_SLOP = 0.25;             // ...measured at the snap, with a boot's grace
   var ILLEGAL_RUSH_YDS = 5;              // the penalty, from the previous spot
+  var FLAG_GUARD_YDS = 10;               // ...and the offensive one, from the spot of the foul
   var CROSSED_LOS = 0.5;                 // how far past the line before it counts as across
   var CLOSING_ON_PASSER = 1.0;           // yd/s at the passer that separates a rush from coverage
   var NO_RUN_ZONE = 5;                   // no running plays inside 5 of a goal line or midfield
@@ -1580,6 +1581,13 @@
     var eff = 1 / (1 + 0.9 * (n - 1));
 
     if (held) {
+      /* A7 — the second time you break THIS defender's grip in this play, you
+         are not cutting any more, you are swatting his hand off your flag. */
+      var broke = c.brokeFrom || (c.brokeFrom = {});
+      var who = held.data.id;
+      if (broke[who]) this._flagGuard(c, held);
+      broke[who] = true;
+
       c.jukeCount = n;
       c.jukeCd = this.difficulty.jukeCd;
       c.grabT = Math.max(0, (c.grabT || 0) * (1 - eff));
@@ -1782,7 +1790,9 @@
           if (d.rushLegal || d.flagPulled) continue;
           if (d.x >= s.losX - CROSSED_LOS) continue;
           if (!this._isRushing(d, c)) continue;
-          this._throwFlag('illegal-rush', d, 'Illegal rush on ' + d.last);
+          this._throwFlag({ kind: 'illegal-rush', player: d, against: 'defense',
+                            msg: 'Illegal rush on ' + d.last,
+                            yards: ILLEGAL_RUSH_YDS, spot: s.losX });
           break;
         }
       }
@@ -1803,15 +1813,22 @@
   };
 
   /* A7 — FLAG GUARDING, the defining offensive foul of the sport: the carrier
-     shielding their flags from the defender. Modelled where it actually
-     happens — while someone has a grip on you and you are swatting them off.
-     Ten yards from the spot and a loss of down. */
+     using a hand, an arm or the ball to keep a defender off their flags.
+
+     This function existed since v2.17.0 with NO CALL SITES — the release notes
+     and REALISM.md both claimed it shipped, and it had never once fired. It is
+     wired up here.
+
+     There is no stiff-arm input to hang it on, so the honest mapping is the
+     escape move used against a grip that is already on you. Breaking a grab is
+     a cut, and cuts are legal — measured, 29.7% of plays contain one and they
+     must stay legal. Doing it a SECOND time to the same defender's hand, in
+     the same play, is not a cut; that is swatting the hand away, and it fires
+     on 1.1% of plays, which is about the once-a-game a real match sees. */
   Engine.prototype._flagGuard = function (c, d) {
-    var s = this.state;
-    this._flash(c.last + ' guarded the flag — 10 yards');
-    this.onEvent({ type: 'penalty', kind: 'flag-guard', player: c });
-    s.yardsToGoal = clamp(s.yardsToGoal + 10, 1, 50);
-    this._endPlay(GOAL_R - s.yardsToGoal, true);
+    this._throwFlag({ kind: 'flag-guard', player: c, against: 'offense',
+                      msg: c.last + ' guarded the flag',
+                      yards: FLAG_GUARD_YDS, spot: c.x });
   };
 
   /* A2 — THE FLAG DOES NOT BLOW THE WHISTLE.
@@ -1826,42 +1843,53 @@
      The official throws a marker and the play goes on. What it was worth is
      decided afterwards, by the offence, which is what accepting and declining
      a penalty is. */
-  Engine.prototype._throwFlag = function (kind, player, msg) {
+  Engine.prototype._throwFlag = function (spec) {
     var s = this.state;
     if (s.flag) return;                           // one marker makes the point
-    s.flag = { kind: kind, player: player, yards: ILLEGAL_RUSH_YDS,
-               spot: s.losX, msg: msg };
-    this._flash('\u{1F6A9} ' + msg);
-    this.onEvent({ type: 'flag', kind: kind, player: player });
+    s.flag = spec;
+    this._flash('\u{1F6A9} ' + spec.msg);
+    this.onEvent({ type: 'flag', kind: spec.kind, player: spec.player, against: spec.against });
   };
 
   /* Enforce or decline, once the play is over and there is something to
-     compare the penalty against. Returns true when the penalty has taken the
-     down over, in which case the caller must not advance it. */
-  Engine.prototype._resolveFlag = function (reachedMid) {
+     compare the penalty against — which is the whole reason the play is
+     allowed to finish. The side that did NOT foul chooses.
+
+     Returns 'took-over' when the penalty has replaced the down outright and
+     queued its own next snap, 'marked-off' when it has re-spotted the ball but
+     the down cycle still has to run, and false when it was declined. */
+  Engine.prototype._resolveFlag = function (reachedMid, turnover, mustAccept) {
     var s = this.state, f = s.flag;
     s.flag = null;
     if (!f) return false;
 
-    /* A conversion is not a down and cannot be marked off into one: a
-       defensive foul on the try means you try again. Once — a defence that
-       fouls its way through an unbounded number of replays would wedge the
-       game, and the rulebook's answer to that is an ejection, not a loop. */
+    /* A conversion is not a down and cannot be marked off into one. A
+       defensive foul on the try means you try again — once; a defence that
+       fouled its way through an unbounded number of replays would wedge the
+       game, and the rulebook's answer to that is an ejection, not a loop. An
+       offensive foul on a try just fails it, which the caller already does. */
     if (s.patActive) {
+      if (f.against === 'offense') { this._flash(f.msg + ' — the conversion is no good'); return false; }
       if (s.patReplayed) { this._flash(f.msg + ' — declined'); return false; }
       s.patReplayed = true;
       this._flash(f.msg + ' — the conversion is replayed');
       this.onEvent({ type: 'penalty', kind: f.kind, player: f.player, accepted: true });
       s.clockStops = true;
       this.runPlayClock(s.snapT || 0, true);
-      if (s.gameOver) return true;
+      if (s.gameOver) return 'took-over';
       this._nextSnap();
-      return true;
+      return 'took-over';
     }
+    return (f.against === 'defense')
+      ? this._enforceOnDefense(f, reachedMid)
+      : this._enforceOnOffense(f, turnover, mustAccept);
+  };
 
-    /* Illegal rush is 5 yards from the previous spot AND an automatic first
-       down, so it is worth taking unless the play itself already did better.
-       A touchdown declines it before we ever get here. */
+  /* Illegal rush: 5 yards from the previous spot AND an automatic first down,
+     so the offence takes it unless the play itself already did better. A
+     touchdown declines it before we ever get here. */
+  Engine.prototype._enforceOnDefense = function (f, reachedMid) {
+    var s = this.state;
     var playSpot = GOAL_R - s.yardsToGoal;
     var penSpot = clamp(f.spot + f.yards, GOAL_L + 1, GOAL_R - 1);
     var playWonTheDown = (!s.crossedMid && reachedMid);
@@ -1870,7 +1898,6 @@
       this.onEvent({ type: 'penalty', kind: f.kind, player: f.player, accepted: false });
       return false;
     }
-
     this._flash(f.msg + ' — ' + f.yards + ' yards, automatic first down');
     this.onEvent({ type: 'penalty', kind: f.kind, player: f.player, accepted: true });
     s.yardsToGoal = clamp(GOAL_R - penSpot, 1, 50);
@@ -1878,9 +1905,37 @@
     if (!s.crossedMid && penSpot >= MIDFIELD) s.crossedMid = true;
     s.clockStops = true;                          // a penalty stops the clock
     this.runPlayClock(s.snapT || 0, true);
-    if (s.gameOver) return true;
+    if (s.gameOver) return 'took-over';
     this._nextSnap();
-    return true;
+    return 'took-over';
+  };
+
+  /* Flag guarding: 10 yards from the SPOT OF THE FOUL — where the carrier was
+     standing when they swatted, not the line of scrimmage — and a loss of
+     down. The defence chooses, and declines whenever what happened on the
+     field was already better for them than the marker: an interception is
+     worth more than ten yards, and so is a play that lost more ground than the
+     penalty would take. */
+  Engine.prototype._enforceOnOffense = function (f, turnover, mustAccept) {
+    var s = this.state;
+    var playSpot = GOAL_R - s.yardsToGoal;
+    var penSpot = clamp(f.spot - f.yards, GOAL_L + 1, GOAL_R - 1);
+    /* On a touchdown the comparison below is meaningless — _endPlay never ran,
+       so yardsToGoal is still the pre-play value and the spot of a foul made
+       twenty yards downfield looks like a GAIN. Six points is worse for the
+       defence than any marker, full stop, so that case says so outright. */
+    if (!mustAccept && (turnover || penSpot >= playSpot)) {
+      this._flash(f.msg + ' — declined');
+      this.onEvent({ type: 'penalty', kind: f.kind, player: f.player, accepted: false });
+      return false;
+    }
+    this._flash(f.msg + ' — ' + f.yards + ' yards, loss of down');
+    this.onEvent({ type: 'penalty', kind: f.kind, player: f.player, accepted: true });
+    s.yardsToGoal = clamp(GOAL_R - penSpot, 1, 50);
+    s.clockStops = true;
+    // The down still has to advance, and marking the ball backwards cannot
+    // have reached midfield, so the caller runs the cycle with that cleared.
+    return 'marked-off';
   };
 
   Engine.prototype._checkBoundaries = function () {
@@ -1948,9 +2003,14 @@
 
   Engine.prototype._advanceDown = function (gained, reachedMid) {
     var s = this.state;
-    // A marker on the field outranks the down: it may replace this result
-    // entirely, and it carries its own clock and its own next snap.
-    if (s.flag && this._resolveFlag(reachedMid)) return;
+    // A marker on the field outranks the down. A defensive foul replaces this
+    // result outright and carries its own clock and next snap; an offensive
+    // one re-spots the ball and leaves the down cycle below to run.
+    if (s.flag) {
+      var pen = this._resolveFlag(reachedMid, false);
+      if (pen === 'took-over') return;
+      if (pen === 'marked-off') { gained = 0; reachedMid = false; }
+    }
     // A conversion is one play: it either reached the end zone or it didn't.
     if (s.patActive) { this._endPAT(false); return; }
     this.runPlayClock(s.snapT || 0, !!s.clockStops);
@@ -2047,16 +2107,21 @@
   var TAKEAWAY_HOLD = 2400;
 
   Engine.prototype._turnover = function (msg, byPlayer) {
-    /* An interception thrown under a defensive foul comes back. This is the
+    /* An interception thrown under a DEFENSIVE foul comes back. This is the
        case that makes letting the play finish worth anything: the offence gets
        to weigh what happened against what the foul is worth, and nobody would
-       ever keep the interception. */
+       ever keep the interception. An offensive foul on the same play is simply
+       declined — the defence would rather have the ball than ten yards — and
+       the turnover stands. */
     if (this.state.flag) {
-      this.state.phase = 'dead';
-      this._flash(msg);
-      var self = this;
-      setTimeout(function () { self._resolveFlag(false); }, 1200);
-      return;
+      if (this.state.flag.against === 'defense') {
+        this.state.phase = 'dead';
+        this._flash(msg);
+        var self = this;
+        setTimeout(function () { self._resolveFlag(false, true); }, 1200);
+        return;
+      }
+      this._resolveFlag(false, true);            // declined; falls through
     }
     this._flash(msg);
     var s = this.state;
@@ -2103,7 +2168,17 @@
 
   Engine.prototype._touchdown = function () {
     var s = this.state;
-    // Nothing a five-yard penalty can offer beats six points.
+    /* Nothing a five-yard penalty can offer the offence beats six points, so a
+       defensive foul is declined. An offensive one is the opposite case: you
+       cannot guard your way into the end zone, and the defence will always
+       take the marker over the score. */
+    if (s.flag && s.flag.against === 'offense') {
+      this.clearSlash();
+      s.phase = 'dead';            // or _checkBoundaries scores it again next frame
+      this._resolveFlag(false, false, true);
+      setTimeout(this._advanceDown.bind(this, 0, false), 900);
+      return;
+    }
     if (s.flag) { this._flash(s.flag.msg + ' — declined'); s.flag = null; }
     var off = this.offenseTeam();
     var c = s.carrier;            // the scorer: the celebration is built around them
@@ -2219,13 +2294,16 @@
 
   Engine.prototype._safety = function () {
     var s = this.state;
-    // Five yards and a first down beats handing over two points, every time.
-    if (s.flag) {
+    /* Five yards and a first down beats handing over two points, every time,
+       so a defensive foul is taken. An offensive one is declined: the defence
+       has just been awarded two and would not trade them for field position. */
+    if (s.flag && s.flag.against === 'defense') {
       s.phase = 'dead';
       var selfS = this;
-      setTimeout(function () { selfS._resolveFlag(false); }, 1200);
+      setTimeout(function () { selfS._resolveFlag(false, false); }, 1200);
       return;
     }
+    if (s.flag) { this._flash(s.flag.msg + ' — declined'); s.flag = null; }
     if (s.patActive) { this._endPAT(false); return; }
     var def = this.defenseTeam();
     this.clearSlash();            // scoring plays skip _endPlay, which usually does this
