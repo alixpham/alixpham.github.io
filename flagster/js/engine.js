@@ -22,6 +22,10 @@
   /* IFAF rules the arcade build never modelled. */
   var PASS_CLOCK = 7;                    // seconds to get the ball out, or it's dead
   var RUSH_LINE = 7;                     // a rusher must start this far off the LOS
+  var RUSH_LINE_SLOP = 0.25;             // ...measured at the snap, with a boot's grace
+  var ILLEGAL_RUSH_YDS = 5;              // the penalty, from the previous spot
+  var CROSSED_LOS = 0.5;                 // how far past the line before it counts as across
+  var CLOSING_ON_PASSER = 1.0;           // yd/s at the passer that separates a rush from coverage
   var NO_RUN_ZONE = 5;                   // no running plays inside 5 of a goal line or midfield
   var GRAVITY = 10.73;                   // yd/s^2 (9.81 m/s^2)
   var AI_JUKE_PER_SEC = 2.2;             // AI escape attempts per second, frame-rate free
@@ -152,6 +156,7 @@
     s.ball = { x: losX, y: cy, z: 0, inAir: false, onGround: true };
     s.carrier = null;
     s.snapT = 0;
+    s.flag = null;
 
     // Assign coverage
     this._assignDefense();
@@ -217,12 +222,21 @@
 
     /* Rushing is a CALL, not a constant. `rusher.blitz = true` used to run
        unconditionally, so Prevent Deep — a coverage whose entire point is not
-       to rush — still sent a free runner. Only calls that actually rush do. */
+       to rush — still sent a free runner. Only calls that actually rush do.
+
+       And a defender the coordinator sends is WALKED BACK to the rush line
+       first, so a call can't put an ineligible rusher on the field. The Blitz
+       call sent the middle linebacker from six yards — inside the seven-yard
+       line — and the rule looked the other way because the exemption keyed off
+       the call rather than off where the man was standing. Legality is a fact
+       about the alignment now (see snap()), so the alignment has to be right. */
+    function send(d) { d.blitz = true; d.x = Math.max(d.x, s.losX + RUSH_LINE); }
+
     var rusher = def.filter(function (d) { return d.slot === 'RUSH'; })[0];
-    if (rusher && play.blitz > 0) rusher.blitz = true;
+    if (rusher && play.blitz > 0) send(rusher);
 
     if (play.id === 'blitz') {
-      def.filter(function (d) { return d.slot === 'MLB'; }).forEach(function (d) { d.blitz = true; });
+      def.filter(function (d) { return d.slot === 'MLB'; }).forEach(send);
     }
     if (play.id === 'zone' || play.id === 'prevent') {
       // Zone: assign vertical thirds/flats
@@ -255,6 +269,22 @@
     // The snap is a real travel from the spot to the quarterback's hands.
     s.snapFly = { from: { x: s.ballSpot ? s.ballSpot.x : qb.x, y: s.ballSpot ? s.ballSpot.y : qb.y },
                   t: 0, dur: 0.22 };
+    /* A2 — WHO IS ALLOWED TO RUSH IS DECIDED HERE, and only here.
+
+       The rule is a fact about the alignment: you may rush the passer if you
+       were at or behind the rush line when the ball moved. It used to be read
+       off `d.blitz`, which is the coordinator's intention rather than anyone's
+       position, and the two disagreed in both directions — the called blitzer
+       came from six yards and was waved through, while the rusher standing
+       exactly on the line was ineligible on any call that didn't send him.
+       Stamped once, at the only moment the rule actually looks at. */
+    var line = s.losX + RUSH_LINE - RUSH_LINE_SLOP;
+    s.players.forEach(function (p) {
+      if (p.team === this.offenseTeam()) return;
+      p.rushLegal = (p.x >= line);
+    }, this);
+    s.flag = null;                       // no foul yet on this snap
+
     s.phase = 'live';
     s.snapT = 0;
     s.playClock = 0;
@@ -342,6 +372,28 @@
     return (vz + Math.sqrt(vz * vz + 2 * GRAVITY * drop)) / GRAVITY;
   }
 
+  /* Launch angle to cover horizontal distance d at speed v, from height z0 to
+     height z1. The flat root of
+
+       (g d^2 / 2v^2) tan^2(th) - d tan(th) + (dz + g d^2 / 2v^2) = 0
+
+     which is the range equation with the two ends at different heights.
+     Returns null when the arm cannot cover the distance at any angle.
+
+     This has to agree with flightTime() above or the pass misses by the
+     difference. It did not: the angle was solved with the ground-to-ground
+     sin(2th) = gd/v^2 while the flight was being timed hand-to-chest, so every
+     ball stayed up for the extra 0.45yd of falling and sailed that much past
+     the receiver — and only the underthrow branch corrected the spot, never
+     the overthrow. Completions measured 1.6%. */
+  function launchAngle(d, v, z0, z1) {
+    var k = GRAVITY * d * d / (2 * v * v);
+    if (k < 1e-6) return 0;
+    var disc = d * d - 4 * k * ((z1 - z0) + k);
+    if (disc < 0) return null;                    // out of range at any angle
+    return Math.atan((d - Math.sqrt(disc)) / (2 * k));
+  }
+
   /* Fire the pass the wind-up was building to. */
   Engine.prototype._releaseThrow = function () {
     var s = this.state;
@@ -379,25 +431,30 @@
     var dirx = d > 1e-4 ? (predicted.x - carrier.x) / d : 1;
     var diry = d > 1e-4 ? (predicted.y - carrier.y) / d : 0;
 
-    /* Solve the launch angle for the range. sin(2t) = g*d/v^2 has a flat root
-       and a lofted one; take the flat one and then impose a floor that grows
-       with distance, so a deep ball is actually thrown up in the air and is
-       catchable rather than a flat rocket. */
-    var s2 = GRAVITY * d / (throwSpeed * throwSpeed);
-    var theta;
-    if (s2 >= 1) {
-      theta = Math.PI / 4;              // out of range: best he's got, falls short
-    } else {
-      theta = 0.5 * Math.asin(s2);
-      theta = Math.max(theta, Math.min(Math.PI / 4, d * 0.011));
-    }
+    /* Solve the launch angle for the range, hand to chest: the flat root of
+       the two that reach the spot.
+
+       There used to be a floor under it that grew with distance, to stop a
+       deep ball being a flat rocket. It is not needed — the honest solve lofts
+       a 40-yard ball to 30 degrees on its own — and it actively lied about
+       short ones. Releasing at 1.60 and catching at 1.15 means a three-yard
+       pass is thrown very slightly DOWNWARD, at about -7 degrees; the floor
+       forced it up to +2 and the ball landed eight yards away instead of
+       three. Measured across 3 to 40 yards, the floor bound on every throw
+       inside 25 yards and put the ball up to 5 yards long. */
+    var theta = launchAngle(d, throwSpeed, RELEASE_Z, CATCH_Z);
+    if (theta == null) theta = Math.PI / 4;   // out of range: best he's got, falls short
     var hv = throwSpeed * Math.cos(theta);        // horizontal component
     var vz = throwSpeed * Math.sin(theta);        // vertical component
     var flight = flightTime(vz, RELEASE_Z, CATCH_Z);
-    var reach = hv * flight;                      // how far it ACTUALLY goes
-    if (reach < d) {                              // underthrow — the arm fell short
-      predicted = { x: carrier.x + dirx * reach, y: carrier.y + diry * reach };
-    }
+    /* Where the ball will ACTUALLY come down, which is the only honest value
+       for `to`. Raising theta to the loft floor also lengthens the throw, so
+       the aiming point and the landing point have to be reconciled after the
+       angle is final — in both directions. Correcting only the underthrow left
+       `to` pointing at the receiver while the ball flew past them. */
+    var reach = hv * flight;
+    predicted = { x: clamp(carrier.x + dirx * reach, 0, FIELD_LEN),
+                  y: clamp(carrier.y + diry * reach, 0, FIELD_WID) };
     s.ball = {
       x: carrier.x, y: carrier.y, z: RELEASE_Z, inAir: true,
       from: { x: carrier.x, y: carrier.y }, to: predicted,
@@ -1595,12 +1652,30 @@
         return;
       }
       // A2 — anyone rushing who didn't earn the right to
-      for (var i = 0; i < def.length; i++) {
-        var d = def[i];
-        if (d.blitz || d.flagPulled) continue;
-        if (d.x < s.losX - 0.5) { this._illegalRush(d); return; }
+      if (!s.flag) {
+        for (var i = 0; i < def.length; i++) {
+          var d = def[i];
+          if (d.rushLegal || d.flagPulled) continue;
+          if (d.x >= s.losX - CROSSED_LOS) continue;
+          if (!this._isRushing(d, c)) continue;
+          this._throwFlag('illegal-rush', d, 'Illegal rush on ' + d.last);
+          break;
+        }
       }
     }
+  };
+
+  /* Crossing the line is not by itself a rush. A linebacker in man coverage
+     whose assignment runs a swing route is standing in the backfield because
+     that is where his man went, and the old check flagged him for it — every
+     illegal rush the game called was that, and only that: 4.8% of plays, all
+     of them the middle linebacker, all of them under Man, not one of them an
+     actual rusher. What separates the two is who you are going at. */
+  Engine.prototype._isRushing = function (d, passer) {
+    if (d.cover && dist(d, d.cover) < dist(d, passer)) return false;
+    var dx = passer.x - d.x, dy = passer.y - d.y;
+    var m = Math.hypot(dx, dy) || 1;
+    return ((d.vx || 0) * dx + (d.vy || 0) * dy) / m > CLOSING_ON_PASSER;
   };
 
   /* A7 — FLAG GUARDING, the defining offensive foul of the sport: the carrier
@@ -1615,13 +1690,73 @@
     this._endPlay(GOAL_R - s.yardsToGoal, true);
   };
 
-  Engine.prototype._illegalRush = function (d) {
+  /* A2 — THE FLAG DOES NOT BLOW THE WHISTLE.
+
+     A defensive foul used to end the play the instant it happened, which is
+     both wrong and exploitable: rush illegally and any play you are losing
+     simply stops. On fourth down it was strictly good for the defence, because
+     `penaltyReplay` was written and never read anywhere, so the offence was
+     charged the down as well — 5 yards and a turnover on downs, handed over
+     for committing a foul.
+
+     The official throws a marker and the play goes on. What it was worth is
+     decided afterwards, by the offence, which is what accepting and declining
+     a penalty is. */
+  Engine.prototype._throwFlag = function (kind, player, msg) {
     var s = this.state;
-    this._flash('Illegal rush on ' + d.last + ' — 5 yards');
-    this.onEvent({ type: 'penalty', kind: 'illegal-rush', player: d });
-    s.penaltyReplay = true;                       // same down, ball moved on
-    s.yardsToGoal = clamp(s.yardsToGoal - 5, 1, 50);
-    this._endPlay(GOAL_R - s.yardsToGoal, true);
+    if (s.flag) return;                           // one marker makes the point
+    s.flag = { kind: kind, player: player, yards: ILLEGAL_RUSH_YDS,
+               spot: s.losX, msg: msg };
+    this._flash('🚩 ' + msg);
+    this.onEvent({ type: 'flag', kind: kind, player: player });
+  };
+
+  /* Enforce or decline, once the play is over and there is something to
+     compare the penalty against. Returns true when the penalty has taken the
+     down over, in which case the caller must not advance it. */
+  Engine.prototype._resolveFlag = function (reachedMid) {
+    var s = this.state, f = s.flag;
+    s.flag = null;
+    if (!f) return false;
+
+    /* A conversion is not a down and cannot be marked off into one: a
+       defensive foul on the try means you try again. Once — a defence that
+       fouls its way through an unbounded number of replays would wedge the
+       game, and the rulebook's answer to that is an ejection, not a loop. */
+    if (s.patActive) {
+      if (s.patReplayed) { this._flash(f.msg + ' — declined'); return false; }
+      s.patReplayed = true;
+      this._flash(f.msg + ' — the conversion is replayed');
+      this.onEvent({ type: 'penalty', kind: f.kind, player: f.player, accepted: true });
+      s.clockStops = true;
+      this.runPlayClock(s.snapT || 0, true);
+      if (s.gameOver) return true;
+      this._nextSnap();
+      return true;
+    }
+
+    /* Illegal rush is 5 yards from the previous spot AND an automatic first
+       down, so it is worth taking unless the play itself already did better.
+       A touchdown declines it before we ever get here. */
+    var playSpot = GOAL_R - s.yardsToGoal;
+    var penSpot = clamp(f.spot + f.yards, GOAL_L + 1, GOAL_R - 1);
+    var playWonTheDown = (!s.crossedMid && reachedMid);
+    if (playWonTheDown && penSpot <= playSpot) {
+      this._flash(f.msg + ' — declined');
+      this.onEvent({ type: 'penalty', kind: f.kind, player: f.player, accepted: false });
+      return false;
+    }
+
+    this._flash(f.msg + ' — ' + f.yards + ' yards, automatic first down');
+    this.onEvent({ type: 'penalty', kind: f.kind, player: f.player, accepted: true });
+    s.yardsToGoal = clamp(GOAL_R - penSpot, 1, 50);
+    s.down = 1;
+    if (!s.crossedMid && penSpot >= MIDFIELD) s.crossedMid = true;
+    s.clockStops = true;                          // a penalty stops the clock
+    this.runPlayClock(s.snapT || 0, true);
+    if (s.gameOver) return true;
+    this._nextSnap();
+    return true;
   };
 
   Engine.prototype._checkBoundaries = function () {
@@ -1666,6 +1801,9 @@
 
   Engine.prototype._advanceDown = function (gained, reachedMid) {
     var s = this.state;
+    // A marker on the field outranks the down: it may replace this result
+    // entirely, and it carries its own clock and its own next snap.
+    if (s.flag && this._resolveFlag(reachedMid)) return;
     // A conversion is one play: it either reached the end zone or it didn't.
     if (s.patActive) { this._endPAT(false); return; }
     this.runPlayClock(s.snapT || 0, !!s.clockStops);
@@ -1699,8 +1837,19 @@
   };
 
   Engine.prototype._turnover = function (msg, byPlayer) {
-    this._flash(msg);
     var s = this.state;
+    /* An interception thrown under a defensive foul comes back. This is the
+       case that makes letting the play finish worth anything: the offence gets
+       to weigh what happened against what the foul is worth, and nobody would
+       ever keep the interception. */
+    if (s.flag) {
+      s.phase = 'dead';
+      this._flash(msg);
+      var self = this;
+      setTimeout(function () { self._resolveFlag(false); }, 1200);
+      return;
+    }
+    this._flash(msg);
     this.onEvent({ type: 'turnover' });
     s.phase = 'dead';
     // Picked off on a conversion: the conversion simply failed.
@@ -1740,6 +1889,8 @@
     var s = this.state;
     var off = this.offenseTeam();
     this.clearSlash();            // scoring plays skip _endPlay, which usually does this
+    // Nothing a five-yard penalty can offer beats six points.
+    if (s.flag) { this._flash(s.flag.msg + ' — declined'); s.flag = null; }
     s.phase = 'dead';
     if (s.patActive) {            // crossing the line on a conversion is the conversion
       this.onEvent({ type: 'touchdown', team: off, pat: true });
@@ -1764,6 +1915,7 @@
     var s = this.state;
     if (s.gameOver) return;
     s.patActive = true;
+    s.patReplayed = false;
     s.patTeam = team;
     s.possession = team;
     s.down = 1;
@@ -1824,6 +1976,13 @@
 
   Engine.prototype._safety = function () {
     var s = this.state;
+    // Five yards and a first down beats handing over two points, every time.
+    if (s.flag) {
+      s.phase = 'dead';
+      var self = this;
+      setTimeout(function () { self._resolveFlag(false); }, 1200);
+      return;
+    }
     if (s.patActive) { this._endPAT(false); return; }
     var def = this.defenseTeam();
     this.clearSlash();            // scoring plays skip _endPlay, which usually does this
