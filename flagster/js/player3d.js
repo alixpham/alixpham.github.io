@@ -25,6 +25,34 @@
   'use strict';
 
   /* ------------------------------------------------------------------ utils */
+
+  /* THE FALLBACK HALF OF THE LOCOMOTION CONTRACT.
+
+     field3d drives every moving player through P.gait(kind, speed) — see the
+     blend space in playermodel.js, which picks the two authored strides that
+     bracket that speed and blends them so stride LENGTH changes as well as
+     cadence. Neither rig in this file has a ladder to blend: the procedural one
+     has a single run and a single walk, and the external-model path has
+     whatever the .glb happened to ship.
+
+     So they get the old behaviour behind the new call — one clip chosen by
+     speed, playback rate carrying the rest — rather than a missing method that
+     would leave a moving player standing in an idle pose. Neither of these
+     paths is normally reached (the rigged flagplayer.glb is the one the game
+     ships); they are what a failed asset load falls back to. */
+  function gaitShim(api, natural) {
+    api._buildScale = 1;
+    api.setBuildScale = function (k) { api._buildScale = (k > 0 ? k : 1); };
+    api.setPhaseOffset = function () {};        // no shared phase to offset
+    api.gaitInfo = function () { return null; };
+    api.gait = function (kind, speed) {
+      var nm = kind === 'backward' ? 'backpedal' : (speed < 2.4 ? 'walk' : 'run');
+      api.play(nm);
+      var m = (speed || 0) / (natural[nm] * api._buildScale);
+      api.setSpeed(m < 0.5 ? 0.5 : m > 2.4 ? 2.4 : m);
+    };
+  }
+
   function q(THREE, rx, ry, rz) {
     return new THREE.Quaternion().setFromEuler(new THREE.Euler(rx || 0, ry || 0, rz || 0));
   }
@@ -94,7 +122,7 @@
     var shortMat  = mkMat(THREE, '#20304a', { rough: 0.9 });
     var sockMat   = mkMat(THREE, '#f2f2f2', { rough: 0.9 });
     var shoeMat   = mkMat(THREE, '#141414', { rough: 0.6 });
-    var hairMat   = mkMat(THREE, '#241a12', { rough: 0.9 });
+    var hairMat   = mkMat(THREE, opts.hair || '#241a12', { rough: 0.9 });
 
     var root = new THREE.Group(); root.name = 'root';
     var nodes = {};
@@ -126,14 +154,37 @@
     chest.add(numberPlate(THREE, opts.number, opts.trim || '#fff', 0.3));
 
     // --- neck / head ---
+    /* --- neck / head ---
+       This is the no-Three.js-addons fallback: it must boot and it must accept
+       the same appearance vocabulary as the rigged rig, so a caller never has
+       to ask which one answered. It does NOT try to match it detail for
+       detail — there is no face texture and no baked hair variants here, so
+       skin, hair colour, how much hair, facial hair and the headband are the
+       parts that carry across. */
     var neck = node('neck', chest, 0, 0.46, 0);
     var head = node('head', neck, 0, 0.12, 0);
+    var headScale = opts.headScale || 1;
+    head.scale.setScalar(headScale);
     var skull = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 14), skinMat); skull.position.y = 0.1; head.add(skull);
-    var hair = new THREE.Mesh(new THREE.SphereGeometry(0.205, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.6), hairMat); hair.position.y = 0.12; head.add(hair);
+    // Hair volume follows the chosen style rather than one fixed skullcap.
+    var HAIR_VOL = { buzz: 0.202, crop: 0.208, fade: 0.207, afro: 0.228, locs: 0.220, long: 0.216 };
+    var HAIR_ARC = { buzz: 0.55, crop: 0.60, fade: 0.52, afro: 0.66, locs: 0.72, long: 0.74 };
+    var hs = HAIR_VOL[opts.hairStyle] ? opts.hairStyle : 'crop';
+    var hair = new THREE.Mesh(
+      new THREE.SphereGeometry(HAIR_VOL[hs], 16, 12, 0, Math.PI * 2, 0, Math.PI * HAIR_ARC[hs]), hairMat);
+    hair.position.y = 0.11; head.add(hair);
     var faceNub = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 8), skinMat); faceNub.position.set(0, 0.08, 0.18); head.add(faceNub); // nose = forward marker (+X)
-    // team headband
-    var band = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.028, 8, 18), mkMat(THREE, opts.trim || '#ffffff', { rough: 0.7 }));
-    band.rotation.x = Math.PI / 2; band.position.y = 0.05; head.add(band);
+    if (opts.facialHair) {
+      var beard = new THREE.Mesh(
+        new THREE.SphereGeometry(opts.facialHair === 'full' ? 0.185 : 0.13, 12, 10,
+          0, Math.PI * 2, Math.PI * 0.55, Math.PI * 0.45), hairMat);
+      beard.position.set(0, 0.10, opts.facialHair === 'full' ? 0.02 : 0.06);
+      head.add(beard);
+    }
+    if (opts.headband) {
+      var band = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.028, 8, 18), mkMat(THREE, opts.trim || '#ffffff', { rough: 0.7 }));
+      band.rotation.x = Math.PI / 2; band.position.y = 0.05; head.add(band);
+    }
 
     // --- arms (shoulder → upperArm → forearm → hand) ---
     function arm(side) {
@@ -438,7 +489,12 @@
     };
     api.oneShot = function (name, returnTo) { if (returnTo) api.play(returnTo); };  // model has no football one-shots
     api.setSpeed = function (m) { api._speed = m; if (A.run) A.run.timeScale = m; if (A.walk) A.walk.timeScale = m; };
-    api.face = function (yaw, dt) { var d = yaw - api._yaw; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; api._yaw += d * Math.min(1, (dt || 0.016) * 9); root.rotation.y = -api._yaw; };
+    gaitShim(api, { walk: 1.67, run: 5.78, backpedal: 3.10 });
+    /* Turn rate must not depend on how long the frame took — easing by
+       `dt * 9` catches up further on a long frame, so a hitching device turns
+       the body in visible steps. `1 - exp(-9*dt)` is the same filter with the
+       frame rate divided out (see ease() in field3d.js). */
+    api.face = function (yaw, dt) { var d = yaw - api._yaw; while (d > Math.PI) d -= Math.PI * 2; while (d < -Math.PI) d += Math.PI * 2; api._yaw += d * (1 - Math.exp(-9 * (dt || 0.016))); root.rotation.y = -api._yaw; };
     api.setYaw = function (yaw) { api._yaw = yaw; root.rotation.y = -yaw; };
     api.plate = plate;
     api.setPlateScale = function (k) { if (plate) plate.scale.set(1.9 * k, 0.48 * k, 1); };
@@ -468,8 +524,13 @@
     if (PM && PM.isReady && PM.isReady()) {
       try {
         return PM.build(THREE, {
-          jersey: opts.jersey, trim: opts.trim, skin: opts.skin,
+          jersey: opts.jersey, trim: opts.trim, skin: opts.skin, hair: opts.hair,
           number: opts.number, name: opts.name,
+          // Appearance: forwarded verbatim, so a caller only ever has to know
+          // one vocabulary whichever rig ends up answering.
+          hairStyle: opts.hairStyle, facialHair: opts.facialHair,
+          headband: opts.headband, headScale: opts.headScale,
+          gender: opts.gender, face: opts.face,
           scale: 2.385 / 1.850      // metres -> match the procedural rig's height
         });
       } catch (e) { /* fall through to the procedural rig */ }
@@ -525,7 +586,13 @@
     };
 
     // Play a one-shot then automatically crossfade back to a base loop.
+    /* The rigged model draws a distinction the procedural rig doesn't have:
+       'flagGrab' is the DEFENDER ripping the flag off, 'flagPulled' is the
+       carrier's reaction. This rig has one clip for the whole event, so both
+       names resolve to it rather than silently playing nothing. */
+    var CLIP_ALIAS = { flagGrab: 'flagPull', flagPulled: 'flagPull' };
     api.oneShot = function (name, returnTo, fade) {
+      name = (!actions[name] && CLIP_ALIAS[name]) ? CLIP_ALIAS[name] : name;
       if (!actions[name]) return;
       api._returnTo = returnTo || 'idle';
       var a = actions[name];
@@ -542,13 +609,14 @@
       if (actions.walk) actions.walk.timeScale = mult;
       if (actions.backpedal) actions.backpedal.timeScale = mult;
     };
+    gaitShim(api, { walk: 1.67, run: 5.78, backpedal: 3.10 });
 
     // Smoothly steer the whole body's facing toward a heading (radians).
     api.face = function (yaw, dt) {
       var diff = yaw - api._yaw;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
-      api._yaw += diff * Math.min(1, (dt || 0.016) * 9);
+      api._yaw += diff * (1 - Math.exp(-9 * (dt || 0.016)));   // frame-rate independent, as above
       root.rotation.y = Math.PI / 2 - api._yaw;   // rig forward = +Z
     };
     api.setYaw = function (yaw) { api._yaw = yaw; root.rotation.y = Math.PI / 2 - yaw; };

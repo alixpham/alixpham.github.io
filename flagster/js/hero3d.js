@@ -93,8 +93,17 @@
     // sets the inner root's rotation.y and survives for every clip except the
     // brief 'dive' (which authors its own forward pitch — acceptable).
     function makeP3D(cfg, name, number, x, z) {
+      /* Three players stood on the menu with one face between them. They get
+         the same seeded appearance the field does, keyed on the name, so the
+         landing screen shows three different people — which is the first thing
+         anyone sees of the roster. */
+      var PMod = global.FLAGSTER && global.FLAGSTER.PlayerModel;
+      var look = (PMod && PMod.appearanceOf) ? PMod.appearanceOf('hero:' + name) : {};
       var P = P3D.build(THREE, {
-        jersey: cfg.jersey, trim: cfg.trim, skin: cfg.skin, number: number, name: name
+        jersey: cfg.jersey, trim: cfg.trim, number: number, name: name,
+        skin: cfg.skin || look.skin, hair: look.hair, hairStyle: look.hairStyle,
+        facialHair: look.facialHair, headband: look.headband,
+        headScale: look.headScale, gender: look.gender, face: look.face
       });
       var carrier = new THREE.Group();
       carrier.scale.setScalar(PSCALE);
@@ -107,9 +116,9 @@
     }
 
     var COL = {
-      blue:  { jersey: '#2b5cff', trim: '#ffffff', skin: '#e8b98f' },
-      red:   { jersey: '#d80621', trim: '#ffdf00', skin: '#c68a5e' },
-      green: { jersey: '#2ec77a', trim: '#08331d', skin: '#f2d3b3' }
+      blue:  { jersey: '#2b5cff', trim: '#ffffff' },
+      red:   { jersey: '#d80621', trim: '#ffdf00' },
+      green: { jersey: '#2ec77a', trim: '#08331d' }
     };
 
     var ball = makeBall(THREE);
@@ -118,10 +127,6 @@
     var looseFlag = makeFlagRibbon(THREE, 0xffd23f);
     looseFlag.visible = false;
     scene.add(looseFlag);
-
-    // Confetti pool for the celebration
-    var confetti = makeConfetti(THREE);
-    scene.add(confetti.group);
 
     // ---- Ball controller (shared prop; owned by whichever move holds it) ---
     var ballCtrl = {
@@ -151,7 +156,7 @@
     // driven through the Player3D API (play/oneShot/setSpeed/setYaw/face). The
     // ball is only touched by the "star" (red) rotation, and the loose flag only
     // by the defender (green) rotation, so props never fight.
-    var ctx = { ball: ballCtrl, looseFlag: looseFlag, confetti: confetti, THREE: THREE };
+    var ctx = { ball: ballCtrl, looseFlag: looseFlag, THREE: THREE };
 
     // The landing screen must show the SAME rigged, skinned players you play
     // with, not the procedural stand-in. The .glb is still in flight when the
@@ -220,7 +225,6 @@
       }
 
       ballCtrl.update(dt);
-      confetti.update(dt);
 
       renderer.render(scene, camera);
       raf = global.requestAnimationFrame(frame);
@@ -269,37 +273,6 @@
     ball.position.set(0, 1.4, 0.4);
     ball.visible = false;
     return ball;
-  }
-
-  function makeConfetti(THREE) {
-    var group = new THREE.Group();
-    var cols = [0x2ec77a, 0xffd23f, 0x3c82ff, 0xff5a5a, 0xffffff];
-    var pieces = [];
-    for (var i = 0; i < 40; i++) {
-      var m = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.1, 0.1),
-        new THREE.MeshBasicMaterial({ color: cols[i % cols.length], side: THREE.DoubleSide })
-      );
-      m.visible = false; group.add(m);
-      pieces.push({ mesh: m, vy: 0, vx: 0, vz: 0, life: 0, spin: 0 });
-    }
-    function burst(x, y, z) {
-      pieces.forEach(function (p) {
-        p.mesh.visible = true; p.mesh.position.set(x, y, z);
-        p.vx = (Math.random() - 0.5) * 3; p.vy = 2 + Math.random() * 3; p.vz = (Math.random() - 0.5) * 2;
-        p.life = 1.4; p.spin = (Math.random() - 0.5) * 12;
-      });
-    }
-    function update(dt) {
-      pieces.forEach(function (p) {
-        if (p.life <= 0) { p.mesh.visible = false; return; }
-        p.life -= dt; p.vy -= 9 * dt;
-        p.mesh.position.x += p.vx * dt; p.mesh.position.y += p.vy * dt; p.mesh.position.z += p.vz * dt;
-        p.mesh.rotation.z += p.spin * dt; p.mesh.rotation.x += p.spin * dt;
-        if (p.mesh.position.y < 0.05) { p.mesh.position.y = 0.05; p.vy = 0; p.vx *= 0.7; }
-      });
-    }
-    return { group: group, burst: burst, update: update };
   }
 
   /* --------------------- MOVE ROTATION / STATE MACHINE ------------------- */
@@ -370,7 +343,11 @@
         P.oneShot('juke', 'run', 0.15);   // plant + spin, auto-return to run
         break;
       case 'highstep':
-        P.setSpeed(2.1); P.play('walk', 0.25);   // lively, exaggerated strut
+        // There is a real HighStep clip now (knees to the chest, on the spot).
+        // This used to be the walk cycle run at 2.1x, which is a man hurrying,
+        // not a man showing off. Fall back to that if the rig predates it.
+        if (P.actions && (P.actions.HighStep || P.actions.highstep)) P.play('highstep', 0.25);
+        else { P.setSpeed(2.1); P.play('walk', 0.25); }
         break;
       case 'throw':
         P.oneShot('throw', 'idle', 0.2);
@@ -466,7 +443,7 @@
     }
   }
 
-  // Diving catch — face the ball, translate forward through the dive; confetti pop.
+  // Diving catch — face the ball, translate forward through the dive.
   function driveDive(st, t, dt, ctx) {
     var P = st.P, b = st.base, c = st.carrier, ball = ctx.ball;
     P.face(moveBaseYaw('dive'), dt);
@@ -475,26 +452,17 @@
     var travel = Math.min(t, 1.2) / 1.2;
     c.position.x = b.x;
     c.position.z = approachZ(b.z, travel * 1.6, 1.6);
-    if (t < 0.5) { ball.hold(b.x, 1.5, c.position.z + 1.2); st.flags.caught = false; }
-    else if (t < 1.1) { ball.hold(c.position.x, 1.0, c.position.z + 0.4); }
-    else { ball.hide(); }
-    if (!st.flags.caught && t > 0.6) {
-      ctx.confetti.burst(c.position.x, 1.2, c.position.z + 0.4);
-      st.flags.caught = true;
-    }
+    if (t < 0.5) ball.hold(b.x, 1.5, c.position.z + 1.2);
+    else if (t < 1.1) ball.hold(c.position.x, 1.0, c.position.z + 0.4);
+    else ball.hide();
   }
 
-  // Celebrate — face the camera; confetti burst on entry; loop the celebrate clip.
+  /* Celebrate — face the camera and loop the celebrate clip. No confetti: the
+     celebration belongs to the player, not to paper over the lens. */
   function driveCelebrate(st, t, dt, ctx) {
-    var P = st.P, b = st.base, ball = ctx.ball, confetti = ctx.confetti;
+    var P = st.P, b = st.base, ball = ctx.ball;
     P.face(moveBaseYaw('celebrate') + Math.sin(t * 2) * 0.15, dt);
     st.carrier.position.set(b.x, 0, b.z);
-    if (!st.flags.burst && t > 0.15) {
-      confetti.burst(b.x, 2.6, b.z);
-      st.flags.burst = true;
-    }
-    // occasional re-burst to keep it festive over the ~5s move
-    if (t > 2.6 && !st.flags.burst2) { confetti.burst(b.x, 2.6, b.z); st.flags.burst2 = true; }
     ball.hide();
   }
 

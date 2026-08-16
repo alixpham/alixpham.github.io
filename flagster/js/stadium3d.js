@@ -13,7 +13,7 @@
 
    WORLD CONTRACT (must match field3d.js):
      1 unit = 1 yard, ground plane y = 0, field CENTERED on the origin.
-     length X: -35 .. +35     width Z: -12.5 .. +12.5
+     length X: -35 .. +35     width Z: -15 .. +15
      end zones: x in [-35,-25] (away/left) and [+25,+35] (home/right)
      playing area x in [-25,+25], midfield x = 0, offense attacks +x.
 
@@ -25,10 +25,10 @@
 
   /* ------------------------------ constants ------------------------------ */
   var LEN = 70;              // total field length (incl. both end zones)
-  var WID = 25;              // field width
+  var WID = 30;              // field width (NFL Flag: 70 x 30)
   var EZ = 10;               // end zone depth
   var HALF_L = LEN / 2;      // 35
-  var HALF_W = WID / 2;      // 12.5
+  var HALF_W = WID / 2;      // 15
   var GOAL = HALF_L - EZ;    // 25  -> goal lines at x = +/-25
 
   var DEF = {
@@ -74,7 +74,7 @@
   /**
    * makeTurf(THREE, opts) -> THREE.Mesh
    * opts: { awayColor, homeColor, awayName, homeName }
-   * A 70x25 PlaneGeometry rotated flat at y=0 with a procedurally painted
+   * A 70x30 PlaneGeometry rotated flat at y=0 with a procedurally painted
    * CanvasTexture (mow stripes, yard lines, hashes, numbers, end zones).
    */
   function makeTurf(THREE, opts) {
@@ -84,7 +84,11 @@
     var awayName = String(opt(opts, 'awayName')).toUpperCase();
     var homeName = String(opt(opts, 'homeName')).toUpperCase();
 
-    var W = 2048, H = 768;                       // ~70:25 (2.8) vs 2.67 — close enough
+    /* The canvas has to carry the field's own aspect or everything painted on
+       it is stretched: at 2048x768 on a 70x30 field a yard is 29px across and
+       26px down, so the numbers lean and the yard lines come out thicker one
+       way than the other. 2048/(70/30) = 878. */
+    var W = 2048, H = Math.round(W / (LEN / WID));
     var cv = document.createElement('canvas');
     cv.width = W; cv.height = H;
     var g = cv.getContext('2d');
@@ -133,7 +137,7 @@
       var fit = (X1 - X0) * 0.62;                // available "height" of glyphs
       g.font = 'bold ' + Math.round(fit) + 'px Impact, "Arial Black", Arial, sans-serif';
       g.textAlign = 'center'; g.textBaseline = 'middle';
-      // squeeze long names to fit the 25-yard width
+      // squeeze long names to fit the field's width
       var maxW = H * 0.88;
       var m = g.measureText(name).width;
       if (m > maxW) g.scale(maxW / m, 1);

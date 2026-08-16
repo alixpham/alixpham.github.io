@@ -547,11 +547,16 @@
       this.playcallEl.classList.add('hidden');
       this.touch.classList.add('hidden');
       clearTimeout(this._demoT);
+      /* 700ms once, which is less time than a celebration takes. Calling the
+         play builds the next formation, and a new formation ends whatever the
+         renderer was celebrating (field3d, rebuildPlayers) — so in attract mode
+         a first down was cut off about half way through. A CPU side is allowed
+         to enjoy it for as long as the celebration lasts. */
       this._demoT = setTimeout(function () {
         eng.autoCall();
         clearTimeout(self._demoSnapT);
         self._demoSnapT = setTimeout(function () { eng.snap(); }, 900);
-      }, 700);
+      }, 1400);
       return;
     }
     this._hintShown = false;
