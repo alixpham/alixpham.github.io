@@ -15,6 +15,24 @@
 
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
   function lerp(a, b, t) { return a + (b - a) * t; }
+  /* FRAME-RATE-INDEPENDENT SMOOTHING.
+
+     Every lag filter in here used to ease by `dt * rate`, which covers a
+     fraction of the remaining distance proportional to how long the frame
+     took. That makes the filter's time constant a function of the frame rate,
+     so a device that hitches does not merely render late — the camera and the
+     blends physically move differently on the long frames than the short ones,
+     and the shot chatters.
+
+     This is the exact fraction an exponential decay covers in dt seconds.
+     Identical motion at 30fps, at 60fps, and straight through a stutter.
+     Measured on the chase camera with two dt sequences of the SAME MEAN
+     (steady 1/60 against alternating 8ms/25ms), the old form's median
+     frame-to-frame lateral jerk went from 0.0014 to 0.0419 world units — 30x,
+     and 64x in the sideline frames where the camera has a lateral target to
+     track at all. At 60fps this agrees with the old form to within 3%, so
+     every rate below stays tuned as it was. */
+  function ease(rate, dt) { return 1 - Math.exp(-rate * dt); }
   // Interpolate an angle along the shortest path (radians).
   function lerpAngle(a, b, t) {
     var d = b - a;
@@ -25,7 +43,7 @@
 
   // Field constants (yards) — mirror engine.js
   var F = (global.FLAGSTER && global.FLAGSTER.Engine && global.FLAGSTER.Engine.FIELD) ||
-          { LEN: 70, WID: 25, EZ: 10, GOAL_L: 10, GOAL_R: 60, MID: 35 };
+          { LEN: 70, WID: 30, EZ: 10, GOAL_L: 10, GOAL_R: 60, MID: 35 };
   var LEN = F.LEN, WID = F.WID, EZ = F.EZ, GOAL_L = F.GOAL_L, GOAL_R = F.GOAL_R, MID = F.MID;
 
   /* Face where you're going — or where you're coming FROM. Never square across it.
@@ -72,7 +90,7 @@
 
   // Field(yards) -> world(units). Field centered on origin, ground plane y=0.
   function wx(fx) { return fx - LEN / 2; }   // -35 .. +35   (offense attacks +x)
-  function wz(fy) { return fy - WID / 2; }   // -12.5 .. +12.5
+  function wz(fy) { return fy - WID / 2; }   // -15 .. +15
 
   function toColor(THREE, hex) { try { return new THREE.Color(hex); } catch (e) { return new THREE.Color(0x888888); } }
 
@@ -319,12 +337,25 @@
        elbow bent to about a right angle, forearm level and across the front.
 
        That last part is why the arm pose and the ball offsets have to be tuned
-       together and are written together. Sampled every frame across a full
-       stride in the running game, the ball holds 0.17yd from the elbow joint
-       and 0.29yd from the hand with a spread of ZERO on both — which is the
-       whole point of hanging it off the limb, and is what the chest could
-       never give. It rides 0.21yd below the chest bone, against 0.09 before,
-       so it also finally sits down at the waist where it belongs.
+       together and are written together.
+
+       BUT A HELD BALL IS NOT A STILL ONE. Hanging the ball off the forearm and
+       then pinning that forearm to a constant rotation made the ball rigid and
+       the arm a mannequin: nothing animates the Shoulder these two bones hang
+       from, so a constant pose at full weight is literally a welded limb.
+       Measured on a clean carry at running speed, the ball-side upper arm's
+       own rotation moved 0.024 across a stride against the free arm's 0.549 —
+       4% — and the hand travelled 0.031 in chest-local space against 0.635.
+       The player ran and the arm did not move at all.
+
+       A runner does clamp the ball, but the arm still drives: the elbow stays
+       shut and the whole assembly pumps fore and aft from the shoulder, in the
+       same rhythm as the free arm and roughly a third of its amplitude. So the
+       pose below is a BASE plus a `swing`, sampled from the same cosine and the
+       same peak phase that built the rig's own arm tracks (see armTracks in
+       tools/build-player-glb.mjs — the left arm leads at 0.12 of the cycle, the
+       right half a cycle behind it), which is what keeps it contralateral to
+       the legs instead of reading as a second animation over the first.
 
        Ball offsets are FOREARM-local; arm rotations are the bone's own. Both
        mirror with `side`: +1 carries on the player's LEFT. The rotation about
@@ -334,9 +365,17 @@
     var HALF_PI = Math.PI / 2;
     var CARRY = {
       host:     'LowerArm',                          // the forearm bone
-      ball:     { pos: [0.055, -0.13, -0.05], rot: [0, 0.18, -HALF_PI] },
-      upperArm: [0.12, -0.28, 0.13],                 // hangs, turned slightly in
-      lowerArm: [-1.69, 0, 0.05]                     // ~97 degrees: forearm level
+      /* The ball sits at the HAND end of the forearm (the bone runs 0.27 down
+         its own -Y to the wrist), not halfway along it, so the hand is on the
+         ball instead of reaching past its nose — which is what it did at
+         -0.13, and it read as a ball balanced on a shelf. */
+      ball:     { pos: [0, -0.27, -0.08], rot: [0, 0.50, -1.35] },
+      upperArm: [-0.05, -0.42, 0.22],                // elbow in at the ribs
+      lowerArm: [-2.35, 0, 0.05],                    // ~135 deg: forearm up across the chest
+      /* Fore-aft drive, in radians of amplitude about the base. The free arm
+         covers 26 to -46 degrees, i.e. +/-0.63rad; the elbow barely opens at
+         all because the ball is clamped in it. */
+      swing:    { upper: 0.24, lower: 0.05, peakL: 0.12 }
     };
     /* A passer still holding it has it IN THE THROWING HAND, at the near
        shoulder, with the off hand brought across onto it — which is both what
@@ -388,25 +427,103 @@
     }
 
     var _q = new THREE.Quaternion(), _e = new THREE.Euler();
+    // Scratch for the per-frame lean (see the LEAN block in syncPlayer).
+    var _axis = new THREE.Vector3(), _qbank = new THREE.Quaternion(), _qpitch = new THREE.Quaternion();
     /* Blend one arm toward a posed rotation. Weight 0 leaves the clip alone and
        1 takes it over completely, so a pose can fade in and out instead of
        snapping — and slerping the bone means it composes with whatever the
-       mixer just wrote rather than fighting it. */
-    function poseArm(P, suffix, sign, upper, lower, w) {
+       mixer just wrote rather than fighting it.
+
+       `drive` is added to the fore-aft angle of both joints before the slerp:
+       it is what stops a full-weight pose from being a welded limb. It is not
+       a blend with the clip — blending back toward the clip would open the
+       elbow and drop the ball out of the arm, which is the one thing the pose
+       exists to prevent. The elbow keeps its angle and the whole closed arm
+       swings from the shoulder. */
+    function poseArm(P, suffix, sign, upper, lower, w, driveUp, driveLo) {
       if (!P.nodes || w <= 0.001) return;
       var up = P.nodes['UpperArm_' + suffix], lo = P.nodes['LowerArm_' + suffix];
       if (!up || !lo) return;
-      _q.setFromEuler(_e.set(upper[0], upper[1] * sign, upper[2] * sign));
+      _q.setFromEuler(_e.set(upper[0] + (driveUp || 0), upper[1] * sign, upper[2] * sign));
       up.quaternion.slerp(_q, w);
-      _q.setFromEuler(_e.set(lower[0], lower[1] * sign, lower[2] * sign));
+      _q.setFromEuler(_e.set(lower[0] + (driveLo || 0), lower[1] * sign, lower[2] * sign));
       lo.quaternion.slerp(_q, w);
     }
     /* Apply a whole grip: the arm the ball is in, plus — for the two-handed
-       ready position — the off arm reaching across onto it. */
-    function poseGrip(P, grip, side, w) {
+       ready position — the off arm reaching across onto it.
+
+       `phase` is where the legs are in the stride (null when no gait is
+       running) and `amp` scales the drive down as the player slows, so a
+       carrier standing still holds the ball still instead of pumping an arm
+       on the spot. The cosine and the peak are the rig's own: the left arm is
+       furthest forward at 0.12 of the cycle and the right half a cycle behind,
+       so the ball-side arm stays contralateral to the legs. */
+    function poseGrip(P, grip, side, w, phase, amp) {
       var main = side > 0 ? 'L' : 'R', off = side > 0 ? 'R' : 'L';
-      poseArm(P, main, side, grip.upperArm, grip.lowerArm, w);
-      if (grip.offUpperArm) poseArm(P, off, -side, grip.offUpperArm, grip.offLowerArm, w);
+      var sw = grip.swing, dUp = 0, dLo = 0;
+      if (sw && phase != null && amp > 0.001) {
+        var peak = side > 0 ? sw.peakL : (sw.peakL + 0.5) % 1;
+        var c = Math.cos(2 * Math.PI * (phase - peak));
+        dUp = sw.upper * amp * c;
+        dLo = sw.lower * amp * c;
+      }
+      poseArm(P, main, side, grip.upperArm, grip.lowerArm, w, dUp, dLo);
+      // The off arm mirrors the drive, half a cycle out, so a two-handed ready
+      // position doesn't leave one arm alive and the other dead.
+      if (grip.offUpperArm) poseArm(P, off, -side, grip.offUpperArm, grip.offLowerArm, w, -dUp, -dLo);
+    }
+
+    /* ---- GOING FOR THE FLAG ------------------------------------------------
+       A grab is a STATE, not an event: the defender has hold of the carrier
+       and the meter fills for as long as they can stay there, which is
+       anywhere from half a second to indefinitely if the runner is shifty
+       enough. A one-shot cannot express that — so the reach is a pose layered
+       over whatever the legs are doing, exactly like the ball carry, and the
+       one-shot FlagGrab clip only plays for the rip at the end.
+
+       Both arms drive out in front at the height of the other man's waist.
+       The defence already faces whatever it is chasing (see the facing block
+       in syncPlayer), so straight ahead IS at the flag.
+
+       These are quaternions rather than eulers because that is the only honest
+       way to write an arm that is elevated, swept across the body and rotated
+       about its own axis all at once — the same solve the Throw and FlagGrab
+       clips are authored through, run once:
+           right arm  elevation 62, horizontal 80, ER 10, elbow 22
+           left  arm  elevation 58, horizontal 78, ER  8, elbow 28
+       (tools/build-player-glb.mjs, armQ). */
+    var REACH = {
+      R: { up: [-0.3642, 0.4917, -0.3642, 0.7022], lo: [-0.384, 0, -0.05] },
+      L: { up: [-0.3306, -0.5017, 0.3546, 0.7164], lo: [-0.489, 0, 0.05] }
+    };
+    var _rq = new THREE.Quaternion();
+    function poseReach(P, w) {
+      if (!P.nodes || w <= 0.001) return;
+      ['R', 'L'].forEach(function (side) {
+        var up = P.nodes['UpperArm_' + side], lo = P.nodes['LowerArm_' + side];
+        if (!up || !lo) return;
+        var r = REACH[side];
+        _rq.set(r.up[0], r.up[1], r.up[2], r.up[3]);
+        up.quaternion.slerp(_rq, w);
+        _q.setFromEuler(_e.set(r.lo[0], r.lo[1], r.lo[2]));
+        lo.quaternion.slerp(_q, w);
+      });
+    }
+
+    /* Bias the chest and the head toward the inside of a turn. The rig's spine
+       bones point +Y with the character's LEFT at +X, so a positive rotation
+       about the bone's own Y turns the nose to the player's left — the same
+       sense as `lead`. Multiplied onto what the clip wrote rather than slerped
+       toward a pose: this is an offset, not a destination, and the gait's own
+       counter-rotation underneath it has to survive. */
+    var _leadQ = new THREE.Quaternion(), _leadAx = new THREE.Vector3(0, 1, 0);
+    function leadTrunk(P, lead) {
+      if (!P.nodes) return;
+      var chest = P.nodes.Chest, head = P.nodes.Head;
+      if (chest) { _leadQ.setFromAxisAngle(_leadAx, lead * 0.55); chest.quaternion.multiply(_leadQ); }
+      // The head goes furthest and gets there first — it is looking at where
+      // the player has decided to be, which is the whole reason the rest turns.
+      if (head) { _leadQ.setFromAxisAngle(_leadAx, lead * 0.85); head.quaternion.multiply(_leadQ); }
     }
 
     // Flying-flag effect pool (spawned on flag pulls)
@@ -418,55 +535,148 @@
     var slashInk = makeSlashInk(THREE);
     scene.add(slashInk.group);
 
-    // Touchdown flash sprite (full-scene tint via a big plane facing camera)
-    var tdFx = { t: 0, dur: 0 };
+    /* ========================== CELEBRATIONS ============================
+       A touchdown and a first down are both good news and they are not the
+       same news, so they must not look the same. The engine says WHICH
+       happened, WHERE, and to which side (engine._celebrate); everything about
+       how big it looks lives here.
+
+           td         the whole scoring side, for nearly three seconds: high
+                      jumps, the scorer spins to the camera, and a seven-yard
+                      shockwave opening under the scorer.
+           firstdown  the carrier and anyone standing within eight yards, for a
+                      beat: a bounce, a turn toward the man who moved the
+                      chains, and a ring a third the size.
+
+       NO CONFETTI. It used to bury the shot in paper — five waves of 130
+       pieces at a touchdown, drifting through the frame for six seconds. The
+       celebration is what the players do; the paper was in front of it.
+
+       HOP_RATE is 2*PI on purpose: the baked Celebrate clip hops twice a second
+       (tools/build-player-glb.mjs, HOP) and its action is reset when the
+       celebration starts, so a hop added at that rate lands WITH the clip's own
+       instead of beating against it.
+
+       Nobody is TRANSLATED by any of this. The engine stops moving players the
+       moment the ball is dead (_update returns unless phase is 'live'), so a
+       renderer-side mob would be five bodies sliding across the turf under a
+       stationary clip — the exact skate the stride matching above exists to
+       kill. Celebrations are performed on the spot. */
+    var CELEB = {
+      td:        { dur: 2.5,  hop: 0.34, radius: Infinity, stagger: 0.13, spin: 0.85,
+                   ring: { r: 7.0, dur: 0.75 }, star: 1.35 },
+      firstdown: { dur: 1.25, hop: 0.14, radius: 8,        stagger: 0.05, spin: 0,
+                   ring: { r: 2.6, dur: 0.40 }, star: 1.15 },
+      /* A takeaway is the defence's touchdown. It gets the whole side, like a
+         score, but a beat shorter and without the spin: the man holding the
+         ball has just turned upfield out of habit and the celebration is the
+         other four arriving at him, not a pose for the camera. */
+      takeaway:  { dur: 2.1,  hop: 0.30, radius: Infinity, stagger: 0.10, spin: 0.35,
+                   ring: { r: 5.5, dur: 0.65 }, star: 1.30 }
+    };
+    var HOP_RATE = Math.PI * 2;
+
+    /* WHO DOES WHAT IN THE END ZONE.
+
+       The scorer spikes the ball — once, because a spike is an event — and then
+       dances. Everyone else picks one of the four looping celebrations off
+       their own roster index, so a group is four different silhouettes rather
+       than one clip played ten times in unison. Deterministic in the index, so
+       the same player celebrates the same way all game and it reads as
+       character instead of noise.
+
+       Only a touchdown gets the full range: a first down is a beat, not a
+       party, so it keeps the hop everyone already knows. */
+    var CELEB_LOOPS = ['dance', 'highstep', 'flex', 'celebrate'];
+    function celebClipFor(ud, cel) {
+      if (cel.cfg.radius !== Infinity) return 'celebrate';
+      if (cel.star) return 'dance';
+      return CELEB_LOOPS[(ud.idx * 3 + 1) % CELEB_LOOPS.length];
+    }
+    var celeb = { kind: '', cfg: null, t: 0, dur: 0, team: null, x: MID, y: WID / 2 };
+
+    // The shockwave on the turf — the only thing the celebration draws that
+    // isn't a player.
+    var shock = makeShockRing(THREE);
+    scene.add(shock.mesh);
+
+    function startCeleb(kind, a) {
+      var cfg = CELEB[kind];
+      if (!cfg) return;
+      celeb.kind = kind; celeb.cfg = cfg;
+      celeb.t = 0; celeb.dur = cfg.dur;
+      celeb.team = a.team || null;
+      celeb.x = (a.x != null && isFinite(a.x)) ? a.x : MID;
+      celeb.y = (a.y != null && isFinite(a.y)) ? a.y : WID / 2;
+      shock.fire(wx(celeb.x), wz(celeb.y), cfg.ring.r, cfg.ring.dur);
+    }
+
+    /* Advance the celebration clock. Called once per frame, before the players
+       are synced, so a celebration that starts this frame is already running
+       when they read it. */
+    function updateCeleb(dt) {
+      if (celeb.dur <= 0) return;
+      celeb.t += dt;
+      if (celeb.t >= celeb.dur) { celeb.dur = 0; celeb.kind = ''; celeb.cfg = null; }
+    }
+
+    function stopCeleb() { celeb.dur = 0; celeb.kind = ''; celeb.cfg = null; }
+
+    /* Is this player celebrating, and how hard? null when they are not.
+       Membership is re-derived every frame rather than captured, which is only
+       sound because nothing moves while the ball is dead — and the one thing
+       that WOULD move everybody, a new formation, stops the celebration
+       outright (rebuildPlayers). */
+    function celebFor(gp, ud, state) {
+      var cfg = celeb.cfg;
+      if (!cfg || celeb.dur <= 0 || !celeb.team || gp.team !== celeb.team) return null;
+      if (isFinite(cfg.radius) && Math.hypot(gp.x - celeb.x, gp.y - celeb.y) > cfg.radius) return null;
+      var age = celeb.t - (ud.idx % 5) * cfg.stagger;
+      if (age <= 0) return null;
+      // Ease in so the first frame isn't a pop, and out so the last isn't.
+      var w = Math.min(1, age / 0.18, Math.max(0, celeb.dur - celeb.t) / 0.35);
+      return { cfg: cfg, age: age, w: w, star: (state.carrier === gp) };
+    }
 
     // Realistic rigged players (FLAGSTER.Player3D) are (re)built whenever the
     // roster array changes. Each entry: { P, ring, ud }.
     var PLAYER3D = global.FLAGSTER && global.FLAGSTER.Player3D;
+    var PM = global.FLAGSTER && global.FLAGSTER.PlayerModel;
     // Human scale: the rig is ~2.39yd tall, so 0.87 puts players at ~6'2".
     // (It was 1.45 — which rendered ~10ft-tall giants.)
 
-    /* STRIDE MATCHING — why the players used to skate.
+    /* STRIDE MATCHING — why the players used to skate, and why they used to
+       whir.
 
        A clip with no root motion only looks planted if the support foot sweeps
-       backward at exactly the speed the ground moves under it. That rate is set
-       by the STANCE phase, not by the whole cycle:
+       backward at exactly the speed the ground moves under it. That rate is a
+       property of the CLIP, and it used to be a pair of constants measured by
+       hand and copied in here under a comment asking whoever edits the gait
+       tables to keep them in step. That is a promise no comment can keep, and
+       it was broken twice — once when the run's stride grew 32% and the divisor
+       didn't, and once, invisibly and for the whole life of the clip, for the
+       BACKPEDAL, which had no constant of its own and borrowed the RUN's.
 
-           natural speed = stanceSweep / (stanceFraction * clipDuration)
+       So nobody measures it here any more: tools/build-player-glb.mjs computes
+       each gait's ground speed from the same kinematics it builds the clip from
+       and bakes it into the .glb, and playermodel.js reads it back.
 
-       Measured off the built rig at the 0.87 scale this renderer applies — the
-       fore-aft travel of the planted foot relative to the root:
+       That fixed the skating and left the OTHER half of the problem, which is
+       that a clip can only be played faster. Playback rate changes cadence and
+       nothing else — the baked stride stays exactly as long as it was authored
+       — so a receiver at 8.5yd/s was taking a jogger's steps 45% more often
+       than a runner does, and the whole squad read as wind-up toys. Speed is
+       stride length times stride frequency and both of them rise.
 
-           run   1.075 units, stance 30% of a 0.62s cycle -> 5.78 yd/s at 1x
-           walk  0.690 units, stance 50% of a 1.00s cycle -> 1.38 yd/s at 1x
-
-       The walk is the check on the arithmetic: a walk has no flight phase, so
-       stance is half the cycle and "sweep rate" and "distance per cycle" have
-       to give the same answer — and both give 1.38. A run does have a flight
-       phase, so distance per cycle is NOT the right basis: the body keeps
-       travelling while neither foot is down, and matching per-cycle distance
-       would cycle the legs about 1.7x too fast.
-
-       Playback used to be `clamp(speed / 6, 0.6, 1.8)`. The divisor was in the
-       right area for the stride the rig has NOW, but the rig's stride was 32%
-       shorter then (natural 4.4), so every stride slid forward, and the 0.6
-       floor did the same thing in reverse at walking pace — legs cycling for
-       1.6yd/s under a player barely moving. Keep these numbers in step with the
-       gait tables in tools/build-player-glb.mjs.
-
-       One honest limitation: a real runner's stance fraction shrinks as they
-       speed up, and a baked clip's cannot, so no single constant is right
-       everywhere. These are set for where the running actually happens —
-       6-7yd/s, where the run clip lands at ~1.1x and 3.6 steps/second. Below
-       ~4.3yd/s the run would drop under 0.75x and read as slow motion, so it
-       is held there and takes a little slip instead; slip is far less visible
-       at a jog than moon-walking is. */
-    var RUN_NATURAL = 5.78, WALK_NATURAL = 1.38;
-    var WALK_MAX = 2.4;              // hand over to the run cycle above this
+       So locomotion now goes through P.gait(kind, speed), which blends the two
+       authored strides that bracket that speed out of a four-rung ladder
+       (Walk / Jog / Run / Sprint). See playermodel.js for how the weight is
+       chosen; the short version is that stride length and cadence both come out
+       at the values authored for that speed, and the playback rate stays at
+       1.0. The fallback rigs in player3d.js have no ladder to blend and keep
+       the old behaviour behind the same call — see gaitShim() there. */
+    var WALK_MAX = 2.4;              // "running" for the ball-carry arm drive
     var PLAYER_LIFT = 0.10;    // rig dips slightly below its origin; sit feet on turf
-    // A few skin tones rotated through by roster index for visual variety.
-    var SKINS = ['#f2c9a0', '#e8b98f', '#d59a6a', '#a9714a', '#8a5a38', '#6f4526'];
 
     var pMeshes = [];          // parallel to state.players (entry objects)
     var playersRef = null;
@@ -474,6 +684,8 @@
     var camFx = MID;           // smoothed camera focus (field X)
     var camFz = null;          // smoothed camera lateral follow (world Z)
     var chaseW = 0;            // 0..1: how much the look-at is on a ball in flight
+    var holdW = 0;             // 0..1: ...and how much of it is on a ball carrier
+                               // (not ud.carryW, which is the carry-POSE blend)
     var viewAspect = 16 / 9;   // current canvas aspect (w/h); drives FOV + framing
     var prevInAir = false;
 
@@ -498,6 +710,13 @@
       RUSH: { h: -0.010, w:  0.055 },
       C:    { h: -0.028, w:  0.070 }
     };
+    /* One identity per player, and the SAME one everywhere. Build and
+       appearance both hang off this, so a player's height and their face are
+       two views of the same person — and neither changes when the lineup
+       reorders, which is exactly what keying on the roster index did. */
+    function seedOf(gp, idx) {
+      return String((gp.data && gp.data.id) || gp.last || ('slot-' + idx));
+    }
     function bodyOf(gp, idx) {
       var key = gp.pos || gp.slot || 'QB';
       var d = BUILD[key] || BUILD.QB;
@@ -505,7 +724,7 @@
       // Faster players carry less: a little taller, a little leaner.
       var lean = (spd - 70) / 60;                    // roughly -0.5 .. +0.5
       // A stable per-player wobble so a squad isn't ten clones of two moulds.
-      var seed = 0, id = String((gp.data && gp.data.id) || gp.last || idx);
+      var seed = 0, id = seedOf(gp, idx);
       for (var i = 0; i < id.length; i++) seed = (seed * 31 + id.charCodeAt(i)) & 0xffff;
       var jitter = ((seed % 1000) / 1000 - 0.5) * 0.030;
       var h = PLAYER_SCALE * (1 + d.h + lean * 0.020 + jitter);
@@ -524,9 +743,19 @@
       (players || []).forEach(function (gp, idx) {
         var cols = gp.team === 'home' ? homeCols : awayCols;
         var isOff = engine.offenseTeam ? (gp.team === engine.offenseTeam()) : true;
+        /* Who this player looks like. Skin tone used to be
+           SKINS[idx % SKINS.length] — keyed on where they stood in the lineup,
+           so a complexion changed when the lineup reordered and slot 0 on both
+           teams always matched — and hair colour was never passed at all, so
+           all ten wore the same near-black. */
+        var look = (PM && PM.appearanceOf)
+          ? PM.appearanceOf(seedOf(gp, idx), gp.data && gp.data.gender)
+          : {};
         var P = PLAYER3D.build(THREE, {
           jersey: cols[0], trim: cols[1] || '#ffffff',
-          skin: SKINS[idx % SKINS.length],
+          skin: look.skin, hair: look.hair, hairStyle: look.hairStyle,
+          facialHair: look.facialHair, headband: look.headband,
+          headScale: look.headScale, gender: look.gender, face: look.face,
           // The jersey number — NOT gp.ovr, which is what used to be painted
           // here and is why every 80-rated receiver wore 80.
           number: (gp.num != null ? gp.num : ''),
@@ -557,19 +786,54 @@
         P.setYaw(seedYaw);
         scene.add(holder);
         var ring = makeRing(); scene.add(ring);
+        /* A taller athlete's stride really does cover more ground, so the gait
+           ladder's rungs are scaled by this player's own build before anything
+           is bracketed against them. */
+        if (P.setBuildScale) P.setBuildScale(b.h);
+        /* TEN MEN, NOT ONE MAN TEN TIMES.
+
+           Every clip in this game starts at time zero, so a formation breaking
+           on the snap used to put ten players into the run cycle within a few
+           frames of each other and then hold them there: identical stride,
+           identical cadence, left feet landing together for the whole play.
+           Nothing else on the field says "animation" as loudly as that.
+
+           A stride phase is the cheapest possible fix and an honest one — real
+           players are not in step either. Deterministic in the player's own id
+           so a given athlete is not re-rolled every formation. */
+        var pseed = 0, pid = String((gp.data && gp.data.id) || gp.last || idx) + ':' + idx;
+        for (var pi = 0; pi < pid.length; pi++) pseed = (pseed * 131 + pid.charCodeAt(pi)) & 0x7fff;
+        if (P.setPhaseOffset) P.setPhaseOffset((pseed % 997) / 997);
         pMeshes.push({
           P: P, holder: holder, ring: ring,
-          ud: { yaw: seedYaw, celebT: 0, _wasPulled: false, _threw: false, _caught: false, _juked: false,
-                clip: 'idle', carryKey: '', carrySide: 0, carryW: 0 }
+          ud: { idx: idx, yaw: seedYaw, celebT: 0, _wasPulled: false, _pulled: false, _threw: false,
+                _caught: false, _juked: false, _spiked: false, clip: 'idle',
+                carryKey: '', carrySide: 0, carryW: 0, carryAmp: 0, grabW: 0,
+                pvx: 0, pvy: 0, fLat: 0, fTan: 0, bank: 0, pitch: 0, lead: 0 }
         });
       });
       playersRef = players;
+      /* A new formation is ten new bodies at ten new spots: whatever they were
+         celebrating, these are not the men who did it. */
+      stopCeleb();
     }
 
     // Advance one player's Player3D: position, facing, clip selection, one-shots.
     function syncPlayer(entry, gp, dt, state) {
       var P = entry.P, ud = entry.ud, holder = entry.holder;
-      holder.position.set(wx(gp.x), PLAYER_LIFT, wz(gp.y));
+
+      /* Celebrating? Then this player jumps, and how high is the whole
+         difference between "we scored" and "we moved the chains". The hop is
+         added to the HOLDER, not the rig: the mixer owns root.position (the
+         clip's own little hop lives there) and would overwrite anything
+         written to it. */
+      var cel = celebFor(gp, ud, state);
+      var hop = 0;
+      if (cel) {
+        hop = cel.cfg.hop * cel.w * (cel.star ? cel.cfg.star : 1) *
+              Math.abs(Math.sin(cel.age * HOP_RATE));
+      }
+      holder.position.set(wx(gp.x), PLAYER_LIFT + hop, wz(gp.y));
 
       /* Animate what the body actually DID, not what it meant to do. The
          engine publishes rvx/rvy — real displacement over the frame — and
@@ -581,6 +845,66 @@
       var vx = (gp.rvx != null ? gp.rvx : (gp.vx || 0));
       var vy = (gp.rvy != null ? gp.rvy : (gp.vy || 0));
       var speed = Math.hypot(vx, vy);
+
+      /* ---- WHAT THE BODY IS DOING TO ITS OWN MOMENTUM --------------------
+         Everything about a change of direction that reads at chase-camera
+         distance comes out of two numbers, and neither of them is in the
+         clips: how hard this player is turning, and how hard they are
+         speeding up or slowing down. So differentiate the velocity the engine
+         publishes and split the result along the line of travel and across it.
+
+         A body that turns without leaning is the single most robotic thing a
+         runner can do — a real one has no choice, because the only way to
+         produce a sideways force is to put the feet outside the centre of mass
+         and fall inward. The lean angle is not a style parameter either; it is
+         atan(lateral acceleration / gravity), which is why it is computed
+         rather than tuned. Same for the fore/aft lean under acceleration and
+         braking: lean forward and the ground reaction pushes you along.
+
+         Both are eased, hard, because a raw frame-to-frame difference of a
+         velocity that the engine itself steers is noisy enough to jitter. */
+      var ax = 0, ay = 0;
+      if (dt > 0.0005) { ax = (vx - ud.pvx) / dt; ay = (vy - ud.pvy) / dt; }
+      ud.pvx = vx; ud.pvy = vy;
+      var ux = speed > 0.2 ? vx / speed : Math.cos(ud.yaw);
+      var uy = speed > 0.2 ? vy / speed : Math.sin(ud.yaw);
+      var aTan = ax * ux + ay * uy;                 // + = speeding up
+      var aLat = ay * ux - ax * uy;                 // + = turning to their LEFT
+      /* Below a walking pace there is no momentum to lean on, and a player
+         standing still differentiating engine noise would wobble. Nor is a
+         celebration locomotion: a man spiking a ball is allowed to throw his
+         weight around without the physics of running commenting on it. */
+      var leanOn = cel ? 0 : clamp((speed - 0.8) / 1.6, 0, 1);
+      var G = 10.73;                                // 9.81 m/s^2, in yards
+
+      /* FILTER THE FORCE, NOT JUST THE ANGLE. atan(lateral acceleration / g)
+         is the right formula and the wrong input to feed it raw: what comes
+         out of differentiating the engine's velocity is a steering controller
+         riding its own cross-acceleration limit, plus the separation nudges
+         that keep bodies apart, and neither is a cut. Measured, that put the
+         median player at a 12.6-degree bank with a THIRD of all running frames
+         past 20 and the peak pinned to the clamp — ten men leaning like
+         motorcycles for most of every play.
+
+         A lean is the body's answer to a force it has to hold for long enough
+         to fall into, so the acceleration is low-passed first (~0.28s) and
+         only what survives that leans anybody. Spikes that last a frame or two
+         now produce almost nothing, and a genuine sustained cut still produces
+         the full angle. */
+      ud.fLat += (aLat - ud.fLat) * ease(3.6, dt);
+      ud.fTan += (aTan - ud.fTan) * ease(3.6, dt);
+      /* And a ceiling a running human actually reaches. 0.46rad is 26 degrees,
+         which is tan = 0.49g held through the whole turn — a speed skater, not
+         a flag footballer changing direction on grass in trainers. */
+      var bankT = clamp(Math.atan2(ud.fLat, G), -0.27, 0.27) * leanOn;
+      var pitchT = clamp(Math.atan2(ud.fTan, G), -0.20, 0.24) * leanOn;
+      /* Attack fast, release slow. A cut is an event — the lean has to be there
+         on the step that makes it, not a beat later — but coming out of one is
+         a recovery and settles over a longer count. */
+      ud.bank += (bankT - ud.bank) * ease(Math.abs(bankT) > Math.abs(ud.bank) ? 13 : 6, dt);
+      ud.pitch += (pitchT - ud.pitch) * ease(7, dt);
+      ud.lead += (clamp(ud.fLat / 24, -0.30, 0.30) * leanOn - ud.lead) * ease(9, dt);
+
       // Only treat players as "moving" while the ball is live — between plays
       // (playcall/presnap/dead/final) residual velocity must NOT keep them running.
       var live = (state.phase === 'live');
@@ -601,8 +925,34 @@
 
       // ---- FACING: pick a target yaw (field-angle space) by role ----------
       var yawT = ud.yaw;
-      if (throwing) {
-        var to = (state.ball && state.ball.to) || state.thrownTo;
+      if (cel) {
+        /* A celebration is PLAYED TO somebody or it is a man waving at grass.
+           The scorer turns to the camera — which is always behind the offence,
+           so that is yaw PI, always — and spins once on the way round; every
+           team-mate turns to face them. */
+        if (cel.star) {
+          var spin = cel.cfg.spin;
+          // One full turn over `spin` seconds, ending exactly back at PI so
+          // there is no jump when it finishes.
+          yawT = Math.PI - (spin && cel.age < spin ? (cel.age / spin) * Math.PI * 2 : 0);
+          yawT += Math.sin(cel.age * 3.1) * 0.18;             // never quite still
+        } else {
+          yawT = Math.atan2(celeb.y - gp.y, celeb.x - gp.x) + Math.sin(cel.age * 2.7 + ud.idx) * 0.16;
+        }
+      } else if (throwing) {
+        /* TURN AND THROW, IN THAT ORDER. This used to read only ball.to and
+           state.thrownTo, and neither of those exists until the ball is
+           already airborne — so through the entire wind-up the quarterback
+           kept whatever facing the dropback left him with (usually pointing
+           back at his own goal line, because a backpedal faces its direction
+           of travel), and only began turning downfield AFTER the pass had
+           left. The whole clip — the coil, the stride, the release — played
+           at ninety degrees to where the ball was going.
+
+           pendingThrow.target is known the instant the wind-up starts, which
+           is what makes the throw a throw at somebody. */
+        var to = (state.pendingThrow && state.pendingThrow.target) ||
+                 (state.ball && state.ball.to) || state.thrownTo;
         if (to) yawT = Math.atan2(to.y - gp.y, to.x - gp.x);
       } else if (reaching) {
         // Turn to the ball, but a receiver at full stride can only look so far
@@ -631,7 +981,18 @@
       ud.yaw = yawT;
       // A juke is a sidestep: the body deliberately leaves the line of travel
       // for a beat, so snap through it instead of easing.
-      P.face(yawT, juking ? dt * 2.2 : dt);
+      /* A juke is a sidestep and a throw is a turn-and-fire; both have to beat
+         the default easing or the body arrives after the event it belongs to.
+         The wind-up is 374ms long and a quarterback coming out of a dropback
+         can be most of a half-turn away from his receiver. */
+      /* A juke is a sidestep and a throw is a turn-and-fire; both have to beat
+         the default easing. So does a hard cut, and for the same reason: the
+         hips arriving a beat after the change of direction is exactly the lag
+         that reads as a body being dragged along behind its own feet. The boost
+         is proportional to how hard the turn actually is, so a gentle drift is
+         still eased and a plant-and-go snaps. */
+      var turnBoost = 1 + clamp(Math.abs(aLat) / 13, 0, 1.3);
+      P.face(yawT, (juking || throwing) ? dt * 2.2 : dt * turnBoost);
 
       /* Backpedal = actual facing roughly opposite to velocity. This was gated
          to the defence, but it isn't a defensive motion, it's a direction of
@@ -651,7 +1012,11 @@
 
       // ---- ONE-SHOT events (fire once per event) ---------------------------
       // Throw: QB releasing the ball.
-      if (throwing && !ud._threw) { P.oneShot('throw', 'idle'); ud._threw = true; }
+      /* The Throw clip's first frame IS the READY grip, bone for bone, so the
+         carry pose has nothing left to contribute and every frame it survives
+         it drags the wind-up back toward a static hold. It used to fade over
+         ~0.3s, which is four fifths of the way to the release. Drop it. */
+      if (throwing && !ud._threw) { P.oneShot('throw', 'idle'); ud._threw = true; ud.carryW = 0; }
       if (!throwing) ud._threw = false;
 
       // Juke: the carrier breaks a grip with a sidestep.
@@ -664,39 +1029,91 @@
         P.oneShot('catch', 'run'); ud._caught = true;
       }
 
-      // Flag pull: the carrier whose flag just got pulled + puller celebrates.
+      // Flag pull, the carrier's half: jerked to a stop, hands up, flag gone.
       if (gp.flagPulled && !ud._wasPulled) {
-        P.oneShot('flagPull', 'idle');
+        P.oneShot('flagPull', 'idle');            // -> FlagPulled, the reaction
         flags.burst(holder.position.x, 0.9, holder.position.z, cols0(gp));
         ud._wasPulled = true;
-        // tag nearest defender to celebrate
-        var nd = 1e9, ne = null;
-        for (var pi = 0; pi < pMeshes.length; pi++) {
-          var op = state.players[pi];
-          if (!op || op.team === gp.team) continue;     // defenders only
-          var ddx = op.x - gp.x, ddy = op.y - gp.y, dd = ddx * ddx + ddy * ddy;
-          if (dd < nd) { nd = dd; ne = pMeshes[pi]; }
-        }
-        if (ne) ne.ud.celebT = 1.0;
+        ud.carryW = 0;
       }
       if (!gp.flagPulled) ud._wasPulled = false;
 
+      /* Flag pull, the defender's half: the rip. Who made the play used to be
+         guessed here by scanning for the nearest opponent to the man who went
+         down; the engine names them (pullFx), so take the name. */
+      if ((gp.pullFx || 0) > 0 && !ud._pulled) {
+        P.oneShot('flagGrab', 'celebrate');
+        ud._pulled = true;
+        ud.celebT = 1.6;                          // hold the celebration after it
+      }
+      if (!(gp.pullFx > 0)) ud._pulled = false;
+
       // ---- LOOP clip selection (skip while a one-shot is running) ----------
+      /* THE SPIKE, fired once when a scorer starts celebrating. It is a
+         one-shot rather than part of the loop selection below because it is an
+         event with a beginning and an end, and because its last pose is the
+         arms-wide finish the Dance it hands over to begins from — which is what
+         keeps the crossfade out of it from swinging both arms down and straight
+         back up again. */
+      if (cel && cel.star && cel.cfg.radius === Infinity && celeb.kind === 'td' && !ud._spiked) {
+        P.oneShot('spike', 'dance'); ud._spiked = true;
+      }
+      if (!cel) ud._spiked = false;
+
       if (!P._oneShot) {
-        if (ud.celebT > 0) {
+        if (cel) {
+          P.play(celebClipFor(ud, cel));
+        } else if (ud.celebT > 0) {
           P.play('celebrate');
-        } else if (live && backpedal) {
-          P.play('backpedal'); P.setSpeed(clamp(speed / RUN_NATURAL, 0.75, 2.4));
         } else if (live && moving) {
-          // Walk the slow stuff and run the rest, each matched to its own clip.
-          if (speed < WALK_MAX) { P.play('walk'); P.setSpeed(clamp(speed / WALK_NATURAL, 0.5, 1.9)); }
-          else { P.play('run'); P.setSpeed(clamp(speed / RUN_NATURAL, 0.75, 2.4)); }
+          /* One call for every speed and both directions. The ladder inside
+             picks the two authored strides that bracket this player and blends
+             them, so a walk becomes a jog becomes a run becomes a sprint
+             without a threshold anywhere in here to cross and hitch on. */
+          if (P.gait) P.gait(backpedal ? 'backward' : 'forward', speed);
         } else {
           P.play('idle');                       // stand down between/at end of plays
         }
       }
 
+      /* ---- LEAN --------------------------------------------------------
+         Applied to the HOLDER, not to the rig, and that is the whole trick:
+         the holder's origin sits on the turf between the player's feet, so
+         rotating it pivots the body about its contact patch. The feet stay
+         where they were planted and the head swings; rotate the rig instead
+         and the pivot is the pelvis, which drives the inside foot through the
+         ground and lifts the outside one off it.
+
+         Axes are built from the direction of TRAVEL rather than from the
+         facing, because banking is a property of the momentum. Roll about the
+         line of travel is the turn; pitch about the axis across it is the
+         acceleration. */
+      if (Math.abs(ud.bank) > 1e-4 || Math.abs(ud.pitch) > 1e-4) {
+        var dirx = ux, dirz = uy;                       // field y is world z
+        _axis.set(dirx, 0, dirz);
+        _qbank.setFromAxisAngle(_axis, ud.bank);        // + rolls onto their left
+        _axis.set(dirz, 0, -dirx);
+        _qpitch.setFromAxisAngle(_axis, ud.pitch);      // + tips the chest forward
+        holder.quaternion.copy(_qpitch).multiply(_qbank);
+      } else if (holder.quaternion.w !== 1) {
+        holder.quaternion.identity();
+      }
+
       P.update(dt);
+
+      /* ---- THE SHOULDERS GO FIRST ---------------------------------------
+         Watch anyone cut and the order is head, then shoulders, then hips,
+         then feet — the top of the body commits to the new direction before
+         there is any way for the bottom of it to follow. Rotating the whole
+         player as one rigid heading is the thing that makes a turn read as a
+         turret. This gives the chest and the head a few degrees of yaw toward
+         the inside of the turn, over the top of whatever the gait wrote, which
+         puts that ordering back for the price of two slerps.
+
+         It is layered after the mixer for the same reason the ball carry is:
+         the clip has already written these bones this frame, and the point is
+         to bias what it wrote rather than to replace it. */
+      if (Math.abs(ud.lead) > 0.004 && !P._oneShot) leadTrunk(P, ud.lead);
 
       /* ---- CARRY POSE (after the mixer, so it overrides the clip) ---------
          The clip has already written every bone for this frame; the arm around
@@ -706,7 +1123,14 @@
          throw, the catch, the juke all own the arms while they run) and back
          in afterwards, and it fades through zero to change pose so a passer
          tucking the ball and running doesn't snap between the two. */
-      var holdingIt = (carrier === gp && !gp.flagPulled);
+      /* `state.carrier` IS who has the ball, so that is the whole test. The
+         `&& !gp.flagPulled` that used to be here was dead — nothing ever set
+         flagPulled — and the moment the engine started setting it, it became
+         wrong: it dropped the carry grip on the same frame the flag came off,
+         which unparents the ball from the hand and pops it to a world-space
+         fallback position beside the player. Losing your flag does not make
+         the ball leave your hands; the whistle does, a beat later. */
+      var holdingIt = (carrier === gp);
       var readying = holdingIt && gp === state.passer && !state.handoffDone && !state.pendingThrow;
       // The ready position lives in the THROWING hand, which is the right one —
       // the same hand the wind-up hands the ball to — so it is not sided by the
@@ -714,13 +1138,37 @@
       if (holdingIt && !ud.carrySide) ud.carrySide = carrySide(state, gp);
       if (!holdingIt) ud.carrySide = 0;
       var wantKey = holdingIt ? (readying ? 'ready-1' : 'carry' + ud.carrySide) : '';
-      // A one-shot is driving the arms itself; give way to it and come back.
-      var wantW = (holdingIt && !P._oneShot && wantKey === ud.carryKey) ? 1 : 0;
-      ud.carryW += (wantW - ud.carryW) * Math.min(1, dt * 9);
+      /* A one-shot is driving the arms itself; give way to it and come back.
+         So is a celebration, and for the same reason: the Celebrate clip puts
+         both arms over the head, and blending a ball-tuck into one shoulder
+         while it does that leaves a man who has just scored standing there with
+         his arm down. Only the POSE is dropped — carryKey survives, so the ball
+         stays parented to the forearm and goes up with it, which is what a
+         scorer holding it aloft actually is. */
+      var wantW = (holdingIt && !P._oneShot && !cel && wantKey === ud.carryKey) ? 1 : 0;
+      ud.carryW += (wantW - ud.carryW) * ease(9, dt);
       if (ud.carryW < 0.02 && wantKey !== ud.carryKey) { ud.carryKey = wantKey; ud.carryW = 0; }
       if (ud.carryW > 0.001 && ud.carryKey) {
-        poseGrip(P, gripFor(ud.carryKey), sideFor(ud.carryKey), ud.carryW);
+        /* How hard the arm drives. Off at a standstill, full by the time the
+           run clip has taken over, so the pump arrives with the running rather
+           than switching on. Eased frame to frame as well, because the clip
+           itself crossfades and a step change in amplitude across that would
+           show as a hitch in the one limb that is holding the ball. */
+        var wantAmp = P.stridePhase ? clamp((speed - 1.2) / (WALK_MAX - 0.6), 0, 1) : 0;
+        ud.carryAmp += (wantAmp - ud.carryAmp) * ease(6, dt);
+        poseGrip(P, gripFor(ud.carryKey), sideFor(ud.carryKey), ud.carryW,
+                 P.stridePhase ? P.stridePhase() : null, ud.carryAmp);
       }
+
+      /* ---- REACHING FOR THE FLAG -----------------------------------------
+         Same idea as the carry pose and applied the same way: after the mixer,
+         over the top of the run cycle, faded in and out so the arms come up
+         into the reach and drop back out of it when the engagement breaks. The
+         legs keep running underneath, which is right — a defender chasing
+         somebody down does not stop to reach. */
+      var grabbing = (state.grabbedBy === gp && !gp.flagPulled && !P._oneShot);
+      ud.grabW += ((grabbing ? 1 : 0) - ud.grabW) * ease(11, dt);
+      if (ud.grabW > 0.001) poseReach(P, ud.grabW);
 
       /* No floating nameplates during play. They were a world-space Sprite
          with depthTest off, which under the old distant camera was a harmless
@@ -787,51 +1235,143 @@
        So the smoothing runs first and proposes a shot, and then this checks it.
        Project the ball; if it is inside the safe box, change nothing at all and
        the camera stays exactly as cinematic as it was. If it is outside, walk
-       the look-at toward the ball until it isn't — no further. Each step moves
-       a third of the way and re-tests, so the correction applied is the
-       smallest one that works, and the result is a camera that follows the
-       pass loosely when it can and tightens onto it only when it must.
+       the look-at toward the ball until it isn't — no further.
+
+       "No further" has to mean it exactly, and for a long time it did not.
+
+       THE SIDELINE SHUDDER. This used to step a THIRD of the way toward the
+       ball and re-test, up to six times, which makes the correction a staircase
+       rather than a function: nought, or a third, or five ninths, with nothing
+       in between. Put that inside a loop whose other half is an ease pulling
+       the shot back toward the middle of the field and you have a bang-bang
+       controller. The equilibrium is not a fixed point but a limit cycle: the
+       ease creeps the carrier out past the safe edge over three or four frames,
+       one 34% step slams him back well inside it, and the whole thing repeats
+       several times a second. It only bites when the correction is needed at
+       all, which is exactly when the ball carrier is near a touchline — worst
+       on a phone, whose lens is much narrower across.
+
+       Simulated against a runner cutting to the touchline in portrait, the old
+       staircase moved the look-at by up to 1.36 world units of frame-to-frame
+       acceleration (mean 0.48). Solving instead for the SMALLEST lerp that puts
+       the ball exactly on the safe boundary — by bisection, so the correction
+       is a continuous function of where the ball is — leaves the same shot with
+       a peak of 0.0027 and a mean of 0.00028, and turns the limit cycle into a
+       genuine fixed point: the target settles ON the boundary and tracks it.
 
        Writing the correction back into _target (rather than applying it after
        the fact) means the next frame eases from the corrected shot, so a hard
        chase settles into a smooth one instead of fighting the filter. */
     var SAFE = 0.72;                     // keep the ball inside 72% of the frame
     // (_bndc, not _ndc — the screen picker already owns that name in this scope.)
-    var _ballW = new THREE.Vector3(), _bndc = new THREE.Vector3();
-    function keepBallInFrame(state) {
-      _ballW.set(wx(state.ball.x), state.ball.z || 0, wz(state.ball.y));
-      for (var i = 0; i < 6; i++) {
-        camera.updateMatrixWorld();
-        camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
-        _bndc.copy(_ballW).project(camera);
-        // Behind the lens (w < 0 flips the projection) counts as out of frame.
-        var out = _bndc.z > 1 || Math.abs(_bndc.x) > SAFE || Math.abs(_bndc.y) > SAFE;
-        if (!out) return;
-        _target.lerp(_ballW, 0.34);
-        camera.lookAt(_target);
+    var _ballW = new THREE.Vector3(), _bndc = new THREE.Vector3(), _keep = new THREE.Vector3();
+    // Is the world point outside the safe box, for the camera as it stands?
+    // Behind the lens (w < 0 flips the projection) counts as out of frame.
+    function outOfFrame(pt) {
+      camera.updateMatrixWorld();
+      camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+      _bndc.copy(pt).project(camera);
+      return _bndc.z > 1 || Math.abs(_bndc.x) > SAFE || Math.abs(_bndc.y) > SAFE;
+    }
+    /* Takes WORLD coords rather than reading the ball out of state, because the
+       guarantee is not about the ball object — it is about whatever the shot is
+       currently required to contain. In flight that is the ball; the rest of
+       the time it is the player holding it. */
+    function keepInFrame(px, py, pz) {
+      _ballW.set(px, py, pz);
+      if (!outOfFrame(_ballW)) return;
+      _keep.copy(_target);                       // the cinematic shot, to move from
+      var aim = function (t) { _target.copy(_keep).lerp(_ballW, t); camera.lookAt(_target); };
+      // Aiming dead at it is the most this can do. If even that leaves the ball
+      // outside (it is behind the lens, or the safe box is tighter than the
+      // lens is wide), stay there rather than searching for a t that isn't
+      // there — and, critically, don't fall back to the uncorrected shot.
+      aim(1);
+      if (outOfFrame(_ballW)) return;
+      var lo = 0, hi = 1;                        // out at lo, in at hi
+      for (var i = 0; i < 11; i++) {
+        var mid = (lo + hi) / 2;
+        aim(mid);
+        if (outOfFrame(_ballW)) lo = mid; else hi = mid;
       }
+      aim(hi);
+    }
+
+    /* ===================== WHERE THE BALL IS ABOUT TO BE ==================
+       Everything downstream of this is a lag filter, so a camera aimed at where
+       the ball IS is always behind it by its own settling time — speed divided
+       by ease rate, about two yards behind a runner and three behind a pass.
+       Aiming slightly AHEAD cancels that, and costs nothing when the ball
+       changes direction because keepInFrame() is still underneath as the
+       guarantee.
+
+           carried    lead by the carrier's own velocity. rvx/rvy is what the
+                      body actually did last frame (the engine publishes it),
+                      not what it intended, so this leads a real cut rather than
+                      an input. Only while the ball is live: the engine stops
+                      updating players the moment it's dead, and leading a
+                      standing man would just park the shot four yards past him.
+           in flight  the engine solved the catch point the instant the ball
+                      left the hand (ball.to). Aim between the ball and that
+                      point, weighted further toward it as the flight runs down,
+                      and the camera is at the catch before the ball is.
+           loose      the ball itself, wherever it is — bouncing after an
+                      incompletion, in the snap, sitting on the spot.
+
+       LOS is the last resort only, for the frames before a ball exists at all. */
+    var CARRY_LEAD = 0.38;               // seconds of the carrier's velocity
+    var _focus = { x: MID, y: WID / 2 };
+    function ballFocus(state) {
+      var f = _focus, c = state.carrier, b = state.ball;
+      if (c) {
+        var lead = (state.phase === 'live') ? CARRY_LEAD : 0;
+        f.x = c.x + (c.rvx != null ? c.rvx : (c.vx || 0)) * lead;
+        f.y = c.y + (c.rvy != null ? c.rvy : (c.vy || 0)) * lead;
+      } else if (b && b.inAir) {
+        var k = (b.dur > 0) ? clamp((b.t || 0) / b.dur, 0, 1) : 1;
+        if (b.to) {
+          var w = 0.45 + 0.55 * k;       // 45% of the way there at the release
+          f.x = lerp(b.x, b.to.x, w); f.y = lerp(b.y, b.to.y, w);
+        } else { f.x = b.x; f.y = b.y; }
+      } else if (b && b.x != null && isFinite(b.x)) {
+        f.x = b.x; f.y = b.y;
+      } else if (state.losX != null && isFinite(state.losX)) {
+        f.x = state.losX; f.y = WID / 2;
+      } else { f.x = MID; f.y = WID / 2; }
+      if (!isFinite(f.x)) f.x = MID;
+      if (!isFinite(f.y)) f.y = WID / 2;
+      return f;
     }
 
     function updateCamera(state, dt) {
-      var userSide = (engine && engine.userSide) || 'home';
-      var userOff = (state.possession === userSide);
-      var s = userOff ? 1 : -1;                    // we attack toward +x on offense
+      /* BEHIND WHOEVER HAS THE BALL.
+
+         This used to be behind whichever side the USER was playing, flipping
+         end-for-end with possession so that on defence you watched the offence
+         run at the lens. The offence always attacks +x, whichever team it is,
+         so "behind the ball" is not a variable at all — it is one side of the
+         field, always, and an interception simply hands the shot to the other
+         eleven without the camera going anywhere.
+
+         `s` is kept rather than folded away because it is the whole geometry of
+         this camera (back one way, look-at the other) and every use of it
+         downstream still wants to say which way is downfield. */
+      var s = 1;                                   // the offence attacks toward +x
       var C = (viewAspect < 1.0) ? CAM.tall : CAM.wide;
 
       if (camera.fov !== C.fov) { camera.fov = C.fov; camera.updateProjectionMatrix(); }
 
-      /* FOCUS — whoever the eye should be on. Pre-snap that's the line of
-         scrimmage; once the ball is live it's the carrier, and a throw hands
-         the focus to the ball so the camera leads the receiver into the catch
-         instead of staying home with the quarterback. */
-      var hasLos = (state.losX != null && isFinite(state.losX));
-      var focusFx = hasLos ? state.losX : MID;
-      var focusFy = WID / 2;
-      if (state.carrier) { focusFx = state.carrier.x; focusFy = state.carrier.y; }
-      else if (state.ball && state.ball.inAir) { focusFx = state.ball.x; focusFy = state.ball.y; }
-      else if (hasLos && (state.phase === 'presnap' || state.phase === 'playcall')) {
-        // Pre-snap, sit back off the line so the whole formation is in frame.
-        focusFx = state.losX - s * 3;
+      /* FOCUS — the ball, at every moment of the game, and never anything else
+         while there is a ball to have. It used to be "the carrier, else a ball
+         in flight, else the line of scrimmage", and that last clause is a hole:
+         an incomplete pass clears the carrier and lands the ball twenty yards
+         downfield, and the shot cut straight back to the old spot while the
+         ball was still bouncing. ballFocus() has no such fallback. */
+      var fo = ballFocus(state);
+      var focusFx = fo.x, focusFy = fo.y;
+      if (!state.carrier && (state.phase === 'presnap' || state.phase === 'playcall')) {
+        // Pre-snap, sit back off the ball so the whole formation is in frame.
+        focusFx -= s * 3;
       }
       // A single NaN here poisons the camera matrix and the scene renders as
       // bare clear-colour, so refuse to feed anything non-finite forward.
@@ -858,9 +1398,29 @@
       var latW = chasing ? 0.90 : 0.55, latMax = chasing ? 9.0 : 5.0;
       var latTarget = clamp((focusFy - WID / 2) * latW, -latMax, latMax);
       if (camFz == null) camFz = latTarget;
-      camFz = lerp(camFz, latTarget, clamp(dt * (chasing ? 6.0 : 2.4), 0, 1));
+      camFz = lerp(camFz, latTarget, ease(chasing ? 6.0 : 2.4, dt));
 
-      camFx = lerp(camFx, focusFx, clamp(dt * (chasing ? 7.0 : 4.5), 0, 1));
+      /* SETTLE BETWEEN PLAYS, EASE DURING THEM. A turnover or a new drive can
+         move the ball thirty yards up the field while nothing is happening,
+         and easing across that at 4.5/s takes about a second — which the
+         playcall and the snap can both happen inside, so the ball is live
+         again while the lens is still travelling and is briefly DOWNFIELD of
+         the man carrying it. Measured over a demo: 10% of live frames, all of
+         them in the second after a change of possession.
+
+         A long jump while the ball is dead is not a camera move, it is a
+         camera being repositioned, so just put it there. Anything the eye is
+         meant to follow — the play itself — still eases exactly as before.
+
+         The live threshold is deliberately far above anything a play can
+         produce: an eased follower's steady-state lag is speed/rate, which is
+         2 yards behind a 9yd/s runner and 3 behind a 22yd/s pass. A gap of
+         fourteen is not a camera following something, it is a camera that has
+         been left at the other end of the field. */
+      var live3d = (state.phase === 'live');
+      var jumped = Math.abs(focusFx - camFx) > (live3d ? 14 : 8);
+      if (jumped) camFx = focusFx;
+      else camFx = lerp(camFx, focusFx, ease(chasing ? 7.0 : 4.5, dt));
       var anchorX = wx(camFx);
 
       /* Keep the LENS inside the bowl, not just the focus. Backed up near your
@@ -873,8 +1433,13 @@
       var camX = clamp(anchorX - s * C.back, -camLimit, camLimit);
       var lookX = anchorX + s * C.ahead;
 
-      // Ease so possession changes swing smoothly instead of snapping.
-      var k = clamp(dt * 3.2, 0, 1);
+      /* Ease, except when the shot was just repositioned. Snapping the FOCUS
+         alone does nothing on its own — the lens has a second, slower filter of
+         its own (3.2/s) and goes on gliding across the field for another
+         second regardless, which is exactly the interval the camera was
+         measured downfield of the man carrying the ball. Both have to move
+         together or neither has. */
+      var k = jumped ? 1 : ease(3.2, dt);
       camera.position.set(
         lerp(camera.position.x, camX, k),
         lerp(camera.position.y, C.height, k),
@@ -885,8 +1450,20 @@
          the field, and the ball stayed in shot only insofar as the lateral
          follow constants happened to suit — which they did not: a throw toward
          a sideline was measured 217 pixels outside a 1280-wide frame. */
-      chaseW += ((chasing ? 1 : 0) - chaseW) * clamp(dt * 4.5, 0, 1);
+      /* The look-at chases a ball in flight hard, and a CARRIER softly. The
+         carrier half is new: the shot used to aim at a fixed point C.ahead down
+         the field whenever nothing was airborne, so a runner breaking wide was
+         held in frame only by the lateral follow, and on a phone (a narrow lens
+         and a tall frame) that is not enough — he drifted to the edge while the
+         lens went on staring at the middle of the field. */
+      chaseW += ((chasing ? 1 : 0) - chaseW) * ease(4.5, dt);
+      holdW += ((!chasing && state.carrier ? 1 : 0) - holdW) * ease(3.0, dt);
       var tx = lookX, ty = C.lookY, tz = camFz * 0.65;
+      if (holdW > 0.001 && state.carrier) {
+        var cw = holdW * 0.45;          // partial: keep some of the downfield lead
+        tx = lerp(tx, wx(state.carrier.x), cw);
+        tz = lerp(tz, wz(state.carrier.y), cw);
+      }
       if (chaseW > 0.001 && state.ball) {
         var w = chaseW * 0.78;
         tx = lerp(tx, wx(state.ball.x), w);
@@ -899,7 +1476,15 @@
         lerp(_target.z, tz, k)
       );
       camera.lookAt(_target);
-      if (chasing && state.ball) keepBallInFrame(state);
+      /* THE GUARANTEE, and it now covers the whole game rather than just the
+         throws: whatever the ball is currently in — the air, or a pair of hands
+         — is inside the safe box when this returns. Chest height for a carrier,
+         because his feet are what the frame edge would clip first. */
+      if (chasing && state.ball) keepInFrame(wx(state.ball.x), state.ball.z || 0, wz(state.ball.y));
+      else if (state.carrier) keepInFrame(wx(state.carrier.x), 1.0, wz(state.carrier.y));
+      else if (state.ball && state.ball.x != null && isFinite(state.ball.x)) {
+        keepInFrame(wx(state.ball.x), state.ball.z || 0, wz(state.ball.y));
+      }
       // Sun target stays at the origin: its shadow box already spans the whole
       // field, and swinging the target while the light's position is fixed
       // would rotate the sun's direction as the play moves.
@@ -989,7 +1574,8 @@
         homeAbbr: (st0.home && st0.home.id) || 'HOME',
         awayScore: (state.score && state.score.away) || 0,
         homeScore: (state.score && state.score.home) || 0,
-        period: state.overtime ? 'OT' : ('Q' + (state.quarter || 1)),
+        // The game is played in halves; only the jumbotron still said quarters.
+        period: state.overtime ? 'OT' : ((state.halves ? 'H' : 'Q') + (state.quarter || 1)),
         clock: mm + ':' + (ss < 10 ? '0' : '') + ss,
         awayColor: awayCols[0], homeColor: homeCols[0],
         footer: 'FLAGSTER'
@@ -1008,6 +1594,20 @@
 
       // Rebuild player meshes if the roster array was replaced (new down).
       if (state.players !== playersRef) { hostBall(null); rebuildPlayers(state.players); }
+
+      /* Consume the engine's transient anims (flag/td/firstdown/incomplete) so
+         they don't leak — the 2D renderer normally advances and clears these,
+         and we skip 2D entirely. Done BEFORE the players are synced, and after
+         the rebuild above, so a celebration triggered this frame is live on the
+         same frame and a new formation can't be handed one. */
+      if (engine && engine.anim && engine.anim.length) {
+        for (var ai = 0; ai < engine.anim.length; ai++) {
+          var av = engine.anim[ai];
+          if (av.type === 'td' || av.type === 'firstdown' || av.type === 'takeaway') startCeleb(av.type, av);
+        }
+        engine.anim.length = 0;
+      }
+      updateCeleb(dt);
 
       var inAir = !!(state.ball && state.ball.inAir);
       prevInAir = inAir;
@@ -1122,23 +1722,33 @@
             ball.rotation.set(0, -(c.ang || 0), 0.4);
           }
         } else {
+          /* LOOSE — nobody has it. Drawn at the height the engine says it is,
+             which is the whole point: this used to be a hard-coded 1.0, so an
+             incompletion left a football hovering a yard off the turf over an
+             empty patch of grass until the next snap. The engine keeps it
+             falling and bouncing now (Engine._updateLoose), and it lies where
+             it stops. */
           hostBall(null);
-          ball.position.set(wx(state.ball.x), 1.0, wz(state.ball.y));
+          var lz = state.ball.z || 0;
+          ball.position.set(wx(state.ball.x), Math.max(0.11, lz), wz(state.ball.y));
+          // Tumbling while it falls, flat on its side once it has stopped.
+          if (state.ball.loose) {
+            spin = (spin + dt * 9) % (Math.PI * 2);
+            ball.rotation.set(spin * 0.7, spin, Math.PI / 2 - spin * 0.25);
+            ballShadow.visible = true;
+            ballShadow.position.set(wx(state.ball.x), 0.02, wz(state.ball.y));
+            var lk = clamp(lz / 3, 0, 1);
+            ballShadow.scale.setScalar(1 + lk * 1.2);
+            ballShadow.material.opacity = 0.34 * (1 - 0.6 * lk);
+          } else {
+            ball.rotation.set(0, 0, Math.PI / 2);
+          }
         }
         applyTransfer(state, dt);
       } else { ball.visible = false; ballShadow.visible = false; }
 
-      // Consume engine transient anims (flag/td/incomplete) so they don't leak
-      // (the 2D renderer normally advances/clears these; we skip 2D).
-      if (engine && engine.anim && engine.anim.length) {
-        engine.anim.forEach(function (a) {
-          if (a.type === 'td') tdFx.t = 0, tdFx.dur = 1.0;
-        });
-        engine.anim.length = 0;
-      }
-
       flags.update(dt);
-      if (tdFx.dur > 0) { tdFx.t += dt; if (tdFx.t >= tdFx.dur) tdFx.dur = 0; }
+      shock.update(dt);
 
       updateJumbotron(state, dt);
       updateCamera(state, dt);
@@ -1175,8 +1785,55 @@
          about is actually where it says, instead of re-deriving updateCamera()
          and grading the renderer against a copy of the renderer. */
       camera: camera, ball: ball,
+      /* Same bargain for the celebrations: what the system thinks is running,
+         and the height every body is ACTUALLY being drawn at, so the sweep can
+         assert that players left the ground rather than assert that a function
+         was called. */
+      celebState: function () {
+        return {
+          kind: celeb.kind, t: celeb.t, dur: celeb.dur, team: celeb.team,
+          lift: PLAYER_LIFT,
+          y: pMeshes.map(function (e) { return e.holder.position.y; }),
+          teams: (playersRef || []).map(function (p) { return p.team; })
+        };
+      },
+      /* And the same bargain again for locomotion. Every number here is read
+         back OFF the renderer rather than recomputed from the engine: which
+         two rungs of the gait ladder are mounted and at what weight, the
+         playback rate they are actually running at, the stride phase each body
+         is at, how far this player's rendered facing is from their line of
+         travel (the definition of skating), and how far they are leaning.
+         A headless sweep can then assert that the squad is not in lockstep and
+         that nobody is running sideways, instead of asserting that a function
+         was called. */
+      debugPlayers: function () {
+        var frame = _dbgFrame++;
+        var out = [];
+        for (var i = 0; i < pMeshes.length; i++) {
+          var e = pMeshes[i], gp = (playersRef || [])[i];
+          if (!gp) continue;
+          var g = e.P.gaitInfo ? e.P.gaitInfo() : null;
+          var vx = gp.rvx != null ? gp.rvx : (gp.vx || 0);
+          var vy = gp.rvy != null ? gp.rvy : (gp.vy || 0);
+          var sp = Math.hypot(vx, vy);
+          var skew = 0;
+          if (sp > 0.4 && gp.faceYaw != null) {
+            skew = Math.atan2(vy, vx) - gp.faceYaw;
+            while (skew > Math.PI) skew -= Math.PI * 2;
+            while (skew < -Math.PI) skew += Math.PI * 2;
+            // Travelling backwards on purpose is a backpedal, not a skate.
+            if (Math.abs(skew) > Math.PI / 2) skew = (skew > 0 ? Math.PI : -Math.PI) - skew;
+          }
+          out.push({ f: frame, i: i, speed: sp, skew: skew,
+                     bank: e.ud.bank, pitch: e.ud.pitch, lead: e.ud.lead,
+                     a: g ? g.a : '-', b: g ? g.b : '-', blend: g ? g.blend : 0,
+                     rate: g ? g.rate : 0, phase: g ? g.phase : 0, w: g ? g.weight : 0 });
+        }
+        return out;
+      },
       render: render, resize: resize, stop: stop };
   }
+  var _dbgFrame = 0;
 
   /* Route ink. A ribbon of small quads laid flat on the turf rather than a
      THREE.Line, because line width is capped at 1px on almost every WebGL
@@ -1384,6 +2041,46 @@
       });
     }
     return { group: group, burst: burst, update: update };
+  }
+
+  /* ============================= SHOCKWAVE ============================== */
+  /* A gold ring opening on the turf under whoever just did something, sized to
+     the size of the thing they did. It is the same punctuation the flat
+     renderer draws for a first down (engine._drawAnims), which is deliberate:
+     one event, one visual language, in both renderers.
+
+     It replaced a full-frame tint that was tried first and looked wrong for a
+     reason worth recording: the composer's bloom threshold is 0.86, and washing
+     the whole frame gold lifts EVERY pixel over it, so the entire scene blooms
+     and the shot goes milky — including the celebration you were trying to draw
+     attention to. Anything that covers the frame fights the grade. This does
+     not: it is small, it is on the ground, and it is over in half a second. */
+  function makeShockRing(THREE) {
+    var geo = new THREE.RingGeometry(0.86, 1.0, 64);
+    geo.rotateX(-Math.PI / 2);                       // lie flat on the turf
+    var mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+      color: 0xffd23f, transparent: true, opacity: 0,
+      depthWrite: false, side: THREE.DoubleSide, toneMapped: false
+    }));
+    mesh.renderOrder = 3;
+    mesh.visible = false;
+    var t = 0, dur = 0, maxR = 1;
+
+    function fire(x, z, r, seconds) {
+      maxR = r || 4; dur = seconds || 0.5; t = dur;
+      mesh.position.set(x, 0.06, z);
+    }
+    function update(dt) {
+      if (t <= 0) { if (mesh.visible) mesh.visible = false; return; }
+      t -= dt;
+      if (t <= 0) { mesh.visible = false; return; }
+      var k = 1 - t / dur;                           // 0 at the strike, 1 at the end
+      mesh.visible = true;
+      var r = 0.5 + (maxR - 0.5) * (1 - (1 - k) * (1 - k));   // fast, then easing out
+      mesh.scale.set(r, 1, r);
+      mesh.material.opacity = 0.85 * (1 - k) * (1 - k);
+    }
+    return { mesh: mesh, fire: fire, update: update };
   }
 
   /* ============================== UTILS ================================= */

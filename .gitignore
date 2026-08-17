@@ -34,3 +34,6 @@ node_modules
 node_modules/
 scratch-*
 _t3d_test.js
+
+# tools/headshot.mjs render output
+.headshots/

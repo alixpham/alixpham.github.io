@@ -15,7 +15,8 @@ and a prioritised plan to close the gap. Written against **v2.11.0**
 | 3 — Ball (C1–C3) | v2.14.0 | Gravity and launch angle, contested catch resolved in space, ball shadow and a real spiral. |
 | 4 — AI (D1–D4) | v2.15.0 | Coverage no longer empties on the throw, leverage, QB progression under pressure, leverage-aware breaks — and the undercut, which is what finally produced interceptions. |
 | 5 — Presentation (E1–E3) | v2.16.0 | Body variance by position and ratings, a real snap off the turf, ball spot and down marker. **E3 partial** — benches, coaches, officials, chain crew and a non-static crowd were left. |
-| 6 — Clock (A6–A8) | v2.17.0 | Two 20-minute halves, continuously running clock with last-two-minute stoppages, alternating-possession overtime, flag guarding, real laterals. |
+| 6 — Clock (A6–A8) | v2.17.0 | Two 20-minute halves, continuously running clock with last-two-minute stoppages, alternating-possession overtime, real laterals. **A7 was not actually shipped** — see below. |
+| A7 redone (penalties) | v2.31.0 | The illegal rush rebuilt on measured eligibility and a live ball (v2.30.0), and flag guarding finally *called* rather than merely written. |
 
 ### Where the numbers ended up
 
@@ -42,6 +43,128 @@ contain once a back is into open space. Completion sits under its band on
 purpose — the quarterback forces throws under pressure now, which is what pays
 for the interceptions — but the two together suggest the next pass should be
 at pursuit and leverage again rather than at another rule.
+
+---
+
+## v2.27.0 — the half break, and who has the ball
+
+A6 shipped two 20-minute halves in v2.17.0, but only the *clock* knew about
+them. When time expired the period counter incremented and play carried on:
+whoever had the ball kept it, on the same down, at the same spot. Measured over
+twenty CPU-vs-CPU games, **twenty out of twenty second halves opened mid-drive**
+(`poss=home ytg=40 dn=3`, and so on). Overtime had the same hole one level down
+— it flashed "alternating possessions from the 5" and then opened wherever
+regulation happened to expire, `ytg=34` on second down; only the handovers
+*between* OT possessions were ever spotted on the 5.
+
+Both are now applied at the next snap rather than inside the clock, because the
+clock runs in the middle of resolving the play that ran it out and the reset has
+to outrank whatever that play concluded about downs. The side that did not take
+the opening possession receives the second half, first down on their own 5.
+
+And every change of possession now says so. The rule after a score was already
+right — in IFAF the opponent takes over on their own 5, and across ~440 scoring
+sequences the scoring team never once kept the ball — but the handover happened
+in total silence: the flash said "conversion GOOD", and then a team, the other
+one, lined up on a 5-yard line and snapped. Watching that, it reads as the
+scoring side keeping the ball. It now names the team and the spot.
+
+## v2.22.0 — the throw, and the rules around it
+
+**A pass had stopped being catchable at all.** Measured over 32 CPU-vs-CPU
+games at Pro, the completion rate at v2.20.0 was **1.75%** and a pass play was
+worth **0.34 yards**. The cause was one line: the launch angle came from
+`sin(2θ) = gd/v²`, which is the range of a projectile that lands at the height
+it left from — but v2.19.0 had (correctly) started solving the flight between
+release height and catch height, and that extra half yard of fall buys extra
+distance. Every pass flew **2.8 yards past** the spot the receiver had been sent
+to. The receivers were fine: they arrived within 0.24 yards of their aim point
+and stood there while the ball went over their heads. The catch radius is 2.4.
+
+**Two sessions found this at the same time**, and v2.21.0 shipped the fix from
+the other one: the same physics as a closed-form quadratic rather than a
+bisection, with the same conclusion about the artificial "loft floor" — that it
+has to go, because every angle above the flat root lands past the target by
+definition. The numbers below therefore credit v2.21.0 with the passing game;
+what this release adds on top of it is the throw itself, arm strength actually
+reaching the ballistics (it was computed in `throwTo()` and then shadowed by a
+local `var throwSpeed = 22` in `_releaseThrow()`, so every arm in the league
+threw at the same velocity), release and catch heights measured off the rig
+rather than guessed, and the rules.
+
+| Metric | v2.20.0 | v2.22.0 | Real 5v5 |
+| --- | --- | --- | --- |
+| Yards per pass play | 0.34 | **7.44** | ~7–9 |
+| Completion % | 1.75% | **46.3%** | ~55–65% |
+| Interception rate | 0.30% | **3.2%** | ~3–5% |
+| Gains of 3 yards or fewer | 81.5% | **51.2%** | ~35% |
+| Yards per run | 8.89 | 11.03 | ~4–5 |
+| Touchdowns per play | 4.88% | 18.2% | ~5–8% |
+| Plays per game | 73.2 | 65.3 | 45–60 |
+
+(32 games per column, `node tools/simstats.mjs --games 8 --seed 1..4`.)
+
+**Being honest about the bottom two rows.** Touchdowns per play and yards per
+run are worse than they were, and neither is a new fault — they are the run
+defence this document has flagged since v2.17.0, now visible because the offence
+works. At v2.20.0 the TD rate was low for the worst possible reason: two thirds
+of all plays were passes and every one of them fell incomplete. About 1.5–2.5 of
+the extra yards per run come from the field being widened to its regulation 30
+(five defenders now cover a fifth more width with no blocking to beat), which is
+a rule, not a tuning knob. The next pass should be at pursuit and contain.
+
+### The throw itself
+
+`Throw` was re-authored against the measured kinematics of collegiate
+quarterbacks (Bohnert, *A complete kinematic, kinetic and electromyographical
+analysis of the football throw in collegiate quarterbacks*; and the IJSPT
+inertial kinematic-sequencing study of the football pass), and a new tool,
+`tools/measure-clip.mjs`, reads any clip back out in the same terms so the
+result can be checked rather than admired.
+
+At the exact instant the engine let go of the ball, the old clip measured:
+
+| | Old | New | Measured QBs |
+| --- | --- | --- | --- |
+| Throwing hand, relative to the chest | **0.41 m behind** | 0.37 m in front | in front |
+| Trunk rotation | 67° closed | 5° open | rotating through square |
+| Elbow flexion | 95° | 31° | ~31° |
+| Shoulder external rotation | 9° | 62° (from 134° at MER) | 134° → ~56° |
+| Peak hand speed | 5.7 m/s, 0.18s AFTER release | 13.9 m/s, at release | at release |
+
+The quarterback was throwing the ball out of the back of his own shoulder while
+facing away from the target — and he was facing away because the renderer only
+learned where the pass was going once the ball was already airborne, so the turn
+began after the throw. He turns to the receiver on the wind-up now.
+
+Shoulders are no longer hand-typed euler triples. An arm that is elevated, swept
+across the chest and rotated about its own axis does not decompose into an XYZ
+euler anybody can hold in their head, so `Throw` and the new `FlagGrab` are
+authored in elevation / horizontal adduction / external rotation — the three
+angles the literature reports — and `armQ()` solves the rotation. Feet are
+authored by where they are, with the hip solved (`plantHip`) so a plant stays
+planted, and the pelvis height solved densely enough (`groundedHips`) that no
+sole enters the turf between keys either.
+
+### Rules
+
+* The field is **70 x 30**. It was 70 x 25.
+* **Out of bounds** is crossing the line, not coming within 0.4 yards of it, and
+  the ball is dead where the crossing happened. Leaving the field in your own
+  end zone is a safety.
+* A **thrown ball is not held to the field** — it was clamped inbounds, so a
+  pass aimed at the touchline curved back and landed in play and a throwaway
+  could not be thrown away.
+* **Three downs to score** once you have crossed midfield. It was four.
+* A **flag pull now actually happens to somebody**: `flagPulled` was initialised
+  false on every player every snap, read in a dozen places, and set to true in
+  none of them, so no carrier ever reacted and no defender ever celebrated. Two
+  clips therefore played for the first time in this release, and both had been
+  driving feet through the turf unseen — `FlagPulled` by 8.6cm and `Celebrate`
+  by 4cm. Both are solved from the leg angles now, with the celebration's hop
+  added on top of the solve rather than replacing it. (`Catch` at 2.5cm and
+  `Juke` at 7cm are still hand-keyed and still out; they were already playing,
+  so they are pre-existing and left for a pass at the remaining clips.)
 
 ---
 
@@ -147,6 +270,25 @@ Worth adding at least the two that change how you play:
 - **Flag guarding** (the carrier shielding their flags) — the defining offensive
   foul of the sport.
 - **Illegal rush** — falls out of A2 for free.
+
+**Recorded as shipped in v2.17.0, and it was not.** Both fouls were written and
+neither worked, which is exactly the failure mode a box score cannot see: an
+average over a season looks the same whether a rule fires correctly, fires on
+the wrong player, or never fires at all.
+
+- `_flagGuard` was pushed with **no call sites**. It sat in `engine.js` for
+  thirteen releases and never once ran.
+- The illegal rush ran, and every flag it threw was wrong: measured at 3.9% of
+  plays, 24 of 25 the middle linebacker, all under Man coverage, not one of
+  them a rusher. It was catching a linebacker following his man into the
+  backfield on a swing route. It also ended the play on the spot and charged
+  the offence the down, which made fouling *profitable* for the defence on
+  fourth down.
+
+Both are fixed in v2.30.0 (rush) and v2.31.0 (guarding), on a shared model: the
+marker goes down, the play runs to its end, and the side that did not foul
+accepts or declines. `tools/ruletest.mjs` asserts the behaviour directly, which
+is the lesson — `tools/simstats.mjs` could not have caught either of these.
 
 ### A8. Laterals
 

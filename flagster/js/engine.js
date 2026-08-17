@@ -9,7 +9,11 @@
   var D = global.FLAGSTER.data;
 
   // Field constants (yards)
-  var FIELD_LEN = 70, FIELD_WID = 25, EZ = 10;      // end zone depth
+  /* NFL FLAG field: 70 x 30 with 10-yard end zones, so 50 between the goal
+     lines. The width was 25 — five yards narrow, which is a fifth of the
+     playing surface missing and the single dimension that decides how much
+     room a receiver has to work with against man coverage. */
+  var FIELD_LEN = 70, FIELD_WID = 30, EZ = 10;      // end zone depth
   var GOAL_L = EZ, GOAL_R = FIELD_LEN - EZ;         // x=10 (own), x=60 (target)
   var MIDFIELD = (GOAL_L + GOAL_R) / 2;             // x=35
 
@@ -22,6 +26,11 @@
   /* IFAF rules the arcade build never modelled. */
   var PASS_CLOCK = 7;                    // seconds to get the ball out, or it's dead
   var RUSH_LINE = 7;                     // a rusher must start this far off the LOS
+  var RUSH_LINE_SLOP = 0.25;             // ...measured at the snap, with a boot's grace
+  var ILLEGAL_RUSH_YDS = 5;              // the penalty, from the previous spot
+  var FLAG_GUARD_YDS = 10;               // ...and the offensive one, from the spot of the foul
+  var CROSSED_LOS = 0.5;                 // how far past the line before it counts as across
+  var CLOSING_ON_PASSER = 1.0;           // yd/s at the passer that separates a rush from coverage
   var NO_RUN_ZONE = 5;                   // no running plays inside 5 of a goal line or midfield
   var GRAVITY = 10.73;                   // yd/s^2 (9.81 m/s^2)
   var AI_JUKE_PER_SEC = 2.2;             // AI escape attempts per second, frame-rate free
@@ -73,6 +82,10 @@
       halves: true,
       clock: cfg.halfLen || cfg.quarterLen || 1200,
       possession: cfg.startPossession || 'away', // team with ball
+      /* Who took the opening possession. The second half belongs to the OTHER
+         side, so this has to survive the whole first half to be read at the
+         break. */
+      openingPossession: cfg.startPossession || 'away',
       yardsToGoal: 45, down: 1, crossedMid: false,
       phase: 'playcall',
       players: [], ball: null,
@@ -152,6 +165,7 @@
     s.ball = { x: losX, y: cy, z: 0, inAir: false, onGround: true };
     s.carrier = null;
     s.snapT = 0;
+    s.flag = null;
 
     // Assign coverage
     this._assignDefense();
@@ -179,7 +193,7 @@
       data: playerData, team: team, slot: slot,
       x: spot.x, y: spot.y, vx: 0, vy: 0, ang: 0,
       route: routeKey, wp: 0, flagPulled: false,
-      jukeCd: 0, jukeFx: 0, jukeCount: 0, stun: 0, stam: 1,
+      jukeCd: 0, jukeFx: 0, pullFx: 0, jukeCount: 0, stun: 0, stam: 1,
       cover: null, isUser: false, animPhase: 0,
       pos: playerData.pos, last: playerData.last, ovr: playerData.ovr, num: playerData.num
     };
@@ -219,10 +233,18 @@
        unconditionally, so Prevent Deep — a coverage whose entire point is not
        to rush — still sent a free runner. Only calls that actually rush do. */
     var rusher = def.filter(function (d) { return d.slot === 'RUSH'; })[0];
-    if (rusher && play.blitz > 0) rusher.blitz = true;
+    /* And a defender the coordinator sends is WALKED BACK to the rush line
+       first, so a call cannot put an ineligible rusher on the field. The Blitz
+       call sent the middle linebacker from six yards — inside the seven-yard
+       line — and the rule looked the other way because the exemption keyed off
+       the call rather than off where the man was standing. Legality is a fact
+       about the alignment now (see snap()), so the alignment has to be right. */
+    function send(d) { d.blitz = true; d.x = Math.max(d.x, s.losX + RUSH_LINE); }
+
+    if (rusher && play.blitz > 0) send(rusher);
 
     if (play.id === 'blitz') {
-      def.filter(function (d) { return d.slot === 'MLB'; }).forEach(function (d) { d.blitz = true; });
+      def.filter(function (d) { return d.slot === 'MLB'; }).forEach(send);
     }
     if (play.id === 'zone' || play.id === 'prevent') {
       // Zone: assign vertical thirds/flats
@@ -255,6 +277,22 @@
     // The snap is a real travel from the spot to the quarterback's hands.
     s.snapFly = { from: { x: s.ballSpot ? s.ballSpot.x : qb.x, y: s.ballSpot ? s.ballSpot.y : qb.y },
                   t: 0, dur: 0.22 };
+    /* A2 — WHO IS ALLOWED TO RUSH IS DECIDED HERE, and only here.
+
+       The rule is a fact about the alignment: you may rush the passer if you
+       were at or behind the rush line when the ball moved. It used to be read
+       off `d.blitz`, which is the coordinator's intention rather than anyone's
+       position, and the two disagreed in both directions — the called blitzer
+       came from six yards and was waved through, while the rusher standing
+       exactly on the line was ineligible on any call that didn't send him.
+       Stamped once, at the only moment the rule actually looks at. */
+    var rushLine = s.losX + RUSH_LINE - RUSH_LINE_SLOP;
+    s.players.forEach(function (p) {
+      if (p.team === this.offenseTeam()) return;
+      p.rushLegal = (p.x >= rushLine);
+    }, this);
+    s.flag = null;                       // no foul yet on this snap
+
     s.phase = 'live';
     s.snapT = 0;
     s.playClock = 0;
@@ -283,21 +321,6 @@
     var losX = s.losX;
     if (carrier.x > losX + 1.0 && !s.autoHandoff) { this._flash('No forward pass past the line!'); return; }
 
-    // Lead the receiver
-    /* C1 — BALLISTICS. Every pass used to leave at a fixed 22yd/s in a straight
-       line with a cosmetic sin() bump capped at 3.5 yards, so a 5-yard flat and
-       a 40-yard bomb were thrown at identical velocity and arrived in the same
-       shape. Arm strength only ever showed up as a scatter term.
-
-       Now: launch speed comes from the arm, the angle is solved for the range,
-       and gravity does the rest. Hang time, loft and — when the arm can't cover
-       the distance — a genuine underthrow all fall out of it instead of being
-       sampled. */
-    var throwSpeed = 18 + (clamp(carrier.data.throw, 40, 99) - 40) / 59 * 12; // yards/sec
-    var lead = 0.35 + (99 - carrier.data.throw) / 200;
-    var predicted = { x: target.x + target.vx * lead, y: target.y + target.vy * lead };
-    predicted.x = clamp(predicted.x, 0, FIELD_LEN);
-    predicted.y = clamp(predicted.y, 0, FIELD_WID);
     /* WIND UP, then release. The ball used to become airborne on the same
        frame the button was pressed, while the throw animation it is supposed
        to come out of runs for 1.10s — so the pass was ten yards downfield
@@ -322,18 +345,25 @@
      The trajectory used to run from the ground to the ground, and the 3D
      renderer papered over it by drawing the whole parabola a flat 1.0 yards
      higher. Two things were wrong with that. The release height was not the
-     height of the hand the ball had just been in — measured, the throwing hand
-     passes the ear at about 1.6yd while the pass was drawn leaving at 1.0 — so
-     the ball visibly dropped out of the quarterback's grip the instant it went
-     airborne. And the ball then "landed" at 1.0yd, which is neither the ground
-     nor where a receiver catches it.
+     height of the hand the ball had just been in — so the ball visibly dropped
+     out of the quarterback's grip the instant it went airborne. And the ball
+     then "landed" at 1.0yd, which is neither the ground nor where a receiver
+     catches it.
 
      So the flight is now solved between the two heights it actually happens
      between, and the renderer draws `z` as-is. Everything downstream — hang
      time, how far the arm really reaches, the underthrow — falls out of the
-     same solve rather than being corrected for afterwards. */
-  var RELEASE_Z = 1.60;                  // yards: the throwing hand at release
-  var CATCH_Z = 1.15;                    // yards: chest height, where it's gathered
+     same solve rather than being corrected for afterwards.
+
+     Both heights are MEASURED off the rig rather than guessed, with
+     tools/measure-clip.mjs, and converted through the scales the renderer
+     applies (metres -> yards / 0.9144, then field3d's 0.87 player scale and
+     its 1.010 quarterback build, plus PLAYER_LIFT):
+
+       Throw at t=0.374 (RELEASE_AT):  hand 1.83m -> 1.86yd
+       Catch, ball secured:            hands 1.29m -> 1.35yd                */
+  var RELEASE_Z = 1.86;                  // yards: the throwing hand at release
+  var CATCH_Z = 1.35;                    // yards: chest height, where it's gathered
 
   /* Time for a ball launched upward at vz from z0 to fall back to z1.
      z1 = z0 + vz*t - g*t^2/2, taking the positive root. */
@@ -354,7 +384,20 @@
     if (s.phase !== 'live' || s.carrier !== carrier || carrier.flagPulled) return;
     if (!target || target.flagPulled) return;
 
-    var throwSpeed = 22;
+    /* C1 — BALLISTICS. Every pass used to leave at a fixed 22yd/s in a straight
+       line with a cosmetic sin() bump, so a 5-yard flat and a 40-yard bomb were
+       thrown at identical velocity and arrived in the same shape.
+
+       Launch speed comes from the arm; the angle is solved for the range below
+       and gravity does the rest. Hang time, loft and — when the arm can't cover
+       the distance — a genuine underthrow all fall out of it.
+
+       This lived in throwTo() where it could not do anything: throwTo only
+       starts the wind-up, and the whole ballistic solve happens HERE, 374ms
+       later, where a local `var throwSpeed = 22` shadowed it. Every arm in the
+       league threw at exactly the same velocity and the rating showed up only
+       as scatter — the very thing the comment said had been fixed. */
+    var throwSpeed = 18 + (clamp(carrier.data.throw, 40, 99) - 40) / 59 * 12; // yards/sec
     /* Lead the receiver to where they will BE when the ball arrives. The lead
        used to be a flat 0.35-0.57s regardless of distance, while a 15-yard
        ball is in the air 0.68s and a deep one well over a second — so every
@@ -379,24 +422,59 @@
     var dirx = d > 1e-4 ? (predicted.x - carrier.x) / d : 1;
     var diry = d > 1e-4 ? (predicted.y - carrier.y) / d : 0;
 
-    /* Solve the launch angle for the range. sin(2t) = g*d/v^2 has a flat root
-       and a lofted one; take the flat one and then impose a floor that grows
-       with distance, so a deep ball is actually thrown up in the air and is
-       catchable rather than a flat rocket. */
-    var s2 = GRAVITY * d / (throwSpeed * throwSpeed);
+    /* Two sessions found this bug at once and solved it two ways. What ships
+       is the CLOSED FORM below, from the branch: it is the same physics as the
+       bisection this side had, without the iteration, and it had already been
+       measured. Both agreed on the diagnosis and on killing the loft floor. */
+    /* Solve the launch angle for the range — BETWEEN THE TWO HEIGHTS THE BALL
+       ACTUALLY FLIES BETWEEN. sin(2t) = g*d/v^2 is the ground-to-ground range
+       equation, and a ball released at the ear and caught at the chest is not
+       ground to ground: it has an extra RELEASE_Z - CATCH_Z to fall through,
+       which buys it extra hang time and carries it past the receiver. Pairing
+       that flat solve with a flight time measured between the real heights is
+       what broke the passing game — every ball overshot by about 30% and
+       nobody was within catching range of any of them. Completions measured
+       1.6%.
+
+       With z0 - z1 = drop, writing the trajectory at horizontal distance d and
+       substituting t = d / (v cos t) gives a quadratic in T = tan t:
+
+           k*T^2 - d*T + (k - drop) = 0,     k = g*d^2 / (2*v^2)
+
+       The smaller root is the flat trajectory, which is the one a passer
+       throws; a negative discriminant means it is out of range whatever the
+       angle, and then the best he has is 45 degrees and it falls short. */
+    var drop = RELEASE_Z - CATCH_Z;
+    var k = GRAVITY * d * d / (2 * throwSpeed * throwSpeed);
+    var disc = d * d - 4 * k * (k - drop);
     var theta;
-    if (s2 >= 1) {
+    if (k < 1e-6) {
+      theta = 0;                        // no distance to cover
+    } else if (disc <= 0) {
       theta = Math.PI / 4;              // out of range: best he's got, falls short
     } else {
-      theta = 0.5 * Math.asin(s2);
-      theta = Math.max(theta, Math.min(Math.PI / 4, d * 0.011));
+      theta = Math.atan((d - Math.sqrt(disc)) / (2 * k));
+      /* There used to be a loft floor here — max(theta, d*0.011) — to stop a
+         deep ball being a flat rocket. It has to go, because BOTH roots of
+         that quadratic land at exactly d and every angle between them lands
+         PAST it: a floor above the flat root is an overthrow by definition.
+         With the ground-to-ground solve it rarely bound; with the drop taken
+         into account the required angle is lower, so it bound most of the
+         time, and it is the rest of the overthrow. Restoring it costs
+         completions directly — measured 50% without it against 17% with it.
+
+         It is also no longer needed. Solving between the real heights already
+         steepens the throw with distance on its own: 6.4 degrees at 10 yards,
+         11.8 at 20, 19.9 at 30, against a floor that only ever asked for
+         18.9 at 30. The arc on a deep ball is the physics, not a fudge. */
     }
     var hv = throwSpeed * Math.cos(theta);        // horizontal component
     var vz = throwSpeed * Math.sin(theta);        // vertical component
     var flight = flightTime(vz, RELEASE_Z, CATCH_Z);
     var reach = hv * flight;                      // how far it ACTUALLY goes
     if (reach < d) {                              // underthrow — the arm fell short
-      predicted = { x: carrier.x + dirx * reach, y: carrier.y + diry * reach };
+      predicted = { x: clamp(carrier.x + dirx * reach, 0, FIELD_LEN),
+                    y: clamp(carrier.y + diry * reach, 0, FIELD_WID) };
     }
     s.ball = {
       x: carrier.x, y: carrier.y, z: RELEASE_Z, inAir: true,
@@ -446,7 +524,22 @@
       s.playClockLeft = PLAY_CLOCK;
     }
 
-    if (s.phase !== 'live') return;
+    /* A BALL NOBODY CAUGHT IS STILL SUBJECT TO GRAVITY, and the play being
+       dead is not a reason for it to stop falling. It used to be left exactly
+       where the flight solver ended it — at CATCH_Z, chest height — so every
+       incompletion hung a football in mid-air over an empty patch of turf
+       until the next snap replaced it. This runs BEFORE the early return
+       below, because that return is the whole reason it never landed. */
+    if (s.ball && s.ball.loose) this._updateLoose(dt);
+
+    /* BODIES DO NOT STOP BEING BODIES WHEN THE WHISTLE GOES. Separation used
+       to live below this return, so the instant a play ended it stopped
+       running and whatever overlap existed at that moment was frozen for the
+       whole dead ball — which is exactly when the camera settles and everyone
+       is looking at it. Positions only here, no velocity: nobody is steering,
+       so a shove would have nothing to damp it and the formation would drift
+       apart after the whistle. A pile just unstacks and then stands still. */
+    if (s.phase !== 'live') { this._separate(dt, true); return; }
     s.snapT += dt;
     s.playClock += dt;
     this._updateStamina(dt);
@@ -572,6 +665,7 @@
       var p = s.players[i];
       if (p.jukeCd > 0) p.jukeCd = Math.max(0, p.jukeCd - dt);
       if (p.jukeFx > 0) p.jukeFx = Math.max(0, p.jukeFx - dt);
+      if (p.pullFx > 0) p.pullFx = Math.max(0, p.pullFx - dt);
       if (p.stun > 0) p.stun = Math.max(0, p.stun - dt);
       /* The sidestep used to be scripted here — first a teleport, then a
          positional impulse integrated over a fifth of a second — because the
@@ -786,8 +880,27 @@
     }
 
     p.vx = vx; p.vy = vy;
-    p.x = clamp(p.x + vx * dt, 0, FIELD_LEN);
-    p.y = clamp(p.y + vy * dt, 0, FIELD_WID);
+    /* OUT OF BOUNDS. The step was clamped into the field and nothing else
+       happened, so a ball carrier driven at the sideline did not go out — he
+       pressed against the paint and kept running along it, for as long as you
+       liked, gaining yards down a line he was standing on. There is no such
+       thing in the sport: the moment any part of you touches out, the ball is
+       dead where you crossed.
+
+       The clamp stays — a body that keeps its feet on the grass is the right
+       way to draw the last frame, and everyone who is NOT carrying the ball
+       simply cannot leave the field. What is new is that the crossing is
+       recorded before it is clamped away, so _update can blow the whistle on
+       the carrier. `outAt` is the spot, which is the yardage. */
+    var nx = p.x + vx * dt, ny = p.y + vy * dt;
+    if (ny < 0 || ny > FIELD_WID || nx < 0 || nx > FIELD_LEN) {
+      p.outOfBounds = true;
+      p.outAt = { x: clamp(nx, 0, FIELD_LEN), y: clamp(ny, 0, FIELD_WID) };
+    } else {
+      p.outOfBounds = false;
+    }
+    p.x = clamp(nx, 0, FIELD_LEN);
+    p.y = clamp(ny, 0, FIELD_WID);
     if (Math.hypot(vx, vy) > 0.05) p.ang = Math.atan2(vy, vx);
   };
 
@@ -808,16 +921,22 @@
     this._steer(p, dx / m * spd, dy / m * spd, dt);
   };
 
-  /* Input is given in SCREEN space (dx = right, dy = down). The camera sits
-     behind whichever team you're playing as and flips with possession, so
-     screen axes do NOT line up with field axes — feeding them straight through
-     made "right" travel sideways/down the pitch. Rotate the stick into field
-     space using the same orientation the camera uses:
-        on offense  we look toward +x  -> screen-up = +x, screen-right = +y
-        on defense  we look toward -x  -> screen-up = -x, screen-right = -y  */
+  /* Input is given in SCREEN space (dx = right, dy = down) and has to be
+     rotated into field space using whatever orientation the camera is using,
+     or "right" travels sideways down the pitch.
+
+     The camera USED to sit behind whichever team you were playing as, and so
+     flipped end-for-end with possession; this returned -1 to match. It now
+     sits behind whoever has the ball, and the offence always attacks +x, so
+     the shot never turns around and the answer is always +1:
+
+        we always look toward +x -> screen-up = +x, screen-right = +y
+
+     The seam is kept — every caller still asks the camera which way is
+     downfield rather than assuming — so a camera that ever does turn round
+     again only has to change this one line. */
   Engine.prototype.viewSign = function () {
-    if (this.demo) return 1;
-    return (this.state && this.state.possession === this.userSide) ? 1 : -1;
+    return 1;
   };
 
   Engine.prototype._moveByInput = function (p, dt) {
@@ -1060,7 +1179,10 @@
     var s = this.state;
     this._flash('Thrown away');
     this.onEvent({ type: 'throwaway' });
-    this._incomplete('Thrown away', { x: qb.x, y: qb.y < FIELD_WID / 2 ? 0.5 : FIELD_WID - 0.5 });
+    /* Where a throwaway goes: OUT. It was aimed half a yard inside the
+       touchline, which is a live ball landing in play — the very thing a
+       quarterback throwing it away is trying not to do. */
+    this._incomplete('Thrown away', { x: qb.x, y: qb.y < FIELD_WID / 2 ? 0 : FIELD_WID });
   };
 
   /* B3 — PURSUIT ANGLES.
@@ -1191,8 +1313,14 @@
     var s = this.state, b = s.ball;
     var z1 = b.z1 == null ? 0 : b.z1;
     b.t += dt;
-    b.x = clamp(b.from.x + b.dirx * b.hv * b.t, 0, FIELD_LEN);
-    b.y = clamp(b.from.y + b.diry * b.hv * b.t, 0, FIELD_WID);
+    /* A THROWN BALL IS NOT ON THE FIELD, so it isn't held to it. These two
+       were clamped, which meant a pass aimed at the sideline curved back in
+       and landed inbounds — you could not throw one away, and a ball you
+       watched sail toward the touchline turned round in mid-air and came
+       home. It flies where it was thrown; whether that is in play is decided
+       when it arrives. */
+    b.x = b.from.x + b.dirx * b.hv * b.t;
+    b.y = b.from.y + b.diry * b.hv * b.t;
     b.z = Math.max(z1, (b.z0 || 0) + b.vz * b.t - 0.5 * GRAVITY * b.t * b.t);
     if (b.t >= b.dur || (b.z <= z1 && b.t > 0.05)) { b.z = z1; this._resolveCatch(); }
   };
@@ -1220,6 +1348,20 @@
     b.inAir = false;
     var pt = { x: b.x, y: b.y };
     var off = this.offenseTeam();
+
+    /* A CATCH HAS TO BE MADE IN BOUNDS. A player is always on the field (they
+       are clamped there), so what decides this is where the BALL came down:
+       past the touchline or out of the back of the end zone and nobody can
+       legally have caught it, however close they were standing. A pitch is
+       different — it is a live ball, and one that goes out is dead at the spot
+       it left the field, not an incompletion. */
+    if (pt.y < 0 || pt.y > FIELD_WID || pt.x < 0 || pt.x > FIELD_LEN) {
+      var edge = { x: clamp(pt.x, 0, FIELD_LEN), y: clamp(pt.y, 0, FIELD_WID) };
+      s.clockStops = true;
+      if (b.lateral) { this._flash('Pitch out of bounds'); this._dropBall(edge); this._endPlay(edge.x, true); return; }
+      this._incomplete('Incomplete — out of bounds', edge);
+      return;
+    }
 
     var contenders = [];
     for (var i = 0; i < s.players.length; i++) {
@@ -1265,7 +1407,7 @@
 
     if (!contenders.length) {
       // A pitch nobody gathered is a dead ball at the spot, not an incompletion.
-      if (b.lateral) { this._flash('Pitch goes loose'); this._endPlay(pt.x, true); return; }
+      if (b.lateral) { this._flash('Pitch goes loose'); this._dropBall(pt); this._endPlay(pt.x, true); return; }
       this._incomplete('Incomplete', pt); return;
     }
     contenders.sort(function (a, c) { return c.score - a.score; });
@@ -1296,6 +1438,15 @@
       var scale = this.difficulty ? this.difficulty.intScale : 1;
       // Even a clean read is dropped sometimes; intScale keeps difficulty honest.
       if (Math.random() < clamp(0.55 * scale + 0.35, 0.2, 0.95)) {
+        /* THE MAN WHO PICKED IT OFF IS HOLDING IT. Without this the carrier
+           stays null through the whole dead ball, so the renderer has nobody
+           to hang the football off and draws it hovering at the spot — and the
+           celebration below has no star, because the star is whoever has the
+           ball. Nothing moves while the play is dead, so a carrier here is a
+           statement about who has possession of it, not about the play. */
+        pick.hasBall = true;
+        s.carrier = pick;
+        s.ball.x = pick.x; s.ball.y = pick.y; s.ball.z = 0;
         this._turnover('INTERCEPTED by ' + pick.last + '!', pick);
       } else {
         this._incomplete('Broken up by ' + pick.last + '!', pt);
@@ -1430,6 +1581,13 @@
     var eff = 1 / (1 + 0.9 * (n - 1));
 
     if (held) {
+      /* A7 — the second time you break THIS defender's grip in this play, you
+         are not cutting any more, you are swatting his hand off your flag. */
+      var broke = c.brokeFrom || (c.brokeFrom = {});
+      var who = held.data.id;
+      if (broke[who]) this._flagGuard(c, held);
+      broke[who] = true;
+
       c.jukeCount = n;
       c.jukeCd = this.difficulty.jukeCd;
       c.grabT = Math.max(0, (c.grabT || 0) * (1 - eff));
@@ -1472,6 +1630,22 @@
   Engine.prototype._flagPull = function (defender, carrier) {
     var s = this.state;
     s.stats[this.defenseTeam()].tackles++;
+    /* NOBODY'S FLAG HAS EVER COME OFF. `flagPulled` is initialised to false on
+       every player at every snap, read in a dozen places, and was set to true
+       in exactly none of them. So the flag came off in the scoreline and
+       nowhere else: no flag burst, no reaction from the carrier, and no
+       celebration from the defender, because the renderer's entire flag-pull
+       branch is gated on this flag and it never once fired.
+
+       `pullFx` is the defender's cue, on the same pattern as jukeFx — a short
+       countdown ticked down in _updateTimers, which the renderer turns into
+       the reaching-and-ripping animation. The renderer used to guess who made
+       the play by finding the nearest opponent; it is told now. */
+    carrier.flagPulled = true;
+    defender.pullFx = 0.9;
+    defender.grabbing = false;
+    s.grabbedBy = null;
+    s.grabProgress = 0;
     // spot the ball where the carrier is
     var spotX = carrier.x;
     this.anim.push({ type: 'flag', x: carrier.x, y: carrier.y, t: 0, dur: 0.7,
@@ -1517,7 +1691,7 @@
   var SEP_SLIDE_MAX = 0.5;               // cap on any single positional correction
   var SEP_PASSES = 4;                    // relaxation iterations per frame
 
-  Engine.prototype._separate = function (dt) {
+  Engine.prototype._separate = function (dt, posOnly) {
     var ps = this.state.players;
     if (!ps) return;
     /* Relaxed a few times over. One pass fixes each pair in isolation, but
@@ -1526,17 +1700,24 @@
        0.098yd apart in a 0.9yd body). Iterating settles the whole pile, and
        costs nothing to do because the renderer now animates real displacement,
        so a firm positional correction no longer shows up as a slide. */
-    for (var pass = 0; pass < SEP_PASSES; pass++) this._separatePass(dt / SEP_PASSES);
+    for (var pass = 0; pass < SEP_PASSES; pass++) this._separatePass(dt / SEP_PASSES, posOnly);
   };
 
-  Engine.prototype._separatePass = function (dt) {
+  Engine.prototype._separatePass = function (dt, posOnly) {
     var ps = this.state.players;
     for (var i = 0; i < ps.length; i++) {
       var a = ps[i];
-      if (a.flagPulled) continue;
       for (var j = i + 1; j < ps.length; j++) {
         var b = ps[j];
-        if (b.flagPulled) continue;
+        /* A PLAYER WHOSE FLAG IS GONE IS STILL A PERSON STANDING THERE. Both
+           of these used to `continue`, which took the de-flagged carrier out
+           of separation entirely — so the four defenders converging on the
+           pull walked straight into him and stood inside his body, and the
+           frame everybody looks at was a red shirt buried in a pile of white
+           ones. He keeps his volume; he just doesn't get shoved out of the
+           way, because he isn't running any more. */
+        var aFixed = !!a.flagPulled, bFixed = !!b.flagPulled;
+        if (aFixed && bFixed) continue;              // two statues, leave them
         var dx = b.x - a.x, dy = b.y - a.y;
         var d2 = dx * dx + dy * dy;
         var min = BODY_R * 2;
@@ -1555,9 +1736,11 @@
 
            Still not a block: it is equal and opposite, it scales only with how
            far inside each other they are, and neither player can aim it. */
-        var push = SEP_PUSH * overlap * dt;
-        a.vx -= ux * push; a.vy -= uy * push;
-        b.vx += ux * push; b.vy += uy * push;
+        if (!posOnly) {
+          var push = SEP_PUSH * overlap * dt;
+          if (!aFixed) { a.vx -= ux * push; a.vy -= uy * push; }
+          if (!bFixed) { b.vx += ux * push; b.vy += uy * push; }
+        }
 
         /* And a hard positional guarantee, because the avoidance above can
            never win against an AI that is deliberately seeking the very player
@@ -1566,8 +1749,14 @@
            figure; it no longer causes a slide because the renderer animates
            actual displacement (rvx/rvy below) rather than intent. */
         var fix = Math.min((min - d) * 0.5, SEP_SLIDE_MAX);
-        a.x = clamp(a.x - ux * fix, 0, FIELD_LEN); a.y = clamp(a.y - uy * fix, 0, FIELD_WID);
-        b.x = clamp(b.x + ux * fix, 0, FIELD_LEN); b.y = clamp(b.y + uy * fix, 0, FIELD_WID);
+        /* Split evenly between two players who can both move; if one of them
+           has been de-flagged he is standing still, so the whole correction
+           goes to the one who is walking into him. He is an obstacle to be
+           gone round, not a body to be pushed off the spot. */
+        var aShare = aFixed ? 0 : (bFixed ? 2 : 1);
+        var bShare = bFixed ? 0 : (aFixed ? 2 : 1);
+        if (aShare) { a.x = clamp(a.x - ux * fix * aShare, 0, FIELD_LEN); a.y = clamp(a.y - uy * fix * aShare, 0, FIELD_WID); }
+        if (bShare) { b.x = clamp(b.x + ux * fix * bShare, 0, FIELD_LEN); b.y = clamp(b.y + uy * fix * bShare, 0, FIELD_WID); }
       }
     }
   };
@@ -1595,33 +1784,158 @@
         return;
       }
       // A2 — anyone rushing who didn't earn the right to
-      for (var i = 0; i < def.length; i++) {
-        var d = def[i];
-        if (d.blitz || d.flagPulled) continue;
-        if (d.x < s.losX - 0.5) { this._illegalRush(d); return; }
+      if (!s.flag) {
+        for (var i = 0; i < def.length; i++) {
+          var d = def[i];
+          if (d.rushLegal || d.flagPulled) continue;
+          if (d.x >= s.losX - CROSSED_LOS) continue;
+          if (!this._isRushing(d, c)) continue;
+          this._throwFlag({ kind: 'illegal-rush', player: d, against: 'defense',
+                            msg: 'Illegal rush on ' + d.last,
+                            yards: ILLEGAL_RUSH_YDS, spot: s.losX });
+          break;
+        }
       }
     }
   };
 
-  /* A7 — FLAG GUARDING, the defining offensive foul of the sport: the carrier
-     shielding their flags from the defender. Modelled where it actually
-     happens — while someone has a grip on you and you are swatting them off.
-     Ten yards from the spot and a loss of down. */
-  Engine.prototype._flagGuard = function (c, d) {
-    var s = this.state;
-    this._flash(c.last + ' guarded the flag — 10 yards');
-    this.onEvent({ type: 'penalty', kind: 'flag-guard', player: c });
-    s.yardsToGoal = clamp(s.yardsToGoal + 10, 1, 50);
-    this._endPlay(GOAL_R - s.yardsToGoal, true);
+  /* Crossing the line is not by itself a rush. A linebacker in man coverage
+     whose assignment runs a swing route is standing in the backfield because
+     that is where his man went, and the old check flagged him for it — every
+     illegal rush the game called was that, and only that: 4.8% of plays, all
+     of them the middle linebacker, all of them under Man, not one of them an
+     actual rusher. What separates the two is who you are going at. */
+  Engine.prototype._isRushing = function (d, passer) {
+    if (d.cover && dist(d, d.cover) < dist(d, passer)) return false;
+    var dx = passer.x - d.x, dy = passer.y - d.y;
+    var m = Math.hypot(dx, dy) || 1;
+    return ((d.vx || 0) * dx + (d.vy || 0) * dy) / m > CLOSING_ON_PASSER;
   };
 
-  Engine.prototype._illegalRush = function (d) {
+  /* A7 — FLAG GUARDING, the defining offensive foul of the sport: the carrier
+     using a hand, an arm or the ball to keep a defender off their flags.
+
+     This function existed since v2.17.0 with NO CALL SITES — the release notes
+     and REALISM.md both claimed it shipped, and it had never once fired. It is
+     wired up here.
+
+     There is no stiff-arm input to hang it on, so the honest mapping is the
+     escape move used against a grip that is already on you. Breaking a grab is
+     a cut, and cuts are legal — measured, 29.7% of plays contain one and they
+     must stay legal. Doing it a SECOND time to the same defender's hand, in
+     the same play, is not a cut; that is swatting the hand away, and it fires
+     on 1.1% of plays, which is about the once-a-game a real match sees. */
+  Engine.prototype._flagGuard = function (c, d) {
+    this._throwFlag({ kind: 'flag-guard', player: c, against: 'offense',
+                      msg: c.last + ' guarded the flag',
+                      yards: FLAG_GUARD_YDS, spot: c.x });
+  };
+
+  /* A2 — THE FLAG DOES NOT BLOW THE WHISTLE.
+
+     A defensive foul used to end the play the instant it happened, which is
+     both wrong and exploitable: rush illegally and any play you are losing
+     simply stops. On fourth down it was strictly good for the defence, because
+     `penaltyReplay` was written and never read anywhere, so the offence was
+     charged the down as well — 5 yards and a turnover on downs, handed over
+     for committing a foul.
+
+     The official throws a marker and the play goes on. What it was worth is
+     decided afterwards, by the offence, which is what accepting and declining
+     a penalty is. */
+  Engine.prototype._throwFlag = function (spec) {
     var s = this.state;
-    this._flash('Illegal rush on ' + d.last + ' — 5 yards');
-    this.onEvent({ type: 'penalty', kind: 'illegal-rush', player: d });
-    s.penaltyReplay = true;                       // same down, ball moved on
-    s.yardsToGoal = clamp(s.yardsToGoal - 5, 1, 50);
-    this._endPlay(GOAL_R - s.yardsToGoal, true);
+    if (s.flag) return;                           // one marker makes the point
+    s.flag = spec;
+    this._flash('\u{1F6A9} ' + spec.msg);
+    this.onEvent({ type: 'flag', kind: spec.kind, player: spec.player, against: spec.against });
+  };
+
+  /* Enforce or decline, once the play is over and there is something to
+     compare the penalty against — which is the whole reason the play is
+     allowed to finish. The side that did NOT foul chooses.
+
+     Returns 'took-over' when the penalty has replaced the down outright and
+     queued its own next snap, 'marked-off' when it has re-spotted the ball but
+     the down cycle still has to run, and false when it was declined. */
+  Engine.prototype._resolveFlag = function (reachedMid, turnover, mustAccept) {
+    var s = this.state, f = s.flag;
+    s.flag = null;
+    if (!f) return false;
+
+    /* A conversion is not a down and cannot be marked off into one. A
+       defensive foul on the try means you try again — once; a defence that
+       fouled its way through an unbounded number of replays would wedge the
+       game, and the rulebook's answer to that is an ejection, not a loop. An
+       offensive foul on a try just fails it, which the caller already does. */
+    if (s.patActive) {
+      if (f.against === 'offense') { this._flash(f.msg + ' — the conversion is no good'); return false; }
+      if (s.patReplayed) { this._flash(f.msg + ' — declined'); return false; }
+      s.patReplayed = true;
+      this._flash(f.msg + ' — the conversion is replayed');
+      this.onEvent({ type: 'penalty', kind: f.kind, player: f.player, accepted: true });
+      s.clockStops = true;
+      this.runPlayClock(s.snapT || 0, true);
+      if (s.gameOver) return 'took-over';
+      this._nextSnap();
+      return 'took-over';
+    }
+    return (f.against === 'defense')
+      ? this._enforceOnDefense(f, reachedMid)
+      : this._enforceOnOffense(f, turnover, mustAccept);
+  };
+
+  /* Illegal rush: 5 yards from the previous spot AND an automatic first down,
+     so the offence takes it unless the play itself already did better. A
+     touchdown declines it before we ever get here. */
+  Engine.prototype._enforceOnDefense = function (f, reachedMid) {
+    var s = this.state;
+    var playSpot = GOAL_R - s.yardsToGoal;
+    var penSpot = clamp(f.spot + f.yards, GOAL_L + 1, GOAL_R - 1);
+    var playWonTheDown = (!s.crossedMid && reachedMid);
+    if (playWonTheDown && penSpot <= playSpot) {
+      this._flash(f.msg + ' — declined');
+      this.onEvent({ type: 'penalty', kind: f.kind, player: f.player, accepted: false });
+      return false;
+    }
+    this._flash(f.msg + ' — ' + f.yards + ' yards, automatic first down');
+    this.onEvent({ type: 'penalty', kind: f.kind, player: f.player, accepted: true });
+    s.yardsToGoal = clamp(GOAL_R - penSpot, 1, 50);
+    s.down = 1;
+    if (!s.crossedMid && penSpot >= MIDFIELD) s.crossedMid = true;
+    s.clockStops = true;                          // a penalty stops the clock
+    this.runPlayClock(s.snapT || 0, true);
+    if (s.gameOver) return 'took-over';
+    this._nextSnap();
+    return 'took-over';
+  };
+
+  /* Flag guarding: 10 yards from the SPOT OF THE FOUL — where the carrier was
+     standing when they swatted, not the line of scrimmage — and a loss of
+     down. The defence chooses, and declines whenever what happened on the
+     field was already better for them than the marker: an interception is
+     worth more than ten yards, and so is a play that lost more ground than the
+     penalty would take. */
+  Engine.prototype._enforceOnOffense = function (f, turnover, mustAccept) {
+    var s = this.state;
+    var playSpot = GOAL_R - s.yardsToGoal;
+    var penSpot = clamp(f.spot - f.yards, GOAL_L + 1, GOAL_R - 1);
+    /* On a touchdown the comparison below is meaningless — _endPlay never ran,
+       so yardsToGoal is still the pre-play value and the spot of a foul made
+       twenty yards downfield looks like a GAIN. Six points is worse for the
+       defence than any marker, full stop, so that case says so outright. */
+    if (!mustAccept && (turnover || penSpot >= playSpot)) {
+      this._flash(f.msg + ' — declined');
+      this.onEvent({ type: 'penalty', kind: f.kind, player: f.player, accepted: false });
+      return false;
+    }
+    this._flash(f.msg + ' — ' + f.yards + ' yards, loss of down');
+    this.onEvent({ type: 'penalty', kind: f.kind, player: f.player, accepted: true });
+    s.yardsToGoal = clamp(GOAL_R - penSpot, 1, 50);
+    s.clockStops = true;
+    // The down still has to advance, and marking the ball backwards cannot
+    // have reached midfield, so the caller runs the cycle with that cleared.
+    return 'marked-off';
   };
 
   Engine.prototype._checkBoundaries = function () {
@@ -1638,8 +1952,27 @@
        touched. Retreating into your own end zone is legal and you can run back
        out; it costs you two points only if your flag comes off back there,
        which _flagPull now handles. */
-    // Out of bounds — also stops the clock inside two minutes
-    if (c.y <= 0.4 || c.y >= FIELD_WID - 0.4) { s.clockStops = true; this._endPlay(c.x, false); }
+    /* OUT OF BOUNDS — also stops the clock.
+
+       This used to fire on the carrier being within 0.4 yards of the sideline,
+       which is not the rule and cost the offence a strip of field on both
+       touchlines: half a yard inside the paint is inbounds and playable, and
+       working the sideline is one of the things a 30-yard field is FOR. It
+       also never ended a play at the right spot, because it triggered before
+       the crossing rather than at it.
+
+       _steer records the frame in which a step would genuinely have carried a
+       body over the line, and where (see `outOfBounds` / `outAt`), so the
+       whistle goes exactly where the player left the field. */
+    if (c.outOfBounds) {
+      s.clockStops = true;
+      var spot = c.outAt || { x: c.x, y: c.y };
+      // Leaving the field inside your own end zone is a safety, for the same
+      // reason losing your flag back there is.
+      if (spot.x <= GOAL_L) { this._flash('Out of bounds in the end zone — SAFETY!'); this._safety(); return; }
+      this._flash('Out of bounds');
+      this._endPlay(spot.x, false);
+    }
   };
 
   /* --------------------------- PLAY RESOLUTION --------------------------- */
@@ -1660,31 +1993,100 @@
     if (!s.crossedMid && s.yardsToGoal <= MIDFIELD - GOAL_L + 0.001 && spotX >= MIDFIELD) {
       // reached/past midfield -> fresh set to score
     }
+    /* Where the whistle went. The renderer needs it a beat later, when the
+       down is actually awarded, to know where a celebration happens — by then
+       the ball is dead and nobody has moved, but `spotX` is a local. */
+    s.deadSpot = { x: spotX, y: s.carrier ? s.carrier.y : FIELD_WID / 2 };
     var reachedMid = spotX >= MIDFIELD;
     setTimeout(this._advanceDown.bind(this, gained, reachedMid), 900);
   };
 
   Engine.prototype._advanceDown = function (gained, reachedMid) {
     var s = this.state;
+    // A marker on the field outranks the down. A defensive foul replaces this
+    // result outright and carries its own clock and next snap; an offensive
+    // one re-spots the ball and leaves the down cycle below to run.
+    if (s.flag) {
+      var pen = this._resolveFlag(reachedMid, false);
+      if (pen === 'took-over') return;
+      if (pen === 'marked-off') { gained = 0; reachedMid = false; }
+    }
     // A conversion is one play: it either reached the end zone or it didn't.
     if (s.patActive) { this._endPAT(false); return; }
     this.runPlayClock(s.snapT || 0, !!s.clockStops);
     s.clockStops = false;
     if (s.gameOver) return;
 
+    /* FOUR DOWNS TO CROSS MIDFIELD, THREE TO SCORE ONCE YOU HAVE. The second
+       half of that rule was missing — a team that had crossed got four downs
+       to score as well, which is a whole extra play on every drive in the
+       half of the field where drives are decided. */
     if (!s.crossedMid) {
       if (reachedMid) {
         s.crossedMid = true; s.down = 1;
         this._flash('First down — past midfield!');
+        /* Moving the chains is worth something, and the players should show it
+           — but it is a first down, not a score, so it gets the SMALL
+           celebration: the carrier and whoever is standing near them, for a
+           beat. The big one belongs to _touchdown. */
+        this._celebrate('firstdown', s.deadSpot);
       } else {
         s.down++;
         if (s.down > 4) return this._turnoverOnDowns();
       }
     } else {
       s.down++;
-      if (s.down > 4) return this._turnoverOnDowns();
+      if (s.down > 3) return this._turnoverOnDowns();
     }
     this._nextSnap();
+  };
+
+  /* THE BALL COMES DOWN. Called wherever a ball stops belonging to anybody —
+     an incompletion, a break-up, a pitch nobody gathered. The flight solver
+     ends a pass at the height it would have been CAUGHT at, which is the right
+     answer for a catch and leaves a football hanging at chest height over
+     nobody when there isn't one, so from here it just keeps falling.
+
+     Restitution is low and the horizontal damping is severe on purpose: a
+     prolate spheroid landing on grass on an unknown axis does not bounce like
+     a basketball, it takes one hard kick in some direction and dies. */
+  var BALL_BOUNCE = 0.36;               // vertical restitution
+  var BALL_ROLL = 0.42;                 // horizontal speed kept per bounce
+  var BALL_REST = 1.1;                  // below this |vz| it stops bouncing
+
+  Engine.prototype._dropBall = function (pt) {
+    var b = this.state.ball;
+    if (!b) return;
+    // The vertical velocity it actually had at the moment the catch failed,
+    // so it continues the same parabola rather than starting a new one.
+    var vz = (b.vz || 0) - GRAVITY * (b.t || 0);
+    b.x = pt && pt.x != null ? pt.x : b.x;
+    b.y = pt && pt.y != null ? pt.y : b.y;
+    b.inAir = false; b.onGround = false; b.loose = true;
+    b.lvz = vz;
+    // A ball that has been dropped, tipped or broken up has had most of its
+    // forward speed taken out of it by whatever failed to catch it.
+    b.lvx = (b.dirx || 0) * (b.hv || 0) * 0.22;
+    b.lvy = (b.diry || 0) * (b.hv || 0) * 0.22;
+  };
+
+  Engine.prototype._updateLoose = function (dt) {
+    var b = this.state.ball;
+    if (!b || !b.loose) return;
+    b.lvz = (b.lvz || 0) - GRAVITY * dt;
+    b.z = (b.z || 0) + b.lvz * dt;
+    b.x = clamp(b.x + (b.lvx || 0) * dt, 0, FIELD_LEN);
+    b.y = clamp(b.y + (b.lvy || 0) * dt, 0, FIELD_WID);
+    if (b.z <= 0) {
+      b.z = 0;
+      if (Math.abs(b.lvz) > BALL_REST) {
+        b.lvz = -b.lvz * BALL_BOUNCE;
+        b.lvx *= BALL_ROLL; b.lvy *= BALL_ROLL;
+      } else {
+        b.loose = false; b.onGround = true;
+        b.lvx = b.lvy = b.lvz = 0;
+      }
+    }
   };
 
   Engine.prototype._incomplete = function (msg, pt) {
@@ -1692,21 +2094,47 @@
     this._flash(msg);
     this.anim.push({ type: 'incomplete', x: pt.x, y: pt.y, t: 0, dur: 0.6 });
     var s = this.state;
+    this._dropBall(pt);
     this.onEvent({ type: 'incomplete' });
     s.phase = 'dead';
     // no yardage change; advance down (no midfield gain)
     setTimeout(this._advanceDown.bind(this, 0, false), 800);
   };
 
+  /* Long enough for the takeaway celebration to be a moment rather than a
+     flicker: the next formation is what ends it, and 1.2s put that formation
+     on the field before the men who made the play had finished reacting. */
+  var TAKEAWAY_HOLD = 2400;
+
   Engine.prototype._turnover = function (msg, byPlayer) {
+    /* An interception thrown under a DEFENSIVE foul comes back. This is the
+       case that makes letting the play finish worth anything: the offence gets
+       to weigh what happened against what the foul is worth, and nobody would
+       ever keep the interception. An offensive foul on the same play is simply
+       declined — the defence would rather have the ball than ten yards — and
+       the turnover stands. */
+    if (this.state.flag) {
+      if (this.state.flag.against === 'defense') {
+        this.state.phase = 'dead';
+        this._flash(msg);
+        var self = this;
+        setTimeout(function () { self._resolveFlag(false, true); }, 1200);
+        return;
+      }
+      this._resolveFlag(false, true);            // declined; falls through
+    }
     this._flash(msg);
     var s = this.state;
     this.onEvent({ type: 'turnover' });
+    /* A TAKEAWAY IS THE BIGGEST PLAY THE DEFENCE HAS, and it used to pass in
+       silence — a flash of text, a 1.2s pause, and the ball changed hands. The
+       side that made it celebrates it, around the man who made it. */
+    if (byPlayer) this._celebrate('takeaway', { x: byPlayer.x, y: byPlayer.y }, byPlayer.team);
     s.phase = 'dead';
     // Picked off on a conversion: the conversion simply failed.
-    if (s.patActive) { setTimeout(function () { this._endPAT(false); }.bind(this), 1200); return; }
+    if (s.patActive) { setTimeout(function () { this._endPAT(false); }.bind(this), TAKEAWAY_HOLD); return; }
     if (s.overtime) {
-      setTimeout(function () { if (!this._otPossessionOver()) this._nextSnap(); }.bind(this), 1200);
+      setTimeout(function () { if (!this._otPossessionOver()) this._nextSnap(); }.bind(this), TAKEAWAY_HOLD);
       return;
     }
     setTimeout(function () {
@@ -1714,8 +2142,9 @@
       s.yardsToGoal = clamp(50 - s.yardsToGoal, 8, 45);
       s.down = 1; s.crossedMid = false;
       this.runPlayClock(s.snapT || 0, false);
+      this._announceTakeover(s.possession);
       this._nextSnap();
-    }.bind(this), 1200);
+    }.bind(this), TAKEAWAY_HOLD);
   };
 
   Engine.prototype._turnoverOnDowns = function () {
@@ -1732,13 +2161,27 @@
       s.possession = this.defenseTeam();
       s.yardsToGoal = clamp(50 - s.yardsToGoal, 8, 45);
       s.down = 1; s.crossedMid = false;
+      this._announceTakeover(s.possession);
       this._nextSnap();
     }.bind(this), 1200);
   };
 
   Engine.prototype._touchdown = function () {
     var s = this.state;
+    /* Nothing a five-yard penalty can offer the offence beats six points, so a
+       defensive foul is declined. An offensive one is the opposite case: you
+       cannot guard your way into the end zone, and the defence will always
+       take the marker over the score. */
+    if (s.flag && s.flag.against === 'offense') {
+      this.clearSlash();
+      s.phase = 'dead';            // or _checkBoundaries scores it again next frame
+      this._resolveFlag(false, false, true);
+      setTimeout(this._advanceDown.bind(this, 0, false), 900);
+      return;
+    }
+    if (s.flag) { this._flash(s.flag.msg + ' — declined'); s.flag = null; }
     var off = this.offenseTeam();
+    var c = s.carrier;            // the scorer: the celebration is built around them
     this.clearSlash();            // scoring plays skip _endPlay, which usually does this
     s.phase = 'dead';
     if (s.patActive) {            // crossing the line on a conversion is the conversion
@@ -1749,9 +2192,34 @@
     s.score[off] += 6;
     s.stats[off].td++;
     this._flash('TOUCHDOWN ' + s[off].abbr + '!  🎉');
-    this.anim.push({ type: 'td', t: 0, dur: 1.4 });
+    this._celebrate('td', { x: c ? c.x : GOAL_R, y: c ? c.y : FIELD_WID / 2 });
     this.onEvent({ type: 'touchdown', team: off });
-    setTimeout(function () { this._startPAT(off); }.bind(this), 1500);
+    /* Hold the shot on the celebration before asking about the conversion.
+       This was 1500ms, which is shorter than the celebration itself: the next
+       formation is what ends it (the renderer drops a celebration when the
+       roster is rebuilt), so a CPU side taking the point instantly cut its own
+       touchdown off halfway through. */
+    setTimeout(function () { this._startPAT(off); }.bind(this), 2600);
+  };
+
+  /* A SCORE AND A FIRST DOWN ARE NOT THE SAME THING, so they do not get the
+     same celebration. The engine says which one happened, where, and to whom;
+     how big it looks is the renderer's business (field3d.js, startCeleb).
+
+     Both go out on the same `anim` queue every other transient effect uses, so
+     the 2D fallback gets them too and neither can outlive the play. `kind` is
+     the anim type: 'td', 'firstdown' or 'takeaway'.
+
+     `team` is who is doing the celebrating, and it is a parameter rather than
+     always the offence because the one thing on this field most worth
+     celebrating — a takeaway — is celebrated by the other side. */
+  Engine.prototype._celebrate = function (kind, at, team) {
+    var s = this.state;
+    var spot = at || s.deadSpot || { x: s.losX, y: FIELD_WID / 2 };
+    this.anim.push({
+      type: kind, t: 0, dur: kind === 'td' ? 1.4 : 0.9,
+      team: team || this.offenseTeam(), x: spot.x, y: spot.y
+    });
   };
 
   /* A5 — THE EXTRA POINT IS A PLAY.
@@ -1764,6 +2232,7 @@
     var s = this.state;
     if (s.gameOver) return;
     s.patActive = true;
+    s.patReplayed = false;
     s.patTeam = team;
     s.possession = team;
     s.down = 1;
@@ -1819,11 +2288,22 @@
     if (s.overtime) { if (this._otPossessionOver()) return; this._nextSnap(); return; }
     s.possession = team === 'home' ? 'away' : 'home';
     s.yardsToGoal = 45; s.down = 1; s.crossedMid = false;
+    this._announceTakeover(s.possession);
     this._nextSnap();
   };
 
   Engine.prototype._safety = function () {
     var s = this.state;
+    /* Five yards and a first down beats handing over two points, every time,
+       so a defensive foul is taken. An offensive one is declined: the defence
+       has just been awarded two and would not trade them for field position. */
+    if (s.flag && s.flag.against === 'defense') {
+      s.phase = 'dead';
+      var selfS = this;
+      setTimeout(function () { selfS._resolveFlag(false, false); }, 1200);
+      return;
+    }
+    if (s.flag) { this._flash(s.flag.msg + ' — declined'); s.flag = null; }
     if (s.patActive) { this._endPAT(false); return; }
     var def = this.defenseTeam();
     this.clearSlash();            // scoring plays skip _endPlay, which usually does this
@@ -1832,6 +2312,7 @@
     s.phase = 'dead';
     setTimeout(function () {
       s.possession = def; s.yardsToGoal = 45; s.down = 1; s.crossedMid = false;
+      this._announceTakeover(def);
       this._nextSnap();
     }.bind(this), 1400);
   };
@@ -1839,10 +2320,56 @@
   Engine.prototype._nextSnap = function () {
     var s = this.state;
     if (s.gameOver) return;
+    /* A period ran out somewhere inside the play that just finished. Whatever
+       that play decided about downs and possession belongs to the period that
+       is over, so the reset lands here rather than in the clock: by the time
+       anyone is lining up again, the break has been applied exactly once. */
+    if (s.periodBreak) {
+      s.periodBreak = false;
+      s.patActive = false; s.patTeam = null; s.patChoicePending = false;
+      if (s.overtime) {
+        // Every overtime possession starts first-and-goal from the 5.
+        s.yardsToGoal = 5; s.down = 1; s.crossedMid = true;
+        this._flash('OVERTIME — ' + s[s.possession].abbr + ' ball on the 5');
+      } else {
+        // The side that did NOT take the opening possession receives the second half.
+        s.possession = s.openingPossession === 'home' ? 'away' : 'home';
+        s.yardsToGoal = 45; s.down = 1; s.crossedMid = false;
+        this._flash('Second half — ' + s[s.possession].abbr + ' ball on their own 5');
+      }
+    }
     s.offPlay = null; s.defPlay = null;
     s.phase = 'playcall';
     s.thrownTo = null;
     this.onEvent({ type: 'playcall', offense: this.offenseTeam() });
+  };
+
+  /* A spot the way a commentator says it: 50 yards between the goal lines, so
+     yardsToGoal 45 is your own 5 and 25 is midfield. */
+  Engine.prototype._spotName = function (ytg) {
+    var y = Math.round(ytg);
+    if (y === 25) return 'midfield';
+    return (y > 25) ? ('own ' + (50 - y)) : ('opponent ' + y);
+  };
+
+  /* WHO HAS THE BALL NOW. Every change of possession used to happen in
+     silence: the score flashed, and then a team — the other one — lined up on
+     a 5-yard line and snapped. Watching it, that reads as the side that just
+     scored keeping the ball, because nothing on screen ever says otherwise.
+     The message lands after the scoring flash has had its moment and before
+     the next snap, so the handover is a beat you can see. */
+  Engine.prototype._announceTakeover = function (team) {
+    var s = this.state;
+    setTimeout(function () {
+      if (!this.state || this.state !== s) return;      // game torn down meanwhile
+      if (s.gameOver || s.possession !== team) return;  // superseded already
+      /* Read the spot when the message actually goes up, not when it was
+         queued: a half can expire on the play that caused the handover, and
+         the break re-spots the ball on the 5 in between. */
+      var where = this._spotName(s.yardsToGoal) + (s.overtime ? ', overtime' : '');
+      this._flash('🏈 ' + s[team].abbr + ' ball — ' + where);
+      this.onEvent({ type: 'takeover', team: team });
+    }.bind(this), 1000);
   };
 
   /* ------------------------------- CLOCK --------------------------------- */
@@ -1876,6 +2403,14 @@
       }
       s.quarter++; s.clock += (this.cfg.halfLen || this.cfg.quarterLen || 1200);
       this._flash('End of ' + (s.halves ? ('H' + (s.quarter - 1)) : ('Q' + (s.quarter - 1))));
+      /* THE SECOND HALF IS A NEW POSSESSION. The clock used to simply roll
+         over: whoever had the ball when time expired kept it, on the same
+         down, at the same spot, and a half break was invisible. The side that
+         did NOT take the opening possession starts the second half, first
+         down, on their own 5 — applied at the next snap rather than here,
+         because the caller is still in the middle of resolving the play that
+         ran the clock out. */
+      s.periodBreak = true;
     }
   };
 
@@ -1890,6 +2425,12 @@
     s.otFirst = s.possession;
     s.otScoreAtRoundStart = { home: s.score.home, away: s.score.away };
     s.quarter = s.quarters + 1;
+    /* The FIRST overtime possession has to be spotted too. Only the handovers
+       between possessions were, so overtime opened wherever regulation
+       happened to expire — mid-drive, on whatever down — and the "from the 5"
+       in this very message was a promise the first snap broke. Applied at the
+       next snap, for the same reason as the half break. */
+    s.periodBreak = true;
     this._flash('OVERTIME — alternating possessions from the 5');
     this.onEvent({ type: 'overtime', round: 1 });
   };
@@ -1908,6 +2449,7 @@
     }
     s.possession = (s.possession === 'home') ? 'away' : 'home';
     s.yardsToGoal = 5; s.down = 1; s.crossedMid = true;
+    this._announceTakeover(s.possession);
     return false;
   };
 
@@ -2243,6 +2785,17 @@
         ctx.globalAlpha = Math.sin(prog * Math.PI) * 0.5;
         ctx.fillStyle = '#ffd23f';
         ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        ctx.restore();
+      } else if (a.type === 'firstdown') {
+        /* The small celebration, in the flat renderer's own vocabulary: a ring
+           opening at the spot rather than a tint over the whole frame, because
+           the difference between the two events has to survive down here as
+           well. */
+        var fd = this._px(a.x, a.y);
+        ctx.save();
+        ctx.globalAlpha = (1 - prog) * 0.9;
+        ctx.strokeStyle = '#ffd23f'; ctx.lineWidth = sc * 0.16;
+        ctx.beginPath(); ctx.arc(fd.x, fd.y, sc * (0.6 + prog * 1.8), 0, 7); ctx.stroke();
         ctx.restore();
       }
     }
