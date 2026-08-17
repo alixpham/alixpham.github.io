@@ -160,7 +160,13 @@ function loft(R, rings, opts = {}) {
     const vv = lerp(uv0, uv1, rings.length === 1 ? 0 : r / (rings.length - 1));
     for (let k = 0; k <= seg; k++) {
       const t = ((k % seg) / seg) * TAU + phase;
-      const [a, b] = se(t, ring.p == null ? P : ring.p);
+      let [a, b] = se(t, ring.p == null ? P : ring.p);
+      /* Per-angle radial modulation. A ring alone can only ever be a smooth
+         convex hoop, which is why the figure read as a set of tubes: an
+         ellipse has no deltoid, no lat, no quadriceps sweep and no spinal
+         groove. `mod` scales the radius as a function of the angle around the
+         ring, so a profile can carry muscle without carrying more vertices. */
+      if (ring.mod) { const m = ring.mod(t); a *= m; b *= m; }
       const pos = [
         ring.c[0] + ring.u[0] * a + ring.v[0] * b,
         ring.c[1] + ring.u[1] * a + ring.v[1] * b,
@@ -220,7 +226,7 @@ function loft(R, rings, opts = {}) {
 }
 
 /* Vertical ring shorthand: ringY(y, rx, rz, weights, cx, cz, p) */
-const ringY = (y, rx, rz, w, cx = 0, cz = 0, p) => ({ c: [cx, y, cz], u: [rx, 0, 0], v: [0, 0, rz], w, p });
+const ringY = (y, rx, rz, w, cx = 0, cz = 0, p, mod) => ({ c: [cx, y, cz], u: [rx, 0, 0], v: [0, 0, rz], w, p, mod });
 /* Ring in the XY plane advancing along +Z (used for the shoe): u=+Y, v=+X. */
 const ringZ = (z, hy, hx, w, cx = 0, cy = 0, p) => ({ c: [cx, cy, z], u: [0, hy, 0], v: [hx, 0, 0], w, p });
 
@@ -251,6 +257,27 @@ const fall = d => (d >= 1 ? 0 : Math.pow(Math.cos(d * Math.PI / 2), 2));
 const norm = (...v) => Math.hypot(...v);
 const clamp01 = v => (v < 0 ? 0 : v > 1 ? 1 : v);
 
+/* --- Anatomy modulation helpers -------------------------------------------
+   Angles around a vertical ring: t = 0 is the character's LEFT (+X), t = pi/2
+   is FRONT (+Z), t = pi is their RIGHT, t = 3pi/2 is BACK. A "lobe" is a
+   raised-cosine bump centred on an angle, so muscles blend into the profile
+   instead of stepping.                                                       */
+const angDist = (t, c) => {
+  let d = (t - c) % TAU;
+  if (d > Math.PI) d -= TAU;
+  if (d < -Math.PI) d += TAU;
+  return Math.abs(d);
+};
+/* amp at `centre`, falling to 0 by `width` radians away. Negative amp digs in. */
+function lobe(t, centre, width, amp) {
+  const d = angDist(t, centre);
+  if (d >= width) return 0;
+  return amp * 0.5 * (1 + Math.cos(Math.PI * d / width));
+}
+/* Combine lobes into a radius multiplier. */
+const mods = (...specs) => t => 1 + specs.reduce((s, [c, w, a]) => s + lobe(t, c, w, a), 0);
+const FRONT = Math.PI / 2, BACK = -Math.PI / 2, LEFT = 0, RIGHT = Math.PI;
+
 /* ==================================================== 3. BUILD THE FIGURE */
 
 const REGIONS = [];
@@ -270,7 +297,10 @@ const shoes  = R('shoes', 'shoes');
 const belt   = R('belt', 'belt');
 const flag   = R('flag', 'flag');
 
-const SEG_BODY = 14, SEG_LIMB = 10, SEG_FOOT = 10, SEG_FLAG = 8;
+/* Segment counts around each ring. These were 14/10/10/8 — enough for a smooth
+   tube and nowhere near enough to carry muscle: at 14 segments the samples are
+   26 degrees apart and a sternal groove 20 degrees wide falls between two. */
+const SEG_BODY = 26, SEG_LIMB = 16, SEG_FOOT = 12, SEG_FLAG = 8;
 
 /* ---- torso weighting: hips -> spine -> chest by height ---- */
 function torsoW(y) {
@@ -280,15 +310,41 @@ function torsoW(y) {
   return w1('Chest');
 }
 
-/* ---- JERSEY: torso ---- */
+/* ---- JERSEY: torso ----
+   The profile alone gives a barrel. What makes a torso read as an athlete's is
+   what happens AROUND each ring: pectorals either side of a sternal groove,
+   lats flaring off the ribs into the armpit, a shallow channel down the spine,
+   a linea alba down the abdomen, and a trapezius that lifts the shoulder line
+   out of the neck instead of letting it slope straight off. Those are all
+   `mod` lobes below; the rings themselves barely changed.                     */
 {
   const prof = [
-    [0.925, 0.148, 0.103], [1.000, 0.148, 0.103], [1.070, 0.157, 0.110],
-    [1.150, 0.178, 0.124], [1.230, 0.200, 0.136], [1.310, 0.216, 0.142],
-    [1.380, 0.228, 0.140], [1.450, 0.228, 0.132], [1.490, 0.219, 0.122],
-    [1.520, 0.198, 0.109], [1.545, 0.156, 0.091], [1.560, 0.112, 0.077]
+    [0.925, 0.148, 0.103], [0.965, 0.148, 0.103], [1.000, 0.148, 0.103],
+    [1.035, 0.152, 0.106], [1.070, 0.157, 0.110], [1.110, 0.167, 0.117],
+    [1.150, 0.178, 0.124], [1.190, 0.190, 0.131], [1.230, 0.202, 0.137],
+    [1.270, 0.211, 0.141], [1.310, 0.219, 0.144], [1.345, 0.226, 0.143],
+    [1.380, 0.232, 0.142], [1.415, 0.233, 0.138], [1.450, 0.232, 0.134],
+    [1.472, 0.227, 0.129], [1.490, 0.221, 0.123], [1.506, 0.211, 0.117],
+    [1.520, 0.199, 0.110], [1.535, 0.178, 0.100], [1.545, 0.156, 0.091],
+    [1.553, 0.134, 0.084], [1.560, 0.112, 0.077]
   ];
-  loft(jersey, prof.map(([y, rx, rz]) => ringY(y, rx, rz, torsoW(y), 0, 0, 0.86)),
+  /* Muscle amplitude ramps in over the height of the trunk. */
+  const torsoMod = y => {
+    const pec = ramp([[1.240, 0], [1.330, 0.055], [1.430, 0.050], [1.480, 0]], y);
+    const abs = ramp([[0.960, 0.020], [1.120, 0.026], [1.240, 0.012], [1.300, 0]], y);
+    const lat = ramp([[1.130, 0], [1.260, 0.048], [1.380, 0.040], [1.460, 0]], y);
+    const spine = ramp([[1.020, -0.016], [1.240, -0.026], [1.420, -0.020], [1.500, 0]], y);
+    const trap = ramp([[1.430, 0], [1.500, 0.075], [1.545, 0.060]], y);
+    return mods(
+      [FRONT - 0.42, 0.66, pec], [FRONT + 0.42, 0.66, pec],   // pectorals
+      [FRONT, 0.34, -pec * 0.55 - abs * 0.9],                 // sternum / linea alba
+      [FRONT - 1.05, 0.34, abs], [FRONT + 1.05, 0.34, abs],   // oblique
+      [LEFT, 0.62, lat], [RIGHT, 0.62, lat],                  // lats
+      [BACK, 0.30, spine],                                    // spinal channel
+      [LEFT - 0.55, 0.70, trap], [RIGHT + 0.55, 0.70, trap]   // trapezius
+    );
+  };
+  loft(jersey, prof.map(([y, rx, rz]) => ringY(y, rx, rz, torsoW(y), 0, 0, 0.86, torsoMod(y))),
     { seg: SEG_BODY, capEnd: true, capStart: true });
 }
 
@@ -302,7 +358,14 @@ for (const side of [1, -1]) {
   ].map(([y, r]) => {
     const t = y >= 1.500 ? 0.45 : y >= 1.460 ? 0.70 : 1.0;   // shoulder vs upperarm
     const w = t >= 1 ? w1('UpperArm_' + S) : wraw(['Shoulder_' + S, 1 - t], ['UpperArm_' + S, t]);
-    return ringY(y, r, r * 1.03, w, cx, 0, 0.95);
+    /* Deltoid: the cap was a plain cone off the shoulder, which is why the
+       shoulder line slid straight into the arm. Mass goes on the OUTBOARD
+       face and slightly forward, the way a deltoid sits, and the inboard face
+       is pulled in so the arm reads as separate from the ribs. */
+    const del = ramp([[1.310, 0], [1.380, 0.10], [1.440, 0.13], [1.490, 0.05], [1.512, 0]], y);
+    const out = side > 0 ? LEFT : RIGHT;
+    return ringY(y, r, r * 1.03, w, cx, 0, 0.95,
+      mods([out, 1.30, del], [out + side * 0.75, 0.80, del * 0.45], [out + Math.PI, 1.00, -del * 0.35]));
   });
   loft(jersey, rings, { seg: SEG_LIMB, capStart: true, poleEnd: 0.010 });
 }
@@ -738,9 +801,28 @@ for (const side of [1, -1]) {
     [1.350, 0.0710, 0.0710], [1.300, 0.0690, 0.0685], [1.250, 0.0645, 0.0640],
     [1.200, 0.0580, 0.0575], [1.165, 0.0545, 0.0540], [1.120, 0.0600, 0.0585],
     [1.060, 0.0570, 0.0550], [1.000, 0.0500, 0.0460], [0.945, 0.0420, 0.0360],
-    [0.900, 0.0375, 0.0305], [0.878, 0.0405, 0.0278], [0.845, 0.0430, 0.0262],
-    [0.800, 0.0350, 0.0220]
-  ].map(([y, rx, rz]) => ringY(y, rx, rz, armW(y), cx, 0, y < 0.900 ? 0.8 : 1));
+    /* HAND. Was a long flat paddle running to y=0.800 — a blade on the end of
+       the forearm, and unmistakable as one whenever an arm swung past the
+       camera. A runner's hand is a loose fist: short, deep, with the knuckle
+       line squared off and the thumb wrapped across the front. */
+    [0.900, 0.0370, 0.0310], [0.884, 0.0408, 0.0355], [0.866, 0.0428, 0.0392],
+    [0.846, 0.0430, 0.0398], [0.830, 0.0402, 0.0372], [0.818, 0.0330, 0.0300]
+  ].map(([y, rx, rz]) => {
+    /* Biceps forward, triceps behind, and the forearm's flexor bulk on the
+       inboard-front third — an arm with a constant round section reads as a
+       broom handle no matter how correct its taper is. */
+    const bi = ramp([[1.140, 0], [1.230, 0.11], [1.300, 0.09], [1.350, 0.03]], y);
+    const tri = ramp([[1.150, 0], [1.240, 0.09], [1.320, 0.10], [1.350, 0.05]], y);
+    const fx = ramp([[0.930, 0], [1.020, 0.10], [1.090, 0.12], [1.150, 0.02]], y);
+    const inb = side > 0 ? RIGHT : LEFT;           // toward the ribs
+    const outb = side > 0 ? LEFT : RIGHT;
+    // Thumb across the front of the fist, knuckles squared on the outboard face.
+    const thumb = ramp([[0.900, 0], [0.878, 0.14], [0.852, 0.16], [0.830, 0.05], [0.818, 0]], y);
+    const knuck = ramp([[0.888, 0], [0.866, 0.09], [0.842, 0.08], [0.822, 0]], y);
+    return ringY(y, rx, rz, armW(y), cx, 0, y < 0.900 ? 0.72 : 1,
+      mods([FRONT, 1.15, bi + fx * 0.7], [BACK, 1.15, tri], [inb, 1.05, fx * 0.6 + thumb],
+        [outb, 0.95, knuck]));
+  });
   arm.reverse();                                   // advance along +Y for winding
   loft(skin, arm, { seg: SEG_LIMB, capEnd: true, poleStart: 0.018 });
 }
@@ -761,8 +843,12 @@ for (const side of [1, -1]) {
     : y >= 0.830 ? wmix('Hips', 'UpperLeg_' + S, Math.min(1, 0.45 + (0.895 - y) / 0.065 * 0.55))
       : w1('UpperLeg_' + S));
   const rings = [
-    [0.640, 0.095, 0.099], [0.700, 0.102, 0.106], [0.800, 0.108, 0.112], [0.905, 0.111, 0.116]
-  ].map(([y, rx, rz]) => ringY(y, rx, rz, legW(y), cx, 0, 0.92));
+    [0.634, 0.0955, 0.0995], [0.660, 0.0988, 0.1028], [0.700, 0.1030, 0.1070],
+    [0.760, 0.1072, 0.1112], [0.830, 0.1100, 0.1145], [0.905, 0.1110, 0.1160]
+  ].map(([y, rx, rz]) => ringY(y, rx, rz, legW(y), cx, 0, 0.92,
+    // The hem used to flare wider than the thigh inside it, so the leg read as
+    // a skirt with a leg passing through. It now closes onto the quadriceps.
+    mods([BACK, 1.20, ramp([[0.640, 0], [0.780, 0.030], [0.905, 0.045]], y)])));
   loft(shorts, rings, { seg: SEG_LIMB, capStart: true, capEnd: true });
 }
 
@@ -773,9 +859,21 @@ for (const side of [1, -1]) {
     : y >= 0.455 ? wmix('UpperLeg_' + S, 'LowerLeg_' + S, (0.580 - y) / 0.125)
       : w1('LowerLeg_' + S));
   const rings = [
-    [0.420, 0.0620, 0.0640], [0.470, 0.0655, 0.0675], [0.510, 0.0705, 0.0730],
-    [0.560, 0.0770, 0.0800], [0.620, 0.0855, 0.0885], [0.665, 0.0905, 0.0940]
-  ].map(([y, rx, rz]) => ringY(y, rx, rz, kW(y), cx));
+    [0.420, 0.0620, 0.0640], [0.448, 0.0635, 0.0655], [0.470, 0.0655, 0.0675],
+    [0.490, 0.0680, 0.0700], [0.510, 0.0705, 0.0730], [0.535, 0.0735, 0.0762],
+    [0.560, 0.0770, 0.0800], [0.590, 0.0812, 0.0842], [0.620, 0.0855, 0.0885],
+    [0.645, 0.0885, 0.0918], [0.665, 0.0905, 0.0940]
+  ].map(([y, rx, rz]) => {
+    const out = side > 0 ? LEFT : RIGHT;
+    // Vastus lateralis sweeps to the outside, rectus femoris up the front,
+    // the hamstring hangs behind, and the knee gets a patella rather than a
+    // smooth waist between two cones.
+    const quad = ramp([[0.560, 0], [0.620, 0.07], [0.665, 0.09]], y);
+    const ham = ramp([[0.560, 0], [0.625, 0.06], [0.665, 0.07]], y);
+    const cap = ramp([[0.440, 0], [0.478, 0.055], [0.512, 0.030], [0.545, 0]], y);
+    return ringY(y, rx, rz, kW(y), cx, 0, undefined,
+      mods([out, 1.10, quad], [FRONT, 1.00, quad * 0.8 + cap], [BACK, 1.05, ham]));
+  });
   loft(skin, rings, { seg: SEG_LIMB, capStart: true, capEnd: true });
 }
 
@@ -784,9 +882,16 @@ for (const side of [1, -1]) {
   const S = side > 0 ? 'L' : 'R', cx = side * 0.098;
   const sW = y => (y <= 0.120 ? wmix('LowerLeg_' + S, 'Foot_' + S, (0.120 - y) / 0.060 * 0.5) : w1('LowerLeg_' + S));
   const rings = [
-    [0.098, 0.0420, 0.0420], [0.170, 0.0520, 0.0530], [0.260, 0.0645, 0.0665],
-    [0.330, 0.0660, 0.0685], [0.440, 0.0645, 0.0665]
-  ].map(([y, rx, rz]) => ringY(y, rx, rz, sW(y), cx));
+    [0.098, 0.0420, 0.0420], [0.135, 0.0468, 0.0474], [0.170, 0.0520, 0.0530],
+    [0.215, 0.0588, 0.0602], [0.260, 0.0645, 0.0665], [0.295, 0.0656, 0.0678],
+    [0.330, 0.0660, 0.0685], [0.385, 0.0652, 0.0675], [0.440, 0.0645, 0.0665]
+  ].map(([y, rx, rz]) => {
+    // Gastrocnemius: the calf belly sits high and BEHIND, and the shin in
+    // front of it is nearly flat bone. A round sock has neither.
+    const calf = ramp([[0.140, 0], [0.250, 0.10], [0.320, 0.07], [0.400, 0]], y);
+    return ringY(y, rx, rz, sW(y), cx, 0, undefined,
+      mods([BACK, 1.25, calf], [FRONT, 0.85, -calf * 0.30]));
+  });
   loft(socks, rings, { seg: SEG_LIMB, capEnd: true });
   // sock trim stripe at the top
   loft(trim, [
@@ -810,10 +915,12 @@ for (const side of [1, -1]) {
 }
 
 /* ---- BELT ---- */
+/* Narrower and set higher: at 66mm deep this read as a powerlifting belt
+   rather than the webbing strap a flag belt actually is. */
 loft(belt, [
-  ringY(0.982, 0.1955, 0.1355, w1('Hips'), 0, 0, 0.86),
-  ringY(1.012, 0.1905, 0.1315, w1('Hips'), 0, 0, 0.86),
-  ringY(1.048, 0.1810, 0.1250, w1('Hips'), 0, 0, 0.86)
+  ringY(1.000, 0.1930, 0.1338, w1('Hips'), 0, 0, 0.86),
+  ringY(1.022, 0.1893, 0.1307, w1('Hips'), 0, 0, 0.86),
+  ringY(1.040, 0.1836, 0.1268, w1('Hips'), 0, 0, 0.86)
 ], { seg: SEG_BODY, capStart: true, capEnd: true });
 
 /* ---- FLAGS: two ribbons hanging off the belt ---- */
@@ -886,6 +993,222 @@ function normalsFor(regions) {
     }
   }
   return raw;
+}
+
+/* ============================================ 4b. BAKED AMBIENT OCCLUSION
+
+   The single biggest reason a low-poly figure reads as injection-moulded
+   plastic is that it has no shading relief. There is no texture set here and
+   there is not going to be one — it would need authored binary assets and an
+   asset pipeline, and the whole point of this generator is that the character
+   is a text file. So the occlusion is baked per-VERTEX into COLOR_0, which
+   glTF multiplies into the base colour and THREE honours automatically
+   (GLTFLoader turns on material.vertexColors when the attribute is present).
+   Costs 3 bytes a vertex, no textures, no extra draw calls, and it survives
+   per-instance team tinting because tinting multiplies too.
+
+   Rays are short on purpose. A long ray would bake the whole torso into the
+   inner arm, and then the arm would carry that shadow around with it when it
+   swings clear during a stride — baked AO cannot know the pose. At 0.22m only
+   genuine creases contribute: under the jaw, the armpit, the inside of the
+   knee, the eye sockets, beneath the jersey hem and the shorts.               */
+const AO = {
+  RAYS: 48,
+  MAX_DIST: 0.22,                    // metres — creases only, not whole limbs
+  FLOOR: 0.42,                       // darkest a vertex may get
+  STRENGTH: 1.00,
+  BIAS: 0.004,                       // lift the origin off the surface
+  PROXY_GAIN: 1.35,                  // broad-scale (volume vs volume) weight
+  PROXY_FALLOFF: 0.55,               // metres — how far bulk keeps shading bulk
+  NEAR_MIX: 0.55                     // crease term vs broad term
+};
+
+/* Uniformly distributed hemisphere directions about +Z, cosine-weighted so the
+   sample density matches the diffuse response we are approximating. */
+const AO_DIRS = (() => {
+  const d = [], GOLD = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < AO.RAYS; i++) {
+    const t = (i + 0.5) / AO.RAYS;
+    const r = Math.sqrt(t), z = Math.sqrt(Math.max(0, 1 - t));   // cosine hemisphere
+    const a = i * GOLD;
+    d.push([r * Math.cos(a), r * Math.sin(a), z]);
+  }
+  return d;
+})();
+
+function bakeAO(regions, occluders) {
+  /* One triangle soup for the whole figure: the jersey has to be able to
+     shadow the arm, and the head the neck, so occlusion cannot be per-region. */
+  const T = [];                                    // [ax,ay,az, e1..., e2..., cx,cy,cz, radius]
+  for (const r of (occluders || regions)) {
+    for (let i = 0; i < r.I.length; i += 3) {
+      const a = r.I[i] * 3, b = r.I[i + 1] * 3, c = r.I[i + 2] * 3;
+      const A = [r.P[a], r.P[a + 1], r.P[a + 2]];
+      const B = [r.P[b], r.P[b + 1], r.P[b + 2]];
+      const C = [r.P[c], r.P[c + 1], r.P[c + 2]];
+      const e1 = [B[0] - A[0], B[1] - A[1], B[2] - A[2]];
+      const e2 = [C[0] - A[0], C[1] - A[1], C[2] - A[2]];
+      const ctr = [(A[0] + B[0] + C[0]) / 3, (A[1] + B[1] + C[1]) / 3, (A[2] + B[2] + C[2]) / 3];
+      const rad = Math.max(
+        Math.hypot(A[0] - ctr[0], A[1] - ctr[1], A[2] - ctr[2]),
+        Math.hypot(B[0] - ctr[0], B[1] - ctr[1], B[2] - ctr[2]),
+        Math.hypot(C[0] - ctr[0], C[1] - ctr[1], C[2] - ctr[2]));
+      T.push({ A, e1, e2, ctr, rad });
+    }
+  }
+
+  /* A uniform grid over the figure. Without it this is 2.4k vertices x 48 rays
+     x 3.5k triangles and takes minutes; the rays are only 0.22m long, so all
+     that is ever needed is the handful of triangles near the vertex. */
+  const CELL = AO.MAX_DIST;
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (const t of T) for (let k = 0; k < 3; k++) {
+    lo[k] = Math.min(lo[k], t.ctr[k] - t.rad);
+    hi[k] = Math.max(hi[k], t.ctr[k] + t.rad);
+  }
+  const dim = [0, 1, 2].map(k => Math.max(1, Math.ceil((hi[k] - lo[k]) / CELL) + 1));
+  const grid = new Map();
+  const key = (i, j, k) => (i * dim[1] + j) * dim[2] + k;
+  const cellOf = (p, k) => Math.max(0, Math.min(dim[k] - 1, Math.floor((p - lo[k]) / CELL)));
+  T.forEach((t, ti) => {
+    // Insert into every cell the triangle's bounding sphere touches.
+    const c0 = [0, 1, 2].map(k => cellOf(t.ctr[k] - t.rad, k));
+    const c1 = [0, 1, 2].map(k => cellOf(t.ctr[k] + t.rad, k));
+    for (let i = c0[0]; i <= c1[0]; i++)
+      for (let j = c0[1]; j <= c1[1]; j++)
+        for (let k = c0[2]; k <= c1[2]; k++) {
+          const kk = key(i, j, k);
+          let b = grid.get(kk); if (!b) grid.set(kk, b = []);
+          b.push(ti);
+        }
+  });
+
+  /* Every triangle reachable from a point by a MAX_DIST ray lives in the 3x3x3
+     cell block around it, because the cell size IS the ray length. */
+  function candidates(p) {
+    const c = [0, 1, 2].map(k => cellOf(p[k], k));
+    const seen = new Set();
+    for (let i = Math.max(0, c[0] - 1); i <= Math.min(dim[0] - 1, c[0] + 1); i++)
+      for (let j = Math.max(0, c[1] - 1); j <= Math.min(dim[1] - 1, c[1] + 1); j++)
+        for (let k = Math.max(0, c[2] - 1); k <= Math.min(dim[2] - 1, c[2] + 1); k++) {
+          const b = grid.get(key(i, j, k));
+          if (b) for (const ti of b) seen.add(ti);
+        }
+    return seen;
+  }
+
+  /* Möller–Trumbore, single-sided ignored: an unclosed shell (the sleeve, the
+     flag) must occlude from both faces or it casts nothing. */
+  function hits(o, d, list) {
+    for (const ti of list) {
+      const t = T[ti];
+      const px = d[1] * t.e2[2] - d[2] * t.e2[1];
+      const py = d[2] * t.e2[0] - d[0] * t.e2[2];
+      const pz = d[0] * t.e2[1] - d[1] * t.e2[0];
+      const det = t.e1[0] * px + t.e1[1] * py + t.e1[2] * pz;
+      if (Math.abs(det) < 1e-12) continue;
+      const inv = 1 / det;
+      const sx = o[0] - t.A[0], sy = o[1] - t.A[1], sz = o[2] - t.A[2];
+      const u = (sx * px + sy * py + sz * pz) * inv;
+      if (u < 0 || u > 1) continue;
+      const qx = sy * t.e1[2] - sz * t.e1[1];
+      const qy = sz * t.e1[0] - sx * t.e1[2];
+      const qz = sx * t.e1[1] - sy * t.e1[0];
+      const v = (d[0] * qx + d[1] * qy + d[2] * qz) * inv;
+      if (v < 0 || u + v > 1) continue;
+      const dist = (t.e2[0] * qx + t.e2[1] * qy + t.e2[2] * qz) * inv;
+      if (dist > AO.BIAS && dist < AO.MAX_DIST) return true;
+    }
+    return false;
+  }
+
+  /* ---- broad-scale occlusion, from a volumetric proxy ------------------
+     The ray pass above only reaches 0.22m, and the figure is convex almost
+     everywhere, so on its own it finds almost nothing — which is the real
+     diagnosis, not a bug: you cannot bake occlusion into a shape that has no
+     concavity. What a body actually has at the large scale is bulk blocking
+     bulk: the torso shades the inside of the arm, each thigh shades the other,
+     the jaw shades the throat. That is a volume relationship, so it is
+     computed against a coarse set of spheres standing in for the body's
+     volumes rather than against the triangles. Analytic solid angle, no rays:
+     smooth by construction, where a sparse ray bake against a faceted low-poly
+     surface would band.                                                      */
+  const PROXY = [];
+  const blob = (p, r) => PROXY.push({ p, r });
+  const strand = (a, b, ra, rb, n) => {
+    for (let i = 0; i <= n; i++) {
+      const t = i / n;
+      blob([lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)], lerp(ra, rb, t));
+    }
+  };
+  strand([0, 0.90, 0], [0, 1.46, 0], 0.150, 0.185, 5);          // torso
+  blob([0, 1.55, 0.005], 0.075);                                 // neck
+  blob([0, 1.735, 0.008], 0.105);                                // head
+  for (const s of [1, -1]) {
+    strand([s * 0.200, 1.40, 0], [s * 0.200, 1.17, 0], 0.072, 0.056, 3);   // upper arm
+    strand([s * 0.200, 1.16, 0], [s * 0.200, 0.90, 0], 0.056, 0.040, 3);   // forearm
+    strand([s * 0.098, 0.95, 0], [s * 0.098, 0.50, 0], 0.115, 0.070, 4);   // thigh
+    strand([s * 0.098, 0.49, 0], [s * 0.098, 0.09, 0], 0.070, 0.048, 3);   // shin
+  }
+
+  function proxyOcclusion(p, n) {
+    let occ = 0;
+    for (const b of PROXY) {
+      const dx = b.p[0] - p[0], dy = b.p[1] - p[1], dz = b.p[2] - p[2];
+      const d = Math.hypot(dx, dy, dz);
+      // A vertex sitting on (or inside) a volume is not shadowed by it.
+      if (d <= b.r + 0.015) continue;
+      const c = (dx * n[0] + dy * n[1] + dz * n[2]) / d;         // cos to the blob
+      if (c <= 0) continue;                                       // behind the surface
+      const sinT = Math.min(1, b.r / d);
+      const solid = 1 - Math.sqrt(Math.max(0, 1 - sinT * sinT));  // (1-cos) of the cone
+      occ += solid * c * Math.exp(-d / AO.PROXY_FALLOFF);
+    }
+    return Math.min(1, occ * AO.PROXY_GAIN);
+  }
+
+  let darkest = 1;
+  for (const r of regions) {
+    if (!r.I.length) continue;
+    const N = r.N;                                  // normals, computed already
+    /* VEC4, not VEC3: a vertex attribute bufferView must have a stride that
+       is a multiple of 4, and three bytes a vertex is not. Alpha is unused. */
+    const out = new Uint8Array((r.P.length / 3) * 4);
+    for (let vi = 0; vi < r.P.length / 3; vi++) {
+      const p = [r.P[vi * 3], r.P[vi * 3 + 1], r.P[vi * 3 + 2]];
+      const n = [N[vi * 3], N[vi * 3 + 1], N[vi * 3 + 2]];
+      // Orthonormal basis with +Z along the normal, so AO_DIRS lands on the
+      // correct hemisphere.
+      const up = Math.abs(n[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+      let tx = [up[1] * n[2] - up[2] * n[1], up[2] * n[0] - up[0] * n[2], up[0] * n[1] - up[1] * n[0]];
+      const tl = Math.hypot(tx[0], tx[1], tx[2]) || 1;
+      tx = [tx[0] / tl, tx[1] / tl, tx[2] / tl];
+      const ty = [n[1] * tx[2] - n[2] * tx[1], n[2] * tx[0] - n[0] * tx[2], n[0] * tx[1] - n[1] * tx[0]];
+      const o = [p[0] + n[0] * AO.BIAS, p[1] + n[1] * AO.BIAS, p[2] + n[2] * AO.BIAS];
+      const list = candidates(o);
+      let open = 0;
+      for (const s of AO_DIRS) {
+        const d = [
+          tx[0] * s[0] + ty[0] * s[1] + n[0] * s[2],
+          tx[1] * s[0] + ty[1] * s[1] + n[1] * s[2],
+          tx[2] * s[0] + ty[2] * s[1] + n[2] * s[2]
+        ];
+        if (!hits(o, d, list)) open++;
+      }
+      /* Two scales, combined multiplicatively: creases from the real mesh,
+         bulk from the proxy. Multiplying rather than averaging means a crease
+         that also sits deep inside the body's shadow gets both. */
+      const near = Math.pow(open / AO.RAYS, AO.STRENGTH);
+      const far = 1 - proxyOcclusion(p, n);
+      const lit = Math.pow(near, AO.NEAR_MIX) * Math.pow(far, 1 - AO.NEAR_MIX);
+      const ao = AO.FLOOR + (1 - AO.FLOOR) * lit;
+      if (ao < darkest) darkest = ao;
+      const b = Math.round(Math.max(0, Math.min(1, ao)) * 255);
+      out[vi * 4] = b; out[vi * 4 + 1] = b; out[vi * 4 + 2] = b; out[vi * 4 + 3] = 255;
+    }
+    r.AO = out;
+  }
+  return darkest;
 }
 
 /* ================================================== 5. ANIMATION AUTHORING */
@@ -2392,6 +2715,17 @@ gltf.skins.push({
 gltf.scenes[0].nodes.push(BI.Hips);
 let totalTris = 0, totalVerts = 0;
 const NORMALS = normalsFor(REGIONS.filter(r => r.I.length));
+/* Bake occlusion once the welded normals exist — the hemisphere the rays are
+   cast over is oriented by them, and using the raw per-region normals would
+   put a seam through the shading exactly where normalsFor() just removed one.
+   The alternate hairstyles and beards are baked but never used as OCCLUDERS:
+   the .glb carries all of them and the game shows one, so letting a beard
+   nobody is wearing cast a shadow onto the jaw would darken every face. */
+{
+  const lit = REGIONS.filter(r => r.I.length);
+  for (const r of lit) r.N = NORMALS.get(r);
+  var aoDarkest = bakeAO(lit, lit.filter(r => !/^(hair_|beard_)/.test(r.name)));
+}
 for (const r of REGIONS) {
   if (!r.I.length) continue;
   const N = NORMALS.get(r);
@@ -2399,6 +2733,7 @@ for (const r of REGIONS) {
     attributes: {
       POSITION: accessor(new Float32Array(r.P), 'VEC3', COMP.f32, 34962, { minmax: true }),
       NORMAL: accessor(N, 'VEC3', COMP.f32, 34962),
+      COLOR_0: accessor(r.AO, 'VEC4', COMP.u8, 34962, { normalized: true }),
       TEXCOORD_0: accessor(new Float32Array(r.U), 'VEC2', COMP.f32, 34962),
       JOINTS_0: accessor(new Uint8Array(r.J), 'VEC4', COMP.u8, 34962),
       WEIGHTS_0: accessor(new Float32Array(r.W), 'VEC4', COMP.f32, 34962)
@@ -2534,4 +2869,5 @@ console.log('  regions       ' + REGIONS.filter(r => r.I.length).map(r => r.name
 console.log('  vertices      ' + totalVerts);
 console.log('  triangles     ' + totalTris);
 console.log('  clips         ' + CLIPS.map(c => c.name).join(', '));
+console.log('  baked AO      ' + AO.RAYS + ' rays @ ' + AO.MAX_DIST + 'm, darkest vertex ' + aoDarkest.toFixed(3));
 console.log('  file size     ' + (size / 1024).toFixed(1) + ' KB');
