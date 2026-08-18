@@ -526,6 +526,77 @@
       if (head) { _leadQ.setFromAxisAngle(_leadAx, lead * 0.85); head.quaternion.multiply(_leadQ); }
     }
 
+    /* ---- GAZE ----------------------------------------------------------
+       Nobody was watching the ball. Every head on the field pointed wherever
+       the body pointed, all game, because the only yaw any neck ever had was
+       whatever the clip happened to bake — and a field of people who never
+       look at the thing they are all chasing reads as ten mannequins on rails.
+       Watch any real snap and the giveaway is the opposite: every head is
+       locked onto the ball, and the heads move BEFORE the bodies do.
+
+       Layered after the mixer, multiplied onto what the clip wrote, exactly
+       like leadTrunk and the carry pose — this biases the animation rather
+       than replacing it, so the gait's own head motion survives underneath.
+
+       Split across the neck and the head because a skull that swivels on a
+       rigid neck is its own kind of uncanny, and clamped to what a neck can
+       actually do: past about 70 degrees a person turns their shoulders
+       instead, so beyond that the gaze simply gives up rather than unscrewing
+       the head. */
+    var GAZE_YAW_MAX = 1.22;         // ~70 deg — past this a person turns instead
+    var GAZE_PITCH_MAX = 0.52;       // ~30 deg up or down
+    var _gzQ = new THREE.Quaternion(), _gzY = new THREE.Vector3(0, 1, 0), _gzX = new THREE.Vector3(1, 0, 0);
+    function gazeAt(P, ud, gp, state, dt) {
+      if (!P.nodes) return;
+      var neck = P.nodes.Neck, head = P.nodes.Head;
+      if (!neck && !head) return;
+
+      var wantY = 0, wantP = 0;
+      var b = state.ball;
+      /* The carrier is the one person who should NOT be looking at the ball —
+         it is in their hands, and they are reading the field in front of them.
+         A one-shot (throw, catch, dive, celebration) owns the head outright. */
+      var canLook = b && gp !== state.carrier && !P._oneShot && gp.faceYaw != null && !gp.flagPulled;
+      if (canLook) {
+        var dx = b.x - gp.x, dy = b.y - gp.y;
+        var dist = Math.hypot(dx, dy);
+        if (dist > 0.35) {
+          /* Sign, settled from this file's own conventions rather than by
+             eye: aLat is documented "+ = turning to their LEFT" and is the
+             z-cross of heading with acceleration, so increasing field yaw IS
+             the player's left; and leadTrunk turns the nose left about the
+             bone's own +Y. So a positive bearing offset takes a positive
+             rotation, with no flip. */
+          var rel = Math.atan2(dy, dx) - gp.faceYaw;
+          while (rel > Math.PI) rel -= Math.PI * 2;
+          while (rel < -Math.PI) rel += Math.PI * 2;
+          // Beyond the neck's range, stop turning rather than crank it round.
+          wantY = rel > GAZE_YAW_MAX ? GAZE_YAW_MAX : rel < -GAZE_YAW_MAX ? -GAZE_YAW_MAX : rel;
+          // Height: the rig's eyes sit ~1.6 units up; a ball in flight is worth
+          // looking up at, one on the turf worth looking down at.
+          var bz = (b.z || 0);
+          wantP = Math.atan2(bz - 1.55, Math.max(0.6, dist));
+          if (wantP > GAZE_PITCH_MAX) wantP = GAZE_PITCH_MAX;
+          if (wantP < -GAZE_PITCH_MAX) wantP = -GAZE_PITCH_MAX;
+        }
+      }
+      // Eased, not snapped: a head takes about a fifth of a second to come round.
+      var k = 1 - Math.exp(-dt * 7);
+      ud.gazeY += (wantY - ud.gazeY) * k;
+      ud.gazeP += (wantP - ud.gazeP) * k;
+      if (Math.abs(ud.gazeY) < 0.004 && Math.abs(ud.gazeP) < 0.004) return;
+
+      // Neck carries the smaller share; the head finishes the turn.
+      if (neck) {
+        _gzQ.setFromAxisAngle(_gzY, ud.gazeY * 0.38); neck.quaternion.multiply(_gzQ);
+        _gzQ.setFromAxisAngle(_gzX, -ud.gazeP * 0.35); neck.quaternion.multiply(_gzQ);
+      }
+      if (head) {
+        _gzQ.setFromAxisAngle(_gzY, ud.gazeY * 0.62); head.quaternion.multiply(_gzQ);
+        _gzQ.setFromAxisAngle(_gzX, -ud.gazeP * 0.65); head.quaternion.multiply(_gzQ);
+      }
+    }
+
     // Flying-flag effect pool (spawned on flag pulls)
     var flags = makeFlagPool(THREE, 10);
     scene.add(flags.group);
@@ -809,7 +880,7 @@
           ud: { idx: idx, yaw: seedYaw, celebT: 0, _wasPulled: false, _pulled: false, _threw: false,
                 _caught: false, _juked: false, _spiked: false, clip: 'idle',
                 carryKey: '', carrySide: 0, carryW: 0, carryAmp: 0, grabW: 0,
-                pvx: 0, pvy: 0, fLat: 0, fTan: 0, bank: 0, pitch: 0, lead: 0 }
+                pvx: 0, pvy: 0, fLat: 0, fTan: 0, bank: 0, pitch: 0, lead: 0, gazeY: 0, gazeP: 0 }
         });
       });
       playersRef = players;
@@ -1114,6 +1185,9 @@
          the clip has already written these bones this frame, and the point is
          to bias what it wrote rather than to replace it. */
       if (Math.abs(ud.lead) > 0.004 && !P._oneShot) leadTrunk(P, ud.lead);
+
+      // ...and then the head goes to the ball, over the top of all of it.
+      gazeAt(P, ud, gp, state, dt);
 
       /* ---- CARRY POSE (after the mixer, so it overrides the clip) ---------
          The clip has already written every bone for this frame; the arm around
@@ -1825,7 +1899,7 @@
             if (Math.abs(skew) > Math.PI / 2) skew = (skew > 0 ? Math.PI : -Math.PI) - skew;
           }
           out.push({ f: frame, i: i, speed: sp, skew: skew,
-                     bank: e.ud.bank, pitch: e.ud.pitch, lead: e.ud.lead,
+                     bank: e.ud.bank, pitch: e.ud.pitch, lead: e.ud.lead, gaze: e.ud.gazeY,
                      a: g ? g.a : '-', b: g ? g.b : '-', blend: g ? g.blend : 0,
                      rate: g ? g.rate : 0, phase: g ? g.phase : 0, w: g ? g.weight : 0 });
         }

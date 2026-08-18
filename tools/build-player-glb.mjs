@@ -1832,27 +1832,67 @@ const IDLE_L = [28, 42, 19];                    // hip, knee, ankle — trail le
 const IDLE_R = [33, 45, 21];                    // lead leg, a touch deeper
 const IDLE_STAND = standHipY(IDLE_L, IDLE_R);
 const IDLE_SPREAD = 0.13;                       // hip abduction -> feet apart
-clip('Idle', 2.4, [
-  // The breathing is the only motion in here, and it is 12mm of it.
-  hipY([0, 1.2, 2.4], [IDLE_STAND - 0.002, IDLE_STAND + 0.010, IDLE_STAND - 0.002]),
-  rot('Spine', [0, 1.2, 2.4], [[0.26, 0, 0], [0.29, 0.02, 0], [0.26, 0, 0]]),
-  rot('Chest', [0, 1.2, 2.4], [[0.10, 0, 0], [0.07, -0.03, 0], [0.10, 0, 0]]),
-  // Head counter-rotated against the forward lean so the eyes stay downfield
-  // rather than on the man's own boots.
-  rot('Head', [0, 1.2, 2.4], [[-0.30, 0, 0], [-0.28, 0.06, 0], [-0.30, 0, 0]]),
-  rot('UpperArm_L', [0, 1.2, 2.4], [[shoulder(-2), 0, 0.26], [shoulder(-5), 0, 0.29], [shoulder(-2), 0, 0.26]]),
-  rot('LowerArm_L', [0, 1.2, 2.4], [[elbow(66), -0.28, 0.06], [elbow(71), -0.28, 0.06], [elbow(66), -0.28, 0.06]]),
-  rot('UpperArm_R', [0, 1.2, 2.4], [[shoulder(-2), 0, -0.26], [shoulder(-5), 0, -0.29], [shoulder(-2), 0, -0.26]]),
-  rot('LowerArm_R', [0, 1.2, 2.4], [[elbow(66), 0.28, -0.06], [elbow(71), 0.28, -0.06], [elbow(66), 0.28, -0.06]]),
-  rot('UpperLeg_L', [0, 2.4], [[hip(IDLE_L[0]), 0, IDLE_SPREAD], [hip(IDLE_L[0]), 0, IDLE_SPREAD]]),
-  rot('LowerLeg_L', [0, 2.4], [[knee(IDLE_L[1]), 0, 0], [knee(IDLE_L[1]), 0, 0]]),
-  rot('Foot_L', [0, 2.4], [[ankle(IDLE_L[2]), 0, 0], [ankle(IDLE_L[2]), 0, 0]]),
-  rot('UpperLeg_R', [0, 2.4], [[hip(IDLE_R[0]), 0, -IDLE_SPREAD], [hip(IDLE_R[0]), 0, -IDLE_SPREAD]]),
-  rot('LowerLeg_R', [0, 2.4], [[knee(IDLE_R[1]), 0, 0], [knee(IDLE_R[1]), 0, 0]]),
-  rot('Foot_R', [0, 2.4], [[ankle(IDLE_R[2]), 0, 0], [ankle(IDLE_R[2]), 0, 0]]),
-  rot('Flag_L', [0, 1.2, 2.4], [[0.02, 0, 0.04], [-0.03, 0, 0.02], [0.02, 0, 0.04]]),
-  rot('Flag_R', [0, 1.2, 2.4], [[-0.02, 0, -0.02], [0.03, 0, -0.04], [-0.02, 0, -0.02]])
-]);
+/* ------------------------------------------------------------------ Idle
+   THE POSE THE GAME IS SEEN IN MOST. Between plays, in the huddle, waiting on
+   the snap — the clock spends more time here than in any gait, and the old
+   version of this clip said so itself: "the breathing is the only motion in
+   here, and it is 12mm of it". Twelve millimetres over 2.4 seconds is a
+   photograph, and ten of them standing in a photograph is what a video game
+   looked like in 1998.
+
+   Standing still is not motionless. A person waiting shifts their weight from
+   one leg to the other and back, and everything else answers it: the loaded
+   knee straightens while the free one softens, the pelvis lists toward the
+   free side and drops on it, the shoulders counter, and the head moves on its
+   own clock rather than in time with the hips.
+
+   The pelvis height is re-solved at every key from the leg angles actually in
+   force there (standHipY), which is what stops the feet sinking or floating as
+   the weight moves — the reason the old clip could not shift weight is that
+   its hips track was a single hand-entered constant.
+
+   6.4 seconds, and the head sub-cycle deliberately does not divide into it, so
+   the loop does not announce itself. */
+{
+  const D_IDLE = 6.4;
+  //  w = -1 fully on the LEFT leg, +1 fully on the RIGHT.
+  const KP = [0, 0.14, 0.30, 0.46, 0.58, 0.74, 0.88, 1];
+  const W  = [0, -0.55, -1.00, -0.62, 0.30, 1.00, 0.45, 0];
+  const T = KP.map(p => p * D_IDLE);
+  // Loaded leg straightens (less knee), free leg softens.
+  const legFor = (base, load) => [base[0] - load * 4, base[1] - load * 7, base[2] - load * 3];
+  const legL = W.map(w => legFor(IDLE_L, -w));      // w<0 loads the left
+  const legR = W.map(w => legFor(IDLE_R, w));
+  const breath = u => 0.010 * Math.sin(2 * Math.PI * u * 3.5);
+
+  clip('Idle', D_IDLE, [
+    hipY(T, W.map((w, i) => standHipY(legL[i], legR[i]) - 0.004 * Math.abs(w) + breath(KP[i]))),
+    // Pelvis lists toward the unloaded side and swings a little with it.
+    rot('Hips',  T, W.map(w => [0, w * 0.045, w * 0.060])),
+    rot('Spine', T, W.map((w, i) => [0.26 + breath(KP[i]) * 0.9, -w * 0.030, -w * 0.032])),
+    rot('Chest', T, W.map((w, i) => [0.10 - breath(KP[i]) * 1.4, -w * 0.045, -w * 0.022])),
+    /* The head runs on its own clock. It is the single strongest signal that
+       there is somebody in there, and tying it to the hips would make the
+       whole body one metronome. In play the renderer layers a look-at over
+       this and the two simply add. */
+    rot('Head', T, KP.map(p => {
+      const a = 2 * Math.PI * p * 1.75;
+      return [-0.30 + 0.020 * Math.sin(a * 0.6), 0.16 * Math.sin(a), 0.02 * Math.sin(a * 0.5)];
+    })),
+    rot('UpperArm_L', T, W.map(w => [shoulder(-2 - w * 3), 0, 0.26 - w * 0.03])),
+    rot('LowerArm_L', T, W.map(w => [elbow(66 + w * 6), -0.28, 0.06])),
+    rot('UpperArm_R', T, W.map(w => [shoulder(-2 + w * 3), 0, -0.26 - w * 0.03])),
+    rot('LowerArm_R', T, W.map(w => [elbow(66 - w * 6), 0.28, -0.06])),
+    rot('UpperLeg_L', T, legL.map(l => [hip(l[0]), 0, IDLE_SPREAD])),
+    rot('LowerLeg_L', T, legL.map(l => [knee(l[1]), 0, 0])),
+    rot('Foot_L',     T, legL.map(l => [ankle(l[2]), 0, 0])),
+    rot('UpperLeg_R', T, legR.map(l => [hip(l[0]), 0, -IDLE_SPREAD])),
+    rot('LowerLeg_R', T, legR.map(l => [knee(l[1]), 0, 0])),
+    rot('Foot_R',     T, legR.map(l => [ankle(l[2]), 0, 0])),
+    rot('Flag_L', T, W.map(w => [0.02 - w * 0.035, 0, 0.04 + w * 0.02])),
+    rot('Flag_R', T, W.map(w => [-0.02 + w * 0.035, 0, -0.02 - w * 0.02]))
+  ]);
+}
 
 /* ================== THE GAIT LADDER: WALK, JOG, RUN, SPRINT ===============
 
