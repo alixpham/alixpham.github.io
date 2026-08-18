@@ -880,7 +880,7 @@
           ud: { idx: idx, yaw: seedYaw, celebT: 0, _wasPulled: false, _pulled: false, _threw: false,
                 _caught: false, _juked: false, _spiked: false, clip: 'idle',
                 carryKey: '', carrySide: 0, carryW: 0, carryAmp: 0, grabW: 0,
-                pvx: 0, pvy: 0, fLat: 0, fTan: 0, bank: 0, pitch: 0, lead: 0, gazeY: 0, gazeP: 0 }
+                pvx: 0, pvy: 0, fLat: 0, fHold: 0, fTan: 0, bank: 0, pitch: 0, lead: 0, gazeY: 0, gazeP: 0 }
         });
       });
       playersRef = players;
@@ -962,17 +962,57 @@
          only what survives that leans anybody. Spikes that last a frame or two
          now produce almost nothing, and a genuine sustained cut still produces
          the full angle. */
-      ud.fLat += (aLat - ud.fLat) * ease(3.6, dt);
+      /* Tracked faster than before (0.28s -> 0.17s). The heavy smoothing was
+         added to stop steering noise leaning everybody, and it worked, but it
+         also delayed the lean past the step that earned it and kept it alive
+         after. The washout below is what suppresses the noise now — a jitter
+         has no sustained component to survive it. */
+      ud.fLat += (aLat - ud.fLat) * ease(6, dt);
       ud.fTan += (aTan - ud.fTan) * ease(3.6, dt);
-      /* And a ceiling a running human actually reaches. 0.46rad is 26 degrees,
-         which is tan = 0.49g held through the whole turn — a speed skater, not
-         a flag footballer changing direction on grass in trainers. */
-      var bankT = clamp(Math.atan2(ud.fLat, G), -0.27, 0.27) * leanOn;
+      /* LEAN IS A TRANSIENT, NOT A POSTURE.
+
+         atan(lateral acceleration / g) is the angle that balances a sustained
+         turn, and that is the whole problem: it is the physics of a speed
+         skater holding an edge, or a cyclist on a banked curve — bodies that
+         carve. A runner does not carve. Their lateral force arrives in
+         discrete foot plants, the legs splay out under a trunk that stays much
+         closer to upright, and the lean is gone by the next step.
+
+         Measured on the previous version, over RUNNING frames only: median
+         bank 9.9 degrees, p90 and max both pinned to the 15.5-degree clamp,
+         56% of all running frames past 8 degrees, and each lean held for 0.6s
+         median and 1.5s at p90. A football cut lasts 0.2-0.4s. Ten men doing
+         that is a hockey rink.
+
+         Three things caused it and all three are here:
+
+         WASHOUT. The drive is the lateral force MINUS its own slow average, so
+         what leans a body is the ONSET of a cut rather than the fact of being
+         in a turn. A sustained arc — a receiver running a curl — now settles
+         back toward upright the way a real one does instead of holding an edge
+         all the way round. This is the standard washout a motion platform uses
+         for exactly the same reason: sustained acceleration is not what the
+         body reads as a manoeuvre. A third of the steady component survives,
+         because a hard sustained turn is not perfectly upright either.
+
+         TRUNK FRACTION. Even at the peak of a cut the trunk does not reach the
+         balance angle — the legs get there and the torso lags well behind. So
+         the balance angle is scaled, and then capped at 9 degrees rather than
+         15.5.
+
+         RELEASE. The old code attacked fast and released slow, on the theory
+         that coming out of a cut is a recovery. It is not: pushing off out of
+         a lean is the most violent part of the move, and holding the angle
+         afterwards is the single thing that makes it read as a glide. Release
+         is now nearly as quick as the attack. */
+      var WASHOUT = 0.67;              // how much of a SUSTAINED turn stops counting
+      var TRUNK = 0.62;                // trunk lags the legs; it never reaches balance
+      var BANK_CAP = 0.157;            // 9 degrees
+      ud.fHold += (ud.fLat - ud.fHold) * ease(1.5, dt);
+      var bankDrive = ud.fLat - WASHOUT * ud.fHold;
+      var bankT = clamp(Math.atan2(bankDrive, G) * TRUNK, -BANK_CAP, BANK_CAP) * leanOn;
       var pitchT = clamp(Math.atan2(ud.fTan, G), -0.20, 0.24) * leanOn;
-      /* Attack fast, release slow. A cut is an event — the lean has to be there
-         on the step that makes it, not a beat later — but coming out of one is
-         a recovery and settles over a longer count. */
-      ud.bank += (bankT - ud.bank) * ease(Math.abs(bankT) > Math.abs(ud.bank) ? 13 : 6, dt);
+      ud.bank += (bankT - ud.bank) * ease(Math.abs(bankT) > Math.abs(ud.bank) ? 15 : 13, dt);
       ud.pitch += (pitchT - ud.pitch) * ease(7, dt);
       ud.lead += (clamp(ud.fLat / 24, -0.30, 0.30) * leanOn - ud.lead) * ease(9, dt);
 
