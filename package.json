@@ -1,0 +1,15 @@
+{
+  "name": "flagster",
+  "private": true,
+  "type": "module",
+  "description": "Flagster — the site itself ships NO npm dependencies and has no build step (see CLAUDE.md). This manifest exists only so the verification harnesses in tools/ are reproducible: containers are ephemeral and their node_modules is gitignored, so without a declared devDependency every session had to hand-install Playwright before it could check anything in a browser.",
+  "scripts": {
+    "lint": "node tools/lint.mjs",
+    "test": "node tools/ruletest.mjs",
+    "stats": "node tools/simstats.mjs",
+    "build:player": "node tools/build-player-glb.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.1"
+  }
+}
