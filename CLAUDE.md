@@ -83,6 +83,37 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   +x, so it never turns round; `engine.viewSign()` is the seam that says which
   way is downfield and now always returns 1.
 
+## The container is not the repo
+
+**Read this before trusting anything in the working tree.**
+
+Sessions run in ephemeral containers whose clone is a *snapshot*, not a fetch.
+A new container hands you the repository as it was when the image was taken,
+which can be many releases behind `origin/master`. This has already caused real
+damage once: a container came back holding `VERSION 2.20.0` and an `engine.js`
+whose completion rate measured **1.2%** instead of 45%, twelve releases stale,
+and work was built on top of it before the box score gave it away.
+
+- `.claude/hooks/session-start.sh` now fetches and resyncs on every new session,
+  saving the old tip to `refs/container-snapshot/<branch>/<utc>` first so the
+  move is always reversible. It refuses to touch a dirty tree, and it leaves a
+  divergent branch alone on `resume`/`compact` in case you are mid-task.
+- It cannot help a snapshot older than the hook itself. If the banner does not
+  appear at session start, check freshness by hand before doing anything:
+  `git fetch origin master && git rev-list --count HEAD..origin/master`.
+- **Nothing survives the container except what is pushed.** Push early. A
+  scratch harness in `/tmp` is gone next session — if a measurement is worth
+  quoting, the script that produced it belongs in `tools/`.
+
+### Never merge this branch back after a squash merge
+
+`claude/flagster-website-build-*` is long-lived and PRs are squash-merged, so
+after a merge the branch's commits are content-in-master but ancestor-of-nothing.
+Merging `master` back then offers them a second time, and git resolves it badly:
+that is precisely how `engine.js` ended up at 1.2% completions. After a PR
+merges, restart the branch instead — `git checkout -B <branch> origin/master`
+(force-with-lease to push; safe, because the branch holds only merged history).
+
 ## Workflow
 
 - Develop on `claude/flagster-website-build-*`, PR into `master`, squash-merge.
@@ -92,8 +123,13 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   after five of them, so a broken scene looks like a working game with a
   different art style. When verifying, check `shell.field3d` is still non-null
   and wrap `engine.externalRender` to catch what it threw.
+- `npm run lint` (syntax across every source file), `npm test` (rules
+  regression), `node tools/simstats.mjs` (box score). Playwright is a
+  devDependency purely so the browser harnesses survive a new container — the
+  **site itself still ships no npm dependencies and no build step**.
 - **Verify before claiming done:** drive the real thing in headless Chromium
-  (`/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, args
+  (`$FLAGSTER_CHROME`, exported by the session hook; the image pins a build
+  number so do not hardcode the path — args
   `--use-gl=swiftshader --enable-unsafe-swwebgl --ignore-gpu-blocklist`),
   screenshot it, and confirm 0 console/page errors across World, Team Builder,
   Road to Glory and the menu, in both landscape and portrait.
