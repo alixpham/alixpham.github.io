@@ -94,3 +94,111 @@ remaining gap to the reference and the one that needs an asset pipeline to
 close. The ear is a lobe rather than an ear. Beyond the players, the distance to
 Madden is presentation the field doesn't have yet: replays, depth of field,
 sidelines and benches, and contact animation.
+
+---
+
+# Round two: the animation
+
+Same benchmark. This pass looked at motion rather than mesh, and at what the
+game does over time rather than what it looks like in a frame. `tools/animcheck.mjs`
+(new, committed) drives the real game and samples once per rendered frame;
+`tools/measure-clip.mjs` (already here) does the offline biomechanics.
+
+## What is already good, measured
+
+The gait system is genuinely well built and most of a red team's default
+checklist comes back clean:
+
+| | |
+| --- | --- |
+| stride phase spread across ten players | 0.55–0.82 (0 = lockstep) — nobody marches in unison |
+| facing vs line of travel, median | 0.9–4.6° — the skate is gone |
+| gait playback rate saturated on its clamp | 0.6–3.8% of moving frames |
+| Run / Sprint stance:flight | 31:38 and 22:56 — textbook |
+| bank into turns | 3–7° median, derived from lateral acceleration, not tuned |
+
+## A2 — Walk and Jog limp. Found, not fixed.
+
+`measure-clip` puts the right foot's contact at **40%** of the cycle in Walk and
+**38%** in Jog, against the 50% the file's own comment demands ("keep them at 0%
+and 50%"). Run is 48% and Sprint 53%. Walk+Jog is the most-used rung on the
+ladder in every probe run, so this is the limp you see most.
+
+The left contact reads 0% in both, which is what hid it: the detector scans from
+index 0 and the foot is already planted there, so it reports the frame it
+started on rather than the frame the foot landed. True contact is ~10–12% of a
+cycle late, and the right foot — exactly half a cycle behind whatever the left
+actually does — inherits the error.
+
+**I tried to fix it and backed the fix out.** Rotating the cycle's origin onto
+the measured contact fixed the symmetry (Walk 40→50%, Jog 38→52%) but moved the
+pelvis-lift window with it, and the flight fractions went with it: Jog 19%→38%,
+Run 38%→50%, both far from the values a jog and a run actually have. Deriving
+the lift window from the same sole trace instead made it worse — stance and the
+trace that produces it feed back on each other, and Run ended at 16% stance /
+69% flight. The clips as they stand measure correctly on every other axis, and I
+would rather ship a documented limp than an undocumented regression in four
+clips at once.
+
+The real fix is in the contact POSE, not the timing: at phase 0 the sole is a
+few millimetres off the turf, so the body is still riding the other foot. That
+is a pose edit with a measurement loop, and it is the next thing to do here.
+
+## A3 — Nobody watched the ball. Fixed.
+
+There was no gaze behaviour anywhere: every head pointed wherever the body
+pointed, all game, and the only neck yaw in the game was whatever a clip
+happened to bake. Ten people chasing something and not one of them looking at
+it reads as mannequins on rails.
+
+`gazeAt` layers a look-at over the mixer — multiplied onto what the clip wrote,
+the same bargain as `leadTrunk` and the carry pose, so the gait's own head
+motion survives underneath. Split across neck and skull, eased over ~0.2s, and
+clamped at 70°, because past that a person turns their shoulders instead of
+unscrewing their head. The carrier is excluded: the ball is in his hands and he
+is reading the field. One-shots keep the head.
+
+| | |
+| --- | --- |
+| turn the ball asks for, median | 41° |
+| turn the renderer applies | 35° (the rest is the clamp) |
+| gaze lag | **1.1°** |
+| heads within 12° of the ask | **85%** |
+
+## A4 — Idle was a photograph. Fixed.
+
+The clip said so itself: *"the breathing is the only motion in here, and it is
+12mm of it."* Twelve millimetres over 2.4 seconds, and this is the pose the
+game spends most of its clock in — between plays, in the huddle, at the snap.
+
+Rebuilt at 6.4s as a weight shift: the loaded knee straightens while the free
+one softens, the pelvis lists and drops toward the free side, the shoulders
+counter, and the head runs on a sub-cycle that deliberately does not divide into
+the loop. Pelvis height is re-solved at every key from the leg angles in force
+there, which is what lets the weight move at all — the old clip's hips track was
+a single hand-entered constant, so it *couldn't* shift.
+
+Peak hand speed 0.003 → **0.05 m/s**, with the planted feet still planted
+(0.06 m/s drift).
+
+## On the instrument
+
+Four separate attempts to measure the gaze off the skeleton produced impossible
+numbers — 94° of neck turn against a 70° cap — because the rig's rest frame, the
+root's heading offset, the holder's bank quaternion and the clip's own baked head
+motion all compose, and picking one factor back out of that product is not a
+thing a probe should do. The renderer now publishes the applied angle through
+`debugPlayers()`, which is the bargain that surface already exists for, and the
+number became coherent immediately. The in-game foot-slip metric was cut for the
+same reason: at ~2 rendered frames a second under swiftshader, two samples are a
+tenth of a stride apart and no contact phase can be resolved — it reported a
+"planted" foot moving at 1.27× the body's own speed. `measure-clip` does that
+job properly, offline.
+
+## Still open
+
+The Walk/Jog limp above. Backpedal's planted foot sweeps unevenly (spread 47% of
+its own median, flagged `UNEVEN STANCE`). The top of the gait ladder is nearly
+dead — `Run+Sprint` appears in single-digit frames per run while `Walk+Jog` and
+`Jog+Run` carry everything, so the best-measured clip in the file is the one
+almost nobody ever sees.
