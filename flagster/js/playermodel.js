@@ -473,6 +473,95 @@
     return g;
   }
 
+  /* ------------------------------------------------- procedural materials
+     THE LAST FLAT THING. Every region is one base colour at one uniform
+     roughness, which is why the figure still reads as injection-moulded next
+     to the reference pack: those carry a full albedo/normal/roughness set and
+     we carry none. An authored texture set is out — it means binary assets and
+     a pipeline, and this character is a text file on purpose.
+
+     What is not out is generating the maps at load time. Two small canvases,
+     built once and SHARED by every player on the field (team colour lives in
+     material.color, which multiplies over the map, so sharing costs nothing
+     and one upload serves twenty players):
+
+       cloth  a knit grid — the tiny horizontal ribbing of a football mesh
+              jersey — plus low-frequency mottling so large flat panels stop
+              looking like plastic under a moving light.
+       skin   very low frequency tonal variation only. Skin is not patterned;
+              it is uneven, and evenness is the tell.
+
+     Both are near-white and multiply, so they add texture without shifting the
+     colour a kit was tinted to. The lofts write cylindrical UVs (u around the
+     ring, v along the limb), so a tiling pattern lands square on the body
+     without an unwrap.                                                      */
+  var TEX = null;
+  function noiseCanvas(size, draw) {
+    var c = document.createElement('canvas');
+    c.width = c.height = size;
+    draw(c.getContext('2d'), size);
+    return c;
+  }
+  /* Deterministic value noise: the same players must look the same on every
+     load, and Math.random here would reshuffle the field on a refresh. */
+  function vnoise(x, y, seed) {
+    var n = Math.sin(x * 127.1 + y * 311.7 + seed * 74.7) * 43758.5453;
+    return n - Math.floor(n);
+  }
+  function smoothNoise(ctx, size, cells, seed, amp, base) {
+    var img = ctx.getImageData(0, 0, size, size), d = img.data;
+    var step = size / cells;
+    for (var y = 0; y < size; y++) {
+      for (var x = 0; x < size; x++) {
+        var fx = x / step, fy = y / step;
+        var x0 = Math.floor(fx), y0 = Math.floor(fy);
+        var tx = fx - x0, ty = fy - y0;
+        tx = tx * tx * (3 - 2 * tx); ty = ty * ty * (3 - 2 * ty);   // smoothstep
+        var w = function (i, j) { return vnoise((x0 + i) % cells, (y0 + j) % cells, seed); };
+        var v = (w(0, 0) * (1 - tx) + w(1, 0) * tx) * (1 - ty) + (w(0, 1) * (1 - tx) + w(1, 1) * tx) * ty;
+        var k = (base + (v - 0.5) * amp) * 255;
+        var o = (y * size + x) * 4;
+        d[o] = d[o + 1] = d[o + 2] = k < 0 ? 0 : k > 255 ? 255 : k;
+        d[o + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+  function buildTextures(THREE) {
+    if (TEX) return TEX;
+    var SZ = 128;
+    var cloth = noiseCanvas(SZ, function (x, n) {
+      x.fillStyle = '#ffffff'; x.fillRect(0, 0, n, n);
+      smoothNoise(x, n, 8, 3, 0.10, 0.97);                 // panel mottling
+      // Knit: fine horizontal ribs with a half-pitch offset every other row,
+      // which is what a mesh jersey actually is at this distance.
+      x.globalAlpha = 0.5;
+      for (var y = 0; y < n; y += 3) {
+        x.fillStyle = 'rgba(0,0,0,0.16)';
+        x.fillRect(0, y, n, 1);
+        x.fillStyle = 'rgba(255,255,255,0.18)';
+        x.fillRect((y % 6) ? 1 : 0, y + 1, n, 1);
+      }
+      x.globalAlpha = 1;
+    });
+    var skin = noiseCanvas(SZ, function (x, n) {
+      x.fillStyle = '#ffffff'; x.fillRect(0, 0, n, n);
+      smoothNoise(x, n, 5, 11, 0.075, 0.975);
+    });
+    function mk(canvas, rx, ry) {
+      var t = new THREE.CanvasTexture(canvas);
+      t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      t.repeat.set(rx, ry);
+      t.anisotropy = 4;
+      if ('colorSpace' in t && THREE.SRGBColorSpace) t.colorSpace = THREE.SRGBColorSpace;
+      return t;
+    }
+    TEX = { cloth: mk(cloth, 3, 5), skin: mk(skin, 1.5, 2) };
+    return TEX;
+  }
+  var TEXTURED = { jersey: 'cloth', shorts: 'cloth', socks: 'cloth', trim: 'cloth',
+                   flag: 'cloth', skin: 'skin', head: 'skin' };
+
   /* ---------------------------------------------------------------- build */
   function build(THREE, opts) {
     THREE = THREE || global.THREE;
@@ -505,6 +594,17 @@
         if (m && m.color && hex != null) m.color.set(hex);
       }
     }
+    /* Detail maps. Shared across every player — the tint lives in
+       material.color and multiplies over the map, so one texture serves the
+       whole field. */
+    try {
+      var tx = buildTextures(THREE);
+      for (var mk2 in TEXTURED) {
+        var mm = mats[mk2], which = tx[TEXTURED[mk2]];
+        if (mm && which && !mm.map) { mm.map = which; mm.needsUpdate = true; }
+      }
+    } catch (e) { /* a canvas-less environment still gets a playable figure */ }
+
     for (var k in TINTABLE) { if (opts[k] != null) tint(k, opts[k]); }
     // Sensible defaults so a bare build() still looks like a team kit.
     if (opts.jersey == null) tint('jersey', '#2b5cff');

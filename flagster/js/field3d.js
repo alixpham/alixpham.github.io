@@ -597,6 +597,58 @@
       }
     }
 
+    /* ---- FATIGUE ---------------------------------------------------------
+       The engine has simulated stamina since the difficulty work: effort
+       drains it, it recovers between plays, and it scales a player's top speed
+       down to STAM_FLOOR = 0.55. It drives a bar on the HUD. It has never once
+       reached the body.
+
+       Measured over a full CPU-vs-CPU game, 6,290 samples: median stamina
+       0.853, 62.6% of samples below 0.9, 20.3% below 0.7, 7.9% below 0.5, and
+       it bottoms out at zero. So a fifth of this game is played by people who
+       are visibly tiring, drawn as though they had just come off the bench.
+
+       What tiredness does to a runner, in the order you notice it: the trunk
+       folds forward, the head drops, the shoulders round and the arms stop
+       being carried — the elbows open and the hands fall toward the hips. The
+       stride shortens too, but that is already handled: the engine slows a
+       tired player down and the gait ladder answers a lower ground speed with
+       a lower rung and a shorter stride on its own. Doubling it here would be
+       counting the same thing twice.
+
+       Layered after the mixer, multiplied onto the clip, like leadTrunk and
+       the gaze. Nothing shows above 0.85 — being slightly winded is not a
+       posture — and it reaches full expression by 0.35. */
+    var _ftQ = new THREE.Quaternion(), _ftX = new THREE.Vector3(1, 0, 0), _ftZ = new THREE.Vector3(0, 0, 1);
+    function fatigueOf(gp) {
+      var st = (gp && gp.stam != null) ? gp.stam : 1;
+      return clamp((0.85 - st) / 0.50, 0, 1);
+    }
+    function fatiguePose(P, f, resting) {
+      if (!P.nodes || f < 0.02) return;
+      var n = P.nodes;
+      /* Standing still and blown is a different picture from running and
+         blown: hands go to the hips, the back rounds right over, the head
+         hangs. Worth its own amplitude — it is the shape everyone recognises. */
+      var k = resting ? 1.55 : 1.0;
+      if (n.Spine) { _ftQ.setFromAxisAngle(_ftX, 0.115 * f * k); n.Spine.quaternion.multiply(_ftQ); }
+      if (n.Chest) { _ftQ.setFromAxisAngle(_ftX, 0.070 * f * k); n.Chest.quaternion.multiply(_ftQ); }
+      // The head drops, and then some of it comes back because you still have
+      // to see where you are going.
+      if (n.Head)  { _ftQ.setFromAxisAngle(_ftX, 0.105 * f * k); n.Head.quaternion.multiply(_ftQ); }
+      for (var i = 0; i < 2; i++) {
+        var S = i ? 'R' : 'L', sgn = i ? -1 : 1;
+        var up = n['UpperArm_' + S], lo = n['LowerArm_' + S];
+        // Shoulders round forward and the arms hang wider off the ribs.
+        if (up) {
+          _ftQ.setFromAxisAngle(_ftX, 0.075 * f * k); up.quaternion.multiply(_ftQ);
+          _ftQ.setFromAxisAngle(_ftZ, sgn * 0.075 * f * k); up.quaternion.multiply(_ftQ);
+        }
+        // The elbow opens: a carried arm is work, and it is the first thing to go.
+        if (lo) { _ftQ.setFromAxisAngle(_ftX, 0.30 * f * k); lo.quaternion.multiply(_ftQ); }
+      }
+    }
+
     // Flying-flag effect pool (spawned on flag pulls)
     var flags = makeFlagPool(THREE, 10);
     scene.add(flags.group);
@@ -880,7 +932,7 @@
           ud: { idx: idx, yaw: seedYaw, celebT: 0, _wasPulled: false, _pulled: false, _threw: false,
                 _caught: false, _juked: false, _spiked: false, clip: 'idle',
                 carryKey: '', carrySide: 0, carryW: 0, carryAmp: 0, grabW: 0,
-                pvx: 0, pvy: 0, fLat: 0, fHold: 0, fTan: 0, bank: 0, pitch: 0, lead: 0, gazeY: 0, gazeP: 0 }
+                pvx: 0, pvy: 0, fLat: 0, fHold: 0, fTan: 0, bank: 0, pitch: 0, lead: 0, gazeY: 0, gazeP: 0, fatigue: 0 }
         });
       });
       playersRef = players;
@@ -1228,6 +1280,12 @@
 
       // ...and then the head goes to the ball, over the top of all of it.
       gazeAt(P, ud, gp, state, dt);
+
+      /* Fatigue last, so it bends whatever posture the rest arrived at. Not
+         during a one-shot: a throw, a catch and a dive are committed actions
+         and a tired man still makes them properly. */
+      ud.fatigue = fatigueOf(gp);
+      if (!P._oneShot) fatiguePose(P, ud.fatigue, speed < 1.0);
 
       /* ---- CARRY POSE (after the mixer, so it overrides the clip) ---------
          The clip has already written every bone for this frame; the arm around
@@ -1939,7 +1997,7 @@
             if (Math.abs(skew) > Math.PI / 2) skew = (skew > 0 ? Math.PI : -Math.PI) - skew;
           }
           out.push({ f: frame, i: i, speed: sp, skew: skew,
-                     bank: e.ud.bank, pitch: e.ud.pitch, lead: e.ud.lead, gaze: e.ud.gazeY,
+                     bank: e.ud.bank, pitch: e.ud.pitch, lead: e.ud.lead, gaze: e.ud.gazeY, fatigue: e.ud.fatigue, stam: (gp.stam == null ? 1 : gp.stam),
                      a: g ? g.a : '-', b: g ? g.b : '-', blend: g ? g.blend : 0,
                      rate: g ? g.rate : 0, phase: g ? g.phase : 0, w: g ? g.weight : 0 });
         }

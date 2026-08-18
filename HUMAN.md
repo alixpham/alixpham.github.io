@@ -287,3 +287,83 @@ its own median, flagged `UNEVEN STANCE`). The top of the gait ladder is nearly
 dead — `Run+Sprint` appears in single-digit frames per run while `Walk+Jog` and
 `Jog+Run` carry everything, so the best-measured clip in the file is the one
 almost nobody ever sees.
+
+---
+
+# v3.0 — the players stop being interchangeable
+
+Two things, one behavioural and one material, chosen because each closes a gap
+this document had already named and measured.
+
+## B1 — Fatigue you can see
+
+The engine has simulated stamina for a long time: effort drains it, it recovers
+between plays, and it scales a player's top speed down to `STAM_FLOOR = 0.55`.
+It drives a bar on the HUD. **It had never once reached the body.**
+
+Measured over a full CPU-vs-CPU game, 6,290 samples:
+
+| min | p10 | median | p90 | max |
+| --- | --- | --- | --- | --- |
+| 0.000 | 0.555 | 0.853 | 0.991 | 1.000 |
+
+62.6% of samples below 0.9, 20.3% below 0.7, 7.9% below 0.5. So a fifth of
+every game is played by people who are visibly tiring, drawn as though they had
+just come off the bench.
+
+What tiredness does to a runner, in the order you notice it: the trunk folds
+forward, the head drops, the shoulders round, and the arms stop being *carried*
+— the elbows open and the hands fall toward the hips. Standing still and blown
+is a different picture again, so it gets its own amplitude: that is the shape
+everyone recognises.
+
+The stride shortens too, and that is deliberately **not** done here. The engine
+already slows a tired player, and the gait ladder answers a lower ground speed
+with a lower rung and a shorter stride on its own — adding it again would be
+counting the same thing twice.
+
+Layered after the mixer and multiplied onto the clip, like `leadTrunk` and the
+gaze. Nothing shows above 0.85 stamina, because being slightly winded is not a
+posture, and it reaches full expression by 0.35. A one-shot keeps the body: a
+throw, a catch and a dive are committed actions and a tired man still makes them
+properly.
+
+Verified end to end by pinning stamina: `fatigue` reads 0.000 at full and 1.000
+at 0.15, and in an ordinary demo 19% of frames are visibly tired — which matches
+the 20.3% of the simulation that sits below 0.7.
+
+## B2 — Cloth that looks like cloth
+
+The last flat thing. Every region was one base colour at one uniform roughness,
+which is the remaining reason the figure reads as injection-moulded next to the
+reference pack — those carry a full albedo/normal/roughness set and we carried
+none. An authored texture set stays out: it means binary assets and a pipeline,
+and this character is a text file on purpose.
+
+Generating the maps at load time does not. Two small canvases, built once and
+**shared by every player on the field** — team colour lives in `material.color`,
+which multiplies over the map, so sharing costs nothing and one upload serves
+twenty players:
+
+- **cloth** — a knit grid, the fine horizontal ribbing a mesh football jersey
+  actually has, plus low-frequency mottling so large flat panels stop looking
+  like plastic under a moving light. Jersey, shorts, socks, trim, flags.
+- **skin** — very low frequency tonal variation only. Skin is not patterned; it
+  is uneven, and evenness is the tell.
+
+Both are near-white and multiply, so they add texture without shifting the
+colour a kit was tinted to. The lofts write cylindrical UVs, so a tiling pattern
+lands square on the body with no unwrap. The noise is deterministic — `Math.random`
+here would reshuffle the field on every refresh. The head's existing runtime
+face texture is left alone; nothing overwrites a material that already has a map.
+
+## Measured
+
+| | |
+| --- | --- |
+| frames visibly tired, ordinary play | 19% |
+| fatigue at stamina 1.00 / 0.15 | 0.000 / 1.000 |
+| textures added to the repo | none — both generated at load |
+| gait clips | unchanged (Walk 1.78, Run 6.09, Sprint 8.98 m/s) |
+| simulation | unchanged — 64.5 plays/game, 44% completions, 0 unresolved |
+| console / page errors | 0 |

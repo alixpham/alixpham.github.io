@@ -143,7 +143,7 @@ const install = await page.evaluate(() => {
 
   const A = window.__ANIM = {
     frames: 0, live: 0, moving: 0, clamped: 0, clipUse: {}, rungUse: {},
-    slip: [], slipRel: [], floor: {}, gazeErr: [], headVsBody: [], gazeWant: [], lean: {}, leanRuns: [], phases: [], skews: [], banks: [], gaze: 0, gazeN: 0, err: null
+    slip: [], slipRel: [], floor: {}, gazeErr: [], headVsBody: [], gazeWant: [], lean: {}, leanRuns: [], stam: [], fatigue: [], phases: [], skews: [], banks: [], gaze: 0, gazeN: 0, err: null
   };
 
   const rigs = [];
@@ -185,6 +185,7 @@ const install = await page.evaluate(() => {
           const k = (d.b && d.b !== d.a) ? d.a + '+' + d.b : d.a;
           A.rungUse[k] = (A.rungUse[k] || 0) + 1;
           A.skews.push(Math.abs(d.skew));
+          if (d.stam != null) { A.stam.push(d.stam); A.fatigue.push(d.fatigue || 0); }
           const bk = Math.abs(d.bank || 0);
           A.banks.push(bk);
           /* HOW LONG a lean is held, not just how deep it gets. A median is
@@ -277,6 +278,9 @@ const out = await page.evaluate(() => {
     bankP99Deg: q(A.banks.map(x => x * 57.2958), 0.99),
     bankMaxDeg: A.banks.length ? +(Math.max(...A.banks) * 57.2958).toFixed(1) : null,
     bankOver8Pct: A.banks.length ? +(100 * A.banks.filter(b => b > 0.1396).length / A.banks.length).toFixed(1) : null,
+    stamMedian: q(A.stam, 0.5), stamP10: q(A.stam, 0.1),
+    fatigueMedian: q(A.fatigue, 0.5), fatigueP90: q(A.fatigue, 0.9),
+    fatiguedPct: A.fatigue.length ? +(100 * A.fatigue.filter(f => f > 0.15).length / A.fatigue.length).toFixed(1) : null,
     leanHoldMedian: q(A.leanRuns, 0.5), leanHoldP90: q(A.leanRuns, 0.9), leanEpisodes: A.leanRuns.length,
     headYawPct: A.gazeN ? +(100 * A.gaze / A.gazeN).toFixed(1) : null,
     headVsBodyMedian: q(A.headVsBody, 0.5),
@@ -318,6 +322,9 @@ row('Turn the ball asks for', report.gazeWantMedian + ' deg', 'median, capped at
 row('Turn the neck delivers', report.headVsBodyMedian + ' deg', 'as applied by the renderer');
 row('Gaze lag', report.gazeErrMedianDeg + ' deg', 'median; it eases, it does not snap');
 row('Heads on the ball', report.gazeOnBallPct + '%', 'within 12 deg of the ask');
+row('Stamina (med / p10)', report.stamMedian + ' / ' + report.stamP10, '1 = fresh');
+row('Fatigue shown (med/p90)', report.fatigueMedian + ' / ' + report.fatigueP90, '0 = upright, 1 = blown');
+row('Frames visibly tired', report.fatiguedPct + '%', 'above 0.15 of full expression');
 row('Console errors', report.consoleErrors, '');
 console.log('\n  gait rungs in use:', JSON.stringify(report.rungUse));
 if (!report.clipWrapAttached || !Object.keys(report.clipUse).length) {
