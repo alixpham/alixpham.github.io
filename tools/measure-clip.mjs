@@ -279,7 +279,13 @@ const fps = argFps > 0 ? Number(process.argv[argFps + 1]) : 40;
 const clip = loadClip(name);
 
 const rows = [];
-const N = Math.round(clip.dur * fps);
+/* Rounded to an EVEN number of samples so that half a cycle is a whole number
+   of them. The symmetry check below compares the left sole against the right
+   shifted by exactly N/2; when N is odd that shift falls between samples, and
+   interpolating a curved trace across the gap invents millimetres of
+   asymmetry — up to 34mm on Sprint, which is how a clip that is symmetric by
+   construction got reported as limping. */
+const N = 2 * Math.max(1, Math.round(clip.dur * fps / 2));
 for (let i = 0; i <= N; i++) {
   const t = (i / N) * clip.dur;
   rows.push({ t, m: measure(pose(clip, t)) });
@@ -374,10 +380,27 @@ if (clip.extras.gait) {
 
   const report = [];
   for (const side of ['L', 'R']) {
+    /* Contact = the start of the LONGEST grounded run, not the first grounded
+       sample found scanning from zero.
+
+       The old version reported a limp in Walk and Jog that does not exist. Two
+       bugs, both of them here. Scanning from index 0 with the foot already
+       planted returns index 0, so the left foot always "contacts" at 0% — it
+       reports the frame the scan began on. And a fixed 12mm threshold is
+       meaningless during a flight phase: with both feet airborne the lower
+       one's height is the pelvis-lift envelope, which crosses 12mm on the way
+       up and again on the way down, so the right foot "contacted" wherever
+       that envelope happened to dip. The two artifacts together read as 40%
+       and 38% against an expected 50%, and the clips are in fact exactly
+       symmetric — see the symmetry check below, which is the honest test. */
     const isDown = i => at(i).m.footY[side] < 0.012;
-    // Contact = the first grounded row of a grounded run, searched cyclically.
-    let contact = null;
-    for (let i = 0; i < N2; i++) if (isDown(i) && !isDown(i - 1)) { contact = i; break; }
+    let contact = null, bestLen = 0;
+    for (let i = 0; i < N2; i++) {
+      if (!isDown(i) || isDown(i - 1)) continue;        // not the start of a run
+      let len = 0;
+      while (len < N2 && isDown(i + len)) len++;
+      if (len > bestLen) { bestLen = len; contact = i; }
+    }
     // Rearmost hand. The hand swings once per cycle, so the minimum is unique.
     let back = 0, bv = Infinity, front = 0, fv = -Infinity;
     for (let i = 0; i < N2; i++) {
@@ -404,8 +427,33 @@ if (clip.extras.gait) {
   if (cL != null && cR != null) {
     let gap = phaseOf(cR) - phaseOf(cL);
     if (gap < 0) gap += 1;
-    console.log(`  step symmetry   right contact ${(gap * 100).toFixed(0)}% after left` +
-      (Math.abs(gap - 0.5) > 0.06 ? '   <-- LIMPING' : ''));
+    console.log(`  step contact    right ${(gap * 100).toFixed(0)}% after left`);
+  }
+  /* THE ACTUAL LIMP TEST. Compare the whole left sole trace against the right
+     one shifted half a cycle. A gait built by rotating one leg's curve is
+     symmetric by construction and this reads zero; anything that limps cannot
+     hide from it, and unlike a single contact instant it does not depend on
+     picking a threshold. This is the check that should have been here. */
+  {
+    /* Half a cycle is N2/2 samples, which is not an integer when N2 is odd, so
+       the shifted sample is interpolated rather than rounded to a neighbour.
+       Rounding it is wrong by up to half a frame and reports tens of
+       millimetres of phantom asymmetry on exactly the clips whose sample count
+       happens to be odd — which is how the first version of this check
+       "confirmed" the limp it was written to disprove. */
+    const soleAt = (x, side) => {
+      const f = ((x % N2) + N2) % N2, i0 = Math.floor(f), u = f - i0;
+      const a = at(i0).m.footY[side], b = at(i0 + 1).m.footY[side];
+      return a + (b - a) * u;
+    };
+    let worst = 0, worstAt = 0;
+    for (let i = 0; i < N2; i++) {
+      const d = Math.abs(soleAt(i, 'L') - soleAt(i + N2 / 2, 'R'));
+      if (d > worst) { worst = d; worstAt = i; }
+    }
+    console.log(`  step symmetry   left vs right shifted half a cycle: ` +
+      `${(worst * 1000).toFixed(2)}mm worst, at ${(phaseOf(worstAt) * 100).toFixed(0)}%` +
+      (worst > 0.004 ? '   <-- LIMPING' : '   (symmetric)'));
   }
   const e = clip.extras;
   console.log(`  extras          ${e.groundSpeed.toFixed(2)} m/s, stride ${(e.groundSpeed * e.cycle).toFixed(2)}m,` +
