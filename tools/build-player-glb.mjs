@@ -2105,7 +2105,7 @@ cyclicGait('Sprint', 0.48, {
 cyclicGait('Walk', 1.0, {
   leg: [
     //  phase  hip  knee  ankle  toe
-    [0.00, 28, 4, 5, 0],       // heel strike — toes held up, knee almost straight
+    [0.00, 26.5, 3, 4, 0],     // heel strike — toes held up, knee almost straight
     [0.08, 23, 17, -7, 0],     // loading response — the forefoot slaps flat
     [0.20, 7, 17, -1, 0],      // the shin begins to roll forward over the foot
     [0.32, -9, 5, 9, 3],       // mid-stance — tallest point, leg nearly straight
@@ -2113,8 +2113,8 @@ cyclicGait('Walk', 1.0, {
     [0.58, -15, 36, -16, 48],  // toe-off — ankle plantarflexes over a flat forefoot
     [0.70, 6, 68, -2, 14],     // early swing — the knee folds
     [0.82, 24, 45, 10, 2],     // mid-swing — toes up to clear the turf
-    [0.93, 32, 14, 7, 0],      // terminal swing — the shin reaches out
-    [1.00, 28, 4, 5, 0]
+    [0.93, 31, 13, 6, 0],      // terminal swing — the shin reaches out
+    [1.00, 26.5, 3, 4, 0]
   ],
   /* Left leg is furthest forward across the wrap, so the left arm is furthest
      BACK there. Same elbow lag as the run, a third of the amplitude. */
