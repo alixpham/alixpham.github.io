@@ -143,7 +143,7 @@ const install = await page.evaluate(() => {
 
   const A = window.__ANIM = {
     frames: 0, live: 0, moving: 0, clamped: 0, clipUse: {}, rungUse: {},
-    slip: [], slipRel: [], floor: {}, gazeErr: [], headVsBody: [], gazeWant: [], phases: [], skews: [], banks: [], gaze: 0, gazeN: 0, err: null
+    slip: [], slipRel: [], floor: {}, gazeErr: [], headVsBody: [], gazeWant: [], lean: {}, leanRuns: [], phases: [], skews: [], banks: [], gaze: 0, gazeN: 0, err: null
   };
 
   const rigs = [];
@@ -185,7 +185,17 @@ const install = await page.evaluate(() => {
           const k = (d.b && d.b !== d.a) ? d.a + '+' + d.b : d.a;
           A.rungUse[k] = (A.rungUse[k] || 0) + 1;
           A.skews.push(Math.abs(d.skew));
-          A.banks.push(Math.abs(d.bank || 0));
+          const bk = Math.abs(d.bank || 0);
+          A.banks.push(bk);
+          /* HOW LONG a lean is held, not just how deep it gets. A median is
+             blind to exactly the complaint that matters here: a footballer
+             plants, leans and comes back up inside a step, while a skater
+             holds an edge and carves. Same peak angle, completely different
+             read. Accumulated in SIM time (engine dt), not wall time, because
+             swiftshader renders about twice a second. */
+          const LEANING = 6 * Math.PI / 180;
+          if (bk > LEANING) { A.lean[d.i] = (A.lean[d.i] || 0) + dt; }
+          else if (A.lean[d.i]) { A.leanRuns.push(A.lean[d.i]); A.lean[d.i] = 0; }
           ph.push(d.phase);
         }
       }
@@ -263,6 +273,11 @@ const out = await page.evaluate(() => {
     skewMedianDeg: q(A.skews.map(x => x * 57.2958), 0.5),
     skewP95Deg: q(A.skews.map(x => x * 57.2958), 0.95),
     bankMedianDeg: q(A.banks.map(x => x * 57.2958), 0.5),
+    bankP90Deg: q(A.banks.map(x => x * 57.2958), 0.9),
+    bankP99Deg: q(A.banks.map(x => x * 57.2958), 0.99),
+    bankMaxDeg: A.banks.length ? +(Math.max(...A.banks) * 57.2958).toFixed(1) : null,
+    bankOver8Pct: A.banks.length ? +(100 * A.banks.filter(b => b > 0.1396).length / A.banks.length).toFixed(1) : null,
+    leanHoldMedian: q(A.leanRuns, 0.5), leanHoldP90: q(A.leanRuns, 0.9), leanEpisodes: A.leanRuns.length,
     headYawPct: A.gazeN ? +(100 * A.gaze / A.gazeN).toFixed(1) : null,
     headVsBodyMedian: q(A.headVsBody, 0.5),
     gazeWantMedian: q(A.gazeWant, 0.5),
@@ -296,7 +311,9 @@ row('Gait rate on the clamp', report.rateClampPct + '%', 'guaranteed sliding');
 row('Stride phase spread', report.phaseSpread, '0 = lockstep, 1 = scattered');
 row('Facing-vs-travel (med)', report.skewMedianDeg + ' deg', 'the skate metric');
 row('Facing-vs-travel (p95)', report.skewP95Deg + ' deg', '');
-row('Bank into turns (med)', report.bankMedianDeg + ' deg', '');
+row('Bank (med / p90 / max)', report.bankMedianDeg + ' / ' + report.bankP90Deg + ' / ' + report.bankMaxDeg, 'deg');
+row('Frames banked over 8 deg', report.bankOver8Pct + '%', '');
+row('Lean held (med / p90)', report.leanHoldMedian + ' / ' + report.leanHoldP90, 'sec above 6 deg — a cut is ~0.2-0.4s');
 row('Turn the ball asks for', report.gazeWantMedian + ' deg', 'median, capped at 70');
 row('Turn the neck delivers', report.headVsBodyMedian + ' deg', 'as applied by the renderer');
 row('Gaze lag', report.gazeErrMedianDeg + ' deg', 'median; it eases, it does not snap');

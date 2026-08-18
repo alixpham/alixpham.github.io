@@ -195,6 +195,51 @@ tenth of a stride apart and no contact phase can be resolved — it reported a
 "planted" foot moving at 1.27× the body's own speed. `measure-clip` does that
 job properly, offline.
 
+## A5 — The lean was a carve, not a cut. Fixed.
+
+Reported from watching it: *"banking is too steep and looks like a hockey
+player doing a slow turn."* Correct, and my own earlier report of "3-7 degrees
+median" was measured across every sampled frame including players standing
+still. Over RUNNING frames only:
+
+| | before | after |
+| --- | --- | --- |
+| bank, median | 9.9° | **1.8°** |
+| bank, p90 / max | 15.5° / 15.5° — pinned to the clamp | **8.9° / 9.0°** |
+| running frames past 8° | 55.8% | **19.1%** |
+| lean held, median | 0.6 s | **0.20 s** |
+| lean held, p90 | 1.5 s | **0.85 s** |
+
+A football cut lasts 0.2–0.4 s. Half of every play spent past eight degrees,
+routinely pinned at the ceiling, held for the better part of a second, is a
+hockey rink.
+
+Three causes, all of them in one block, and the third was deliberate:
+
+**`atan(lateral acceleration / g)` is the balance angle of a sustained turn.**
+It is the physics of a speed skater on an edge or a cyclist on a banked curve —
+bodies that carve. A runner does not. Their lateral force arrives in discrete
+foot plants, the legs splay out under a trunk that stays far closer to upright,
+and it is gone by the next step. The balance angle is now scaled to a trunk
+fraction and capped at 9° rather than 15.5°.
+
+**A 0.28 s low-pass on the force.** Added to stop steering noise leaning
+everybody, which it did — but it also delayed the lean past the step that
+earned it and kept it alive afterwards.
+
+**"Attack fast, release slow."** The old comment says so outright: `ease(13)`
+rising, `ease(6)` falling, on the theory that coming out of a cut is a recovery.
+It isn't — pushing off out of a lean is the most violent part of the move, and
+holding the angle afterwards is the single thing that makes it read as a glide.
+
+The replacement is a **washout**: what leans a body is the lateral force minus
+its own slow average, so the *onset* of a cut leans you and merely being in a
+turn does not. A receiver running a curl now settles back toward upright instead
+of holding an edge all the way round. It is the same filter a motion platform
+uses, for the same reason — sustained acceleration is not what a body reads as a
+manoeuvre. A third of the steady component survives, because a hard sustained
+turn is not perfectly upright either. Release is now nearly as quick as attack.
+
 ## Still open
 
 The Walk/Jog limp above. Backpedal's planted foot sweeps unevenly (spread 47% of
