@@ -545,6 +545,29 @@
        the head. */
     var GAZE_YAW_MAX = 1.22;         // ~70 deg — past this a person turns instead
     var GAZE_PITCH_MAX = 0.52;       // ~30 deg up or down
+    /* GIVE UP RATHER THAN PIN, AND NEVER WHIP.
+
+       v3.0 shipped this clamping the desired angle to the nearest limit, which
+       the comment beside it even said it should not do. When the ball is
+       BEHIND a player — which is most of the time for anyone running away from
+       it — the bearing sits near +/-180 degrees and flips sign as it crosses.
+       Clamped, that snaps the target between +70 and -70: a 140-degree swing,
+       triggered by the ball drifting a hand's width across the line directly
+       behind someone. Measured in play: peak head rate 1811 deg/s, p99 633,
+       with 2.5% of frames past 400. A human head tops out near 400 and does
+       not change its mind several times a second. That is the spin.
+
+       Two independent guards, because one of them being wrong should not put a
+       head back on a swivel. Hysteresis decides WHETHER to look: tracking
+       engages inside 60 degrees and is not abandoned until 80, so a target
+       wandering across the boundary cannot chatter, and once abandoned the
+       head returns to neutral instead of straining at a limit. The rate cap
+       decides HOW FAST regardless: no neck moves quicker than this, whatever
+       the target does. */
+    var GAZE_ENGAGE = 1.05;          // 60 deg — near enough to bother looking
+    var GAZE_RELEASE = 1.40;         // 80 deg — past this, look where you run
+    var GAZE_RATE = 5.2;             // rad/s, ~300 deg/s — a brisk head turn
+    var GAZE_PITCH_RATE = 3.0;
     var _gzQ = new THREE.Quaternion(), _gzY = new THREE.Vector3(0, 1, 0), _gzX = new THREE.Vector3(1, 0, 0);
     function gazeAt(P, ud, gp, state, dt) {
       if (!P.nodes) return;
@@ -570,20 +593,33 @@
           var rel = Math.atan2(dy, dx) - gp.faceYaw;
           while (rel > Math.PI) rel -= Math.PI * 2;
           while (rel < -Math.PI) rel += Math.PI * 2;
-          // Beyond the neck's range, stop turning rather than crank it round.
-          wantY = rel > GAZE_YAW_MAX ? GAZE_YAW_MAX : rel < -GAZE_YAW_MAX ? -GAZE_YAW_MAX : rel;
-          // Height: the rig's eyes sit ~1.6 units up; a ball in flight is worth
-          // looking up at, one on the turf worth looking down at.
-          var bz = (b.z || 0);
-          wantP = Math.atan2(bz - 1.55, Math.max(0.6, dist));
-          if (wantP > GAZE_PITCH_MAX) wantP = GAZE_PITCH_MAX;
-          if (wantP < -GAZE_PITCH_MAX) wantP = -GAZE_PITCH_MAX;
+          // Whether to look at all, with a band between the two thresholds so a
+          // target sitting on the edge cannot flick the head on and off.
+          var away = Math.abs(rel);
+          if (ud.gazeOn) { if (away > GAZE_RELEASE) ud.gazeOn = false; }
+          else if (away < GAZE_ENGAGE) ud.gazeOn = true;
+          if (ud.gazeOn) {
+            wantY = rel > GAZE_YAW_MAX ? GAZE_YAW_MAX : rel < -GAZE_YAW_MAX ? -GAZE_YAW_MAX : rel;
+            // Height: the rig's eyes sit ~1.6 units up; a ball in flight is
+            // worth looking up at, one on the turf worth looking down at.
+            var bz = (b.z || 0);
+            wantP = Math.atan2(bz - 1.55, Math.max(0.6, dist));
+            if (wantP > GAZE_PITCH_MAX) wantP = GAZE_PITCH_MAX;
+            if (wantP < -GAZE_PITCH_MAX) wantP = -GAZE_PITCH_MAX;
+          }
+          // else: wantY/wantP stay 0 and the head eases back to straight ahead.
         }
       }
-      // Eased, not snapped: a head takes about a fifth of a second to come round.
+      /* Eased, not snapped — a head takes about a fifth of a second to come
+         round — and then hard-limited in RATE, which is the guarantee. However
+         the target behaves, the neck cannot exceed a speed a neck can reach. */
       var k = 1 - Math.exp(-dt * 7);
-      ud.gazeY += (wantY - ud.gazeY) * k;
-      ud.gazeP += (wantP - ud.gazeP) * k;
+      var dY = (wantY - ud.gazeY) * k, dP = (wantP - ud.gazeP) * k;
+      var limY = GAZE_RATE * dt, limP = GAZE_PITCH_RATE * dt;
+      if (dY > limY) dY = limY; else if (dY < -limY) dY = -limY;
+      if (dP > limP) dP = limP; else if (dP < -limP) dP = -limP;
+      ud.gazeY += dY;
+      ud.gazeP += dP;
       if (Math.abs(ud.gazeY) < 0.004 && Math.abs(ud.gazeP) < 0.004) return;
 
       // Neck carries the smaller share; the head finishes the turn.
@@ -932,7 +968,7 @@
           ud: { idx: idx, yaw: seedYaw, celebT: 0, _wasPulled: false, _pulled: false, _threw: false,
                 _caught: false, _juked: false, _spiked: false, clip: 'idle',
                 carryKey: '', carrySide: 0, carryW: 0, carryAmp: 0, grabW: 0,
-                pvx: 0, pvy: 0, fLat: 0, fHold: 0, fTan: 0, bank: 0, pitch: 0, lead: 0, gazeY: 0, gazeP: 0, fatigue: 0 }
+                pvx: 0, pvy: 0, fLat: 0, fHold: 0, fTan: 0, bank: 0, pitch: 0, lead: 0, gazeY: 0, gazeP: 0, gazeOn: false, fatigue: 0 }
         });
       });
       playersRef = players;

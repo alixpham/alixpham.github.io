@@ -143,7 +143,7 @@ const install = await page.evaluate(() => {
 
   const A = window.__ANIM = {
     frames: 0, live: 0, moving: 0, clamped: 0, clipUse: {}, rungUse: {},
-    slip: [], slipRel: [], floor: {}, gazeErr: [], headVsBody: [], gazeWant: [], lean: {}, leanRuns: [], stam: [], fatigue: [], phases: [], skews: [], banks: [], gaze: 0, gazeN: 0, err: null
+    slip: [], slipRel: [], floor: {}, gazeErr: [], headVsBody: [], gazeWant: [], lean: {}, leanRuns: [], stam: [], fatigue: [], gazeRate: [], lastGaze: {}, lastDir: {}, reversals: 0, rateN: 0, phases: [], skews: [], banks: [], gaze: 0, gazeN: 0, err: null
   };
 
   const rigs = [];
@@ -231,6 +231,20 @@ const install = await page.evaluate(() => {
           const CAP = 1.22;
           want = want > CAP ? CAP : want < -CAP ? -CAP : want;
           const got = dbg[i].gaze || 0;
+          /* How FAST the head is turning, and how often it reverses. A human
+             head tops out near 350-400 deg/s and does not change its mind
+             several times a second; anything past that is a spin, and a
+             median cannot see it. */
+          const prevG = A.lastGaze[i];
+          A.lastGaze[i] = got;
+          if (prevG != null && dt > 0) {
+            const rate = Math.abs(got - prevG) / dt * 57.2958;
+            A.gazeRate.push(rate);
+            const dir = Math.sign(got - prevG);
+            if (dir && A.lastDir[i] && dir !== A.lastDir[i] && Math.abs(got - prevG) > 0.05) A.reversals++;
+            if (dir) A.lastDir[i] = dir;
+            A.rateN++;
+          }
           A.gazeWant.push(Math.abs(want) * 57.2958);
           A.headVsBody.push(Math.abs(got) * 57.2958);
           A.gazeErr.push(Math.abs(want - got) * 57.2958);
@@ -278,6 +292,10 @@ const out = await page.evaluate(() => {
     bankP99Deg: q(A.banks.map(x => x * 57.2958), 0.99),
     bankMaxDeg: A.banks.length ? +(Math.max(...A.banks) * 57.2958).toFixed(1) : null,
     bankOver8Pct: A.banks.length ? +(100 * A.banks.filter(b => b > 0.1396).length / A.banks.length).toFixed(1) : null,
+    gazeRateP50: q(A.gazeRate, 0.5), gazeRateP99: q(A.gazeRate, 0.99),
+    gazeRateMax: A.gazeRate.length ? +Math.max(...A.gazeRate).toFixed(0) : null,
+    gazeReversalsPerSec: A.rateN ? +(A.reversals / (A.rateN * (1 / 20))).toFixed(2) : null,
+    gazeOver400Pct: A.gazeRate.length ? +(100 * A.gazeRate.filter(r => r > 400).length / A.gazeRate.length).toFixed(1) : null,
     stamMedian: q(A.stam, 0.5), stamP10: q(A.stam, 0.1),
     fatigueMedian: q(A.fatigue, 0.5), fatigueP90: q(A.fatigue, 0.9),
     fatiguedPct: A.fatigue.length ? +(100 * A.fatigue.filter(f => f > 0.15).length / A.fatigue.length).toFixed(1) : null,
@@ -322,6 +340,8 @@ row('Turn the ball asks for', report.gazeWantMedian + ' deg', 'median, capped at
 row('Turn the neck delivers', report.headVsBodyMedian + ' deg', 'as applied by the renderer');
 row('Gaze lag', report.gazeErrMedianDeg + ' deg', 'median; it eases, it does not snap');
 row('Heads on the ball', report.gazeOnBallPct + '%', 'within 12 deg of the ask');
+row('Gaze rate (p50/p99/max)', report.gazeRateP50 + ' / ' + report.gazeRateP99 + ' / ' + report.gazeRateMax, 'deg/s; a head tops out ~400');
+row('Gaze frames over 400/s', report.gazeOver400Pct + '%', 'physically impossible');
 row('Stamina (med / p10)', report.stamMedian + ' / ' + report.stamP10, '1 = fresh');
 row('Fatigue shown (med/p90)', report.fatigueMedian + ' / ' + report.fatigueP90, '0 = upright, 1 = blown');
 row('Frames visibly tired', report.fatiguedPct + '%', 'above 0.15 of full expression');
