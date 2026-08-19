@@ -367,3 +367,35 @@ face texture is left alone; nothing overwrites a material that already has a map
 | gait clips | unchanged (Walk 1.78, Run 6.09, Sprint 8.98 m/s) |
 | simulation | unchanged — 64.5 plays/game, 44% completions, 0 unresolved |
 | console / page errors | 0 |
+
+## B3 — v3.0 shipped the heads on a swivel. Fixed in 3.0.1.
+
+Reported straight after release: *"the players heads look crazy: they spin in a
+totally unnatural way."* Correct, and the bug was mine, sitting in the gaze
+layer since v2.33 with a comment beside it describing the behaviour the code did
+not implement — *"beyond the neck's range, stop turning rather than crank it
+round"* — while the code clamped to the nearest limit instead.
+
+When the ball is BEHIND a player, which is most of the time for anyone running
+away from it, the bearing sits near ±180° and flips sign as it crosses. Clamped,
+that snaps the target between +70° and −70°: a 140° swing, set off by the ball
+drifting a hand's width across the line directly behind someone.
+
+| | v3.0 | 3.0.1 |
+| --- | --- | --- |
+| peak head rate | **1811 °/s** | **298 °/s** |
+| p99 head rate | 633 °/s | 199 °/s |
+| frames past 400 °/s | 2.5% | **0%** |
+
+A human head tops out near 400 °/s and does not change its mind several times a
+second. Two independent guards, because one of them being wrong should not put a
+head back on a swivel: **hysteresis** decides whether to look at all — tracking
+engages inside 60° and is not abandoned until 80°, so a target wandering across
+the boundary cannot chatter, and once abandoned the head returns to neutral
+rather than straining at a limit — and a **rate cap** decides how fast, whatever
+the target does.
+
+The lesson for the probe: `animcheck` was reporting gaze *lag* (1.2° — excellent)
+and *accuracy* (85% within 12° — excellent) and both were true. Neither can see
+a head that arrives correctly and violently. It measures angular rate and the
+fraction of physically impossible frames now.
