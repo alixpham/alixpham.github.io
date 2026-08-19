@@ -516,14 +516,17 @@
        sense as `lead`. Multiplied onto what the clip wrote rather than slerped
        toward a pose: this is an offset, not a destination, and the gait's own
        counter-rotation underneath it has to survive. */
+    /* The head still leads a cut, but it was taking 0.85 of the lead on top of
+   whatever the gaze was already asking of the same joint. */
+    var LEAD_CHEST_SHARE = 0.55, LEAD_HEAD_SHARE = 0.55;
     var _leadQ = new THREE.Quaternion(), _leadAx = new THREE.Vector3(0, 1, 0);
     function leadTrunk(P, lead) {
       if (!P.nodes) return;
       var chest = P.nodes.Chest, head = P.nodes.Head;
-      if (chest) { _leadQ.setFromAxisAngle(_leadAx, lead * 0.55); chest.quaternion.multiply(_leadQ); }
+      if (chest) { _leadQ.setFromAxisAngle(_leadAx, lead * LEAD_CHEST_SHARE); chest.quaternion.multiply(_leadQ); }
       // The head goes furthest and gets there first — it is looking at where
       // the player has decided to be, which is the whole reason the rest turns.
-      if (head) { _leadQ.setFromAxisAngle(_leadAx, lead * 0.85); head.quaternion.multiply(_leadQ); }
+      if (head) { _leadQ.setFromAxisAngle(_leadAx, lead * LEAD_HEAD_SHARE); head.quaternion.multiply(_leadQ); }
     }
 
     /* ---- GAZE ----------------------------------------------------------
@@ -543,8 +546,24 @@
        actually do: past about 70 degrees a person turns their shoulders
        instead, so beyond that the gaze simply gives up rather than unscrewing
        the head. */
-    var GAZE_YAW_MAX = 1.22;         // ~70 deg — past this a person turns instead
-    var GAZE_PITCH_MAX = 0.52;       // ~30 deg up or down
+    /* HOW FAR A NECK GOES WHILE RUNNING, which is not how far a neck goes.
+
+       70 degrees is the anatomical limit of the whole cervical spine at full
+       strain, standing still, and shipping it as the working range was the
+       mistake: measured in play the head reached 63 degrees off the chest at
+       p99 and 65 at worst, held, on a torso that was not turning with it.
+       Nobody runs like that. A glance over the shoulder while sprinting is
+       25-30 degrees and the rest of the turn comes from the trunk.
+
+       The layers also stacked without anyone adding them up. The head bone
+       alone carried the gaze's 62% share (43 degrees), leadTrunk's 0.85 of the
+       turn lead (15), and whatever yaw the clip had baked (about 9) — and the
+       neck carried another 27 on top of that. Each was defensible on its own.
+       The shares are named constants now and reported through debugPlayers, so
+       the total is a number somebody can look at instead of three reasonable
+       decisions in different functions. */
+    var GAZE_YAW_MAX = 0.50;         // ~29 deg — a glance, not a strain
+    var GAZE_PITCH_MAX = 0.24;       // ~14 deg up or down
     /* GIVE UP RATHER THAN PIN, AND NEVER WHIP.
 
        v3.0 shipped this clamping the desired angle to the nearest limit, which
@@ -564,6 +583,7 @@
        head returns to neutral instead of straining at a limit. The rate cap
        decides HOW FAST regardless: no neck moves quicker than this, whatever
        the target does. */
+    var GAZE_NECK_SHARE = 0.38, GAZE_HEAD_SHARE = 0.62;
     var GAZE_ENGAGE = 1.05;          // 60 deg — near enough to bother looking
     var GAZE_RELEASE = 1.40;         // 80 deg — past this, look where you run
     var GAZE_RATE = 5.2;             // rad/s, ~300 deg/s — a brisk head turn
@@ -624,11 +644,11 @@
 
       // Neck carries the smaller share; the head finishes the turn.
       if (neck) {
-        _gzQ.setFromAxisAngle(_gzY, ud.gazeY * 0.38); neck.quaternion.multiply(_gzQ);
+        _gzQ.setFromAxisAngle(_gzY, ud.gazeY * GAZE_NECK_SHARE); neck.quaternion.multiply(_gzQ);
         _gzQ.setFromAxisAngle(_gzX, -ud.gazeP * 0.35); neck.quaternion.multiply(_gzQ);
       }
       if (head) {
-        _gzQ.setFromAxisAngle(_gzY, ud.gazeY * 0.62); head.quaternion.multiply(_gzQ);
+        _gzQ.setFromAxisAngle(_gzY, ud.gazeY * GAZE_HEAD_SHARE); head.quaternion.multiply(_gzQ);
         _gzQ.setFromAxisAngle(_gzX, -ud.gazeP * 0.65); head.quaternion.multiply(_gzQ);
       }
     }
@@ -2033,7 +2053,13 @@
             if (Math.abs(skew) > Math.PI / 2) skew = (skew > 0 ? Math.PI : -Math.PI) - skew;
           }
           out.push({ f: frame, i: i, speed: sp, skew: skew,
-                     bank: e.ud.bank, pitch: e.ud.pitch, lead: e.ud.lead, gaze: e.ud.gazeY, fatigue: e.ud.fatigue, stam: (gp.stam == null ? 1 : gp.stam),
+                     bank: e.ud.bank, pitch: e.ud.pitch, lead: e.ud.lead, gaze: e.ud.gazeY,
+                     /* What this renderer actually adds to the head and neck,
+                        summed across every layer that writes them. The layers
+                        were each reasonable alone and nobody had added them up. */
+                     headYaw: e.ud.gazeY * GAZE_HEAD_SHARE + e.ud.lead * LEAD_HEAD_SHARE,
+                     gazeCap: GAZE_YAW_MAX, gazeOn: !!e.ud.gazeOn,
+                     neckYaw: e.ud.gazeY * GAZE_NECK_SHARE, fatigue: e.ud.fatigue, stam: (gp.stam == null ? 1 : gp.stam),
                      a: g ? g.a : '-', b: g ? g.b : '-', blend: g ? g.blend : 0,
                      rate: g ? g.rate : 0, phase: g ? g.phase : 0, w: g ? g.weight : 0 });
         }

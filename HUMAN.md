@@ -399,3 +399,55 @@ The lesson for the probe: `animcheck` was reporting gaze *lag* (1.2° — excell
 and *accuracy* (85% within 12° — excellent) and both were true. Neither can see
 a head that arrives correctly and violently. It measures angular rate and the
 fraction of physically impossible frames now.
+
+## B4 — The neck's range was the anatomical limit, not a running range. 3.0.2.
+
+Reported after 3.0.1: *"players neck DO NOT BEHAVE NATURALLY, range is way way
+way too big."* Right again, and 3.0.1 had only fixed the *speed* of the turn,
+not how far it went.
+
+70° is the full cervical spine at maximum strain, standing still. Shipping it as
+the working range meant the head reached **63° off the chest at p99 and 65° at
+worst, held, while running, on a torso that was not turning with it.** A glance
+over the shoulder at speed is 25–30°; the rest of a real turn comes from the
+trunk.
+
+The layers had also never been added up. Three functions each wrote the head
+with a defensible amount and nothing owned the total:
+
+| layer | head bone |
+| --- | --- |
+| gaze (62% share of a 70° cap) | 43° |
+| `leadTrunk` (0.85 of the turn lead) | 15° |
+| the clip's own baked head yaw | ~9° |
+| …and the neck carried, separately | 27° |
+
+| | 3.0.1 | 3.0.2 |
+| --- | --- | --- |
+| head-on-chest, p50 | 8.2° | **3.8°** |
+| head-on-chest, p99 | 63.2° | **32.7°** |
+| worst seen | 65.5° | **34.0°** |
+
+Cap cut to 29°, pitch to 14°, and `leadTrunk`'s share of the head from 0.85 to
+0.55. The shares are named constants now and the renderer publishes the summed
+total through `debugPlayers`, so the next person to add a layer can see what is
+already there rather than adding a fourth reasonable number to three others.
+
+### Two probe corrections that came out of this
+
+**The 941°/s I reported was partly my own instrument.** `field3d` rebuilds every
+player between plays and their gaze state restarts at zero; the probe indexes by
+roster slot, so it read that reset as a head snap. Cleared on phase change, the
+true peak is 298°/s — exactly the rate cap, holding.
+
+**And the tracking score was punishing correct behaviour.** A defender with the
+ball 120° behind him is *right* not to look, but the metric counted the
+untouched neck as lag, which made a working release read as a regression. It
+scores only frames where the player is actually tracking now: 60.8% of frames
+engaged, and among those, 90.9% of heads within 12° of the ask.
+
+I also had this number in front of me two rounds ago — the bone reconstruction
+that read "94° of neck turn against a 70° cap" — and dismissed it as an
+instrument error because it looked impossible. The total was real; what the
+probe could not do was attribute it to a layer. Impossible readings deserve a
+second look before they are filed as noise.

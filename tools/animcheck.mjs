@@ -143,7 +143,7 @@ const install = await page.evaluate(() => {
 
   const A = window.__ANIM = {
     frames: 0, live: 0, moving: 0, clamped: 0, clipUse: {}, rungUse: {},
-    slip: [], slipRel: [], floor: {}, gazeErr: [], headVsBody: [], gazeWant: [], lean: {}, leanRuns: [], stam: [], fatigue: [], gazeRate: [], lastGaze: {}, lastDir: {}, reversals: 0, rateN: 0, phases: [], skews: [], banks: [], gaze: 0, gazeN: 0, err: null
+    slip: [], slipRel: [], floor: {}, gazeErr: [], headVsBody: [], gazeWant: [], lean: {}, leanRuns: [], stam: [], fatigue: [], gazeRate: [], lastPhase2: null, engaged: 0, engagedN: 0, headTot: [], neckTot: [], chainTot: [], lastGaze: {}, lastDir: {}, reversals: 0, rateN: 0, phases: [], skews: [], banks: [], gaze: 0, gazeN: 0, err: null
   };
 
   const rigs = [];
@@ -164,6 +164,11 @@ const install = await page.evaluate(() => {
     inner.call(this, s);
     try {
       A.frames++;
+      /* field3d rebuilds every player between plays, and their gaze state
+         starts again at zero. This probe indexes by roster slot, so it read
+         that reset as a 941 deg/s head snap — the renderer never turned
+         anything, a new object simply appeared where the old one was. */
+      if (s.phase !== A.lastPhase2) { A.lastGaze = {}; A.lastDir = {}; A.lastPhase2 = s.phase; }
       if (s.phase !== 'live') return;
       A.live++;
       const dt = e._dt || 1 / 60;
@@ -228,9 +233,14 @@ const install = await page.evaluate(() => {
           let want = Math.atan2(dy, dx) - gp.faceYaw;
           while (want > Math.PI) want -= 2 * Math.PI;
           while (want < -Math.PI) want += 2 * Math.PI;
-          const CAP = 1.22;
+          const CAP = dbg[i].gazeCap != null ? dbg[i].gazeCap : 1.22;
           want = want > CAP ? CAP : want < -CAP ? -CAP : want;
           const got = dbg[i].gaze || 0;
+          if (dbg[i].headYaw != null) {
+            A.headTot.push(Math.abs(dbg[i].headYaw) * 57.2958);
+            A.neckTot.push(Math.abs(dbg[i].neckYaw || 0) * 57.2958);
+            A.chainTot.push((Math.abs(dbg[i].headYaw) + Math.abs(dbg[i].neckYaw || 0)) * 57.2958);
+          }
           /* How FAST the head is turning, and how often it reverses. A human
              head tops out near 350-400 deg/s and does not change its mind
              several times a second; anything past that is a spin, and a
@@ -245,6 +255,14 @@ const install = await page.evaluate(() => {
             if (dir) A.lastDir[i] = dir;
             A.rateN++;
           }
+          /* Only score tracking when the player is actually tracking. A
+             defender with the ball 120 degrees behind him is CORRECTLY not
+             looking, and counting that as lag made a working release look
+             like a regression — the ask reads as the clamp while the neck
+             sensibly delivers nothing. */
+          A.engagedN++;
+          if (!dbg[i].gazeOn) continue;
+          A.engaged++;
           A.gazeWant.push(Math.abs(want) * 57.2958);
           A.headVsBody.push(Math.abs(got) * 57.2958);
           A.gazeErr.push(Math.abs(want - got) * 57.2958);
@@ -292,6 +310,11 @@ const out = await page.evaluate(() => {
     bankP99Deg: q(A.banks.map(x => x * 57.2958), 0.99),
     bankMaxDeg: A.banks.length ? +(Math.max(...A.banks) * 57.2958).toFixed(1) : null,
     bankOver8Pct: A.banks.length ? +(100 * A.banks.filter(b => b > 0.1396).length / A.banks.length).toFixed(1) : null,
+    engagedPct: A.engagedN ? +(100 * A.engaged / A.engagedN).toFixed(1) : null,
+    headYawP50: q(A.headTot, 0.5), headYawP99: q(A.headTot, 0.99),
+    neckYawP99: q(A.neckTot, 0.99),
+    chainP50: q(A.chainTot, 0.5), chainP99: q(A.chainTot, 0.99),
+    chainMax: A.chainTot.length ? +Math.max(...A.chainTot).toFixed(1) : null,
     gazeRateP50: q(A.gazeRate, 0.5), gazeRateP99: q(A.gazeRate, 0.99),
     gazeRateMax: A.gazeRate.length ? +Math.max(...A.gazeRate).toFixed(0) : null,
     gazeReversalsPerSec: A.rateN ? +(A.reversals / (A.rateN * (1 / 20))).toFixed(2) : null,
@@ -336,10 +359,13 @@ row('Facing-vs-travel (p95)', report.skewP95Deg + ' deg', '');
 row('Bank (med / p90 / max)', report.bankMedianDeg + ' / ' + report.bankP90Deg + ' / ' + report.bankMaxDeg, 'deg');
 row('Frames banked over 8 deg', report.bankOver8Pct + '%', '');
 row('Lean held (med / p90)', report.leanHoldMedian + ' / ' + report.leanHoldP90, 'sec above 6 deg — a cut is ~0.2-0.4s');
-row('Turn the ball asks for', report.gazeWantMedian + ' deg', 'median, capped at 70');
+row('Frames tracking the ball', report.engagedPct + '%', 'the rest is correctly out of range');
+row('Turn the ball asks for', report.gazeWantMedian + ' deg', 'median, among tracking frames');
 row('Turn the neck delivers', report.headVsBodyMedian + ' deg', 'as applied by the renderer');
 row('Gaze lag', report.gazeErrMedianDeg + ' deg', 'median; it eases, it does not snap');
 row('Heads on the ball', report.gazeOnBallPct + '%', 'within 12 deg of the ask');
+row('Head-on-chest (p50/p99)', report.chainP50 + ' / ' + report.chainP99, 'deg, neck+skull, all layers');
+row('  worst seen', report.chainMax + ' deg', 'a glance is 25-30; 70 is full strain, standing');
 row('Gaze rate (p50/p99/max)', report.gazeRateP50 + ' / ' + report.gazeRateP99 + ' / ' + report.gazeRateMax, 'deg/s; a head tops out ~400');
 row('Gaze frames over 400/s', report.gazeOver400Pct + '%', 'physically impossible');
 row('Stamina (med / p10)', report.stamMedian + ' / ' + report.stamP10, '1 = fresh');
