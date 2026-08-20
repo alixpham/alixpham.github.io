@@ -143,7 +143,7 @@ const install = await page.evaluate(() => {
 
   const A = window.__ANIM = {
     frames: 0, live: 0, moving: 0, clamped: 0, clipUse: {}, rungUse: {},
-    slip: [], slipRel: [], floor: {}, gazeErr: [], headVsBody: [], gazeWant: [], lean: {}, leanRuns: [], stam: [], fatigue: [], gazeRate: [], lastPhase2: null, engaged: 0, engagedN: 0, headTot: [], neckTot: [], chainTot: [], lastGaze: {}, lastDir: {}, reversals: 0, rateN: 0, phases: [], skews: [], banks: [], gaze: 0, gazeN: 0, err: null
+    slip: [], slipRel: [], floor: {}, gazeErr: [], headVsBody: [], gazeWant: [], lean: {}, leanRuns: [], stam: [], fatigue: [], gazeRate: [], lastPhase2: null, boneYaw: [], headOnly: [], neckOnly: [], bonePitch: [], boneRoll: [], engaged: 0, engagedN: 0, headTot: [], neckTot: [], chainTot: [], lastGaze: {}, lastDir: {}, reversals: 0, rateN: 0, phases: [], skews: [], banks: [], gaze: 0, gazeN: 0, err: null
   };
 
   const rigs = [];
@@ -209,6 +209,31 @@ const install = await page.evaluate(() => {
         let sx = 0, sy = 0;
         for (const p of ph) { sx += Math.cos(p * 2 * Math.PI); sy += Math.sin(p * 2 * Math.PI); }
         A.phases.push(1 - Math.hypot(sx, sy) / ph.length);
+      }
+
+      /* The head bone AS IT ENDS UP, clip included — the renderer's own
+         telemetry can only report what the renderer added, and a clip with a
+         big baked head motion underneath would not show there at all. */
+      for (let i = 0; i < rigs.length; i++) {
+        const h = rigs[i].Head, nk = rigs[i].Neck;
+        if (!h) continue;
+        EU.setFromQuaternion(h.quaternion, 'YXZ');
+        let ny = 0, nx = 0, nz = 0;
+        if (nk) { const E2 = EU.clone().setFromQuaternion(nk.quaternion, 'YXZ'); ny = E2.y; nx = E2.x; nz = E2.z; }
+        A.headOnly.push(Math.abs(EU.y) * 57.2958);
+        A.neckOnly.push(Math.abs(ny) * 57.2958);
+        if (Math.abs(EU.y + ny) * 57.2958 > 100) {
+          A.bigSamples = A.bigSamples || [];
+          if (A.bigSamples.length < 12) A.bigSamples.push({
+            head: +(EU.y * 57.2958).toFixed(0), neck: +(ny * 57.2958).toFixed(0),
+            pitch: +(EU.x * 57.2958).toFixed(0),
+            applied: +(((dbg[i] && dbg[i].headYaw) || 0) * 57.2958).toFixed(0),
+            oneShot: !!(dbg[i] && dbg[i].oneShot), gait: dbg[i] ? dbg[i].a : '?', w: dbg[i] ? +dbg[i].w.toFixed(2) : 0
+          });
+        }
+        A.boneYaw.push(Math.abs(EU.y + ny) * 57.2958);
+        A.bonePitch.push(Math.abs(EU.x + nx) * 57.2958);
+        A.boneRoll.push(Math.abs(EU.z + nz) * 57.2958);
       }
 
       /* ---- is the head turning toward the ball? --------------------------
@@ -310,6 +335,11 @@ const out = await page.evaluate(() => {
     bankP99Deg: q(A.banks.map(x => x * 57.2958), 0.99),
     bankMaxDeg: A.banks.length ? +(Math.max(...A.banks) * 57.2958).toFixed(1) : null,
     bankOver8Pct: A.banks.length ? +(100 * A.banks.filter(b => b > 0.1396).length / A.banks.length).toFixed(1) : null,
+    headOnlyP99: q(A.headOnly, 0.99), headOnlyMax: A.headOnly.length ? +Math.max(...A.headOnly).toFixed(1) : null,
+    neckOnlyP99: q(A.neckOnly, 0.99), neckOnlyMax: A.neckOnly.length ? +Math.max(...A.neckOnly).toFixed(1) : null,
+    bigSamples: A.bigSamples || [],
+    boneYawP99: q(A.boneYaw, 0.99), boneYawMax: A.boneYaw.length ? +Math.max(...A.boneYaw).toFixed(1) : null,
+    bonePitchP99: q(A.bonePitch, 0.99), boneRollP99: q(A.boneRoll, 0.99),
     engagedPct: A.engagedN ? +(100 * A.engaged / A.engagedN).toFixed(1) : null,
     headYawP50: q(A.headTot, 0.5), headYawP99: q(A.headTot, 0.99),
     neckYawP99: q(A.neckTot, 0.99),
@@ -366,6 +396,10 @@ row('Gaze lag', report.gazeErrMedianDeg + ' deg', 'median; it eases, it does not
 row('Heads on the ball', report.gazeOnBallPct + '%', 'within 12 deg of the ask');
 row('Head-on-chest (p50/p99)', report.chainP50 + ' / ' + report.chainP99, 'deg, neck+skull, all layers');
 row('  worst seen', report.chainMax + ' deg', 'a glance is 25-30; 70 is full strain, standing');
+row('BONE yaw (p99/max)', report.boneYawP99 + ' / ' + report.boneYawMax, 'deg, neck+head as rendered');
+row('  head only (p99/max)', report.headOnlyP99 + ' / ' + report.headOnlyMax, 'deg');
+row('  neck only (p99/max)', report.neckOnlyP99 + ' / ' + report.neckOnlyMax, 'deg');
+row('BONE pitch / roll (p99)', report.bonePitchP99 + ' / ' + report.boneRollP99, 'deg — should be clip only');
 row('Gaze rate (p50/p99/max)', report.gazeRateP50 + ' / ' + report.gazeRateP99 + ' / ' + report.gazeRateMax, 'deg/s; a head tops out ~400');
 row('Gaze frames over 400/s', report.gazeOver400Pct + '%', 'physically impossible');
 row('Stamina (med / p10)', report.stamMedian + ' / ' + report.stamP10, '1 = fresh');
@@ -386,3 +420,4 @@ if (!report.clipWrapAttached || !Object.keys(report.clipUse).length) {
 }
 if (report.probeError) console.log('\n  probe error: ' + report.probeError);
 console.log('');
+if (report.bigSamples && report.bigSamples.length) { console.log('  samples over 100 deg:'); for (const b of report.bigSamples) console.log('    ' + JSON.stringify(b)); }

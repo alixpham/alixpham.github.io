@@ -524,9 +524,13 @@
       if (!P.nodes) return;
       var chest = P.nodes.Chest, head = P.nodes.Head;
       if (chest) { _leadQ.setFromAxisAngle(_leadAx, lead * LEAD_CHEST_SHARE); chest.quaternion.multiply(_leadQ); }
-      // The head goes furthest and gets there first — it is looking at where
-      // the player has decided to be, which is the whole reason the rest turns.
-      if (head) { _leadQ.setFromAxisAngle(_leadAx, lead * LEAD_HEAD_SHARE); head.quaternion.multiply(_leadQ); }
+      /* The head is NOT written here any more. It used to take 0.85 of the
+         lead — later 0.55 — on top of whatever the gaze was already asking of
+         the same joint, and with the fatigue layer adding a third rotation
+         there was no single place that knew what the head was doing. The lead
+         is handed to the head-turn budget below instead, which is the one
+         writer, so the total is clamped once and cannot be exceeded by adding
+         another well-behaved layer. */
     }
 
     /* ---- GAZE ----------------------------------------------------------
@@ -562,8 +566,8 @@
        The shares are named constants now and reported through debugPlayers, so
        the total is a number somebody can look at instead of three reasonable
        decisions in different functions. */
-    var GAZE_YAW_MAX = 0.50;         // ~29 deg — a glance, not a strain
-    var GAZE_PITCH_MAX = 0.24;       // ~14 deg up or down
+    var GAZE_YAW_MAX = 1.396;        // 80 deg — the asked-for limit
+    var HEAD_YAW_LIMIT = 1.396;      // ...and the hard ceiling on the SUM of every layer
     /* GIVE UP RATHER THAN PIN, AND NEVER WHIP.
 
        v3.0 shipped this clamping the desired angle to the nearest limit, which
@@ -587,14 +591,13 @@
     var GAZE_ENGAGE = 1.05;          // 60 deg — near enough to bother looking
     var GAZE_RELEASE = 1.40;         // 80 deg — past this, look where you run
     var GAZE_RATE = 5.2;             // rad/s, ~300 deg/s — a brisk head turn
-    var GAZE_PITCH_RATE = 3.0;
-    var _gzQ = new THREE.Quaternion(), _gzY = new THREE.Vector3(0, 1, 0), _gzX = new THREE.Vector3(1, 0, 0);
-    function gazeAt(P, ud, gp, state, dt) {
+    var _gzQ = new THREE.Quaternion(), _gzY = new THREE.Vector3(0, 1, 0);
+    function gazeAt(P, ud, gp, state, dt, lead) {
       if (!P.nodes) return;
       var neck = P.nodes.Neck, head = P.nodes.Head;
       if (!neck && !head) return;
 
-      var wantY = 0, wantP = 0;
+      var wantY = 0;
       var b = state.ball;
       /* The carrier is the one person who should NOT be looking at the ball —
          it is in their hands, and they are reading the field in front of them.
@@ -620,12 +623,9 @@
           else if (away < GAZE_ENGAGE) ud.gazeOn = true;
           if (ud.gazeOn) {
             wantY = rel > GAZE_YAW_MAX ? GAZE_YAW_MAX : rel < -GAZE_YAW_MAX ? -GAZE_YAW_MAX : rel;
-            // Height: the rig's eyes sit ~1.6 units up; a ball in flight is
-            // worth looking up at, one on the turf worth looking down at.
-            var bz = (b.z || 0);
-            wantP = Math.atan2(bz - 1.55, Math.max(0.6, dist));
-            if (wantP > GAZE_PITCH_MAX) wantP = GAZE_PITCH_MAX;
-            if (wantP < -GAZE_PITCH_MAX) wantP = -GAZE_PITCH_MAX;
+            // No pitch. A head that tracks the ball up and down as well as
+            // side to side is the half of this that looked wrong, and a
+            // running player does not do it with their neck anyway.
           }
           // else: wantY/wantP stay 0 and the head eases back to straight ahead.
         }
@@ -634,23 +634,55 @@
          round — and then hard-limited in RATE, which is the guarantee. However
          the target behaves, the neck cannot exceed a speed a neck can reach. */
       var k = 1 - Math.exp(-dt * 7);
-      var dY = (wantY - ud.gazeY) * k, dP = (wantP - ud.gazeP) * k;
-      var limY = GAZE_RATE * dt, limP = GAZE_PITCH_RATE * dt;
+      var dY = (wantY - ud.gazeY) * k;
+      var limY = GAZE_RATE * dt;
       if (dY > limY) dY = limY; else if (dY < -limY) dY = -limY;
-      if (dP > limP) dP = limP; else if (dP < -limP) dP = -limP;
       ud.gazeY += dY;
-      ud.gazeP += dP;
-      if (Math.abs(ud.gazeY) < 0.004 && Math.abs(ud.gazeP) < 0.004) return;
+      if (Math.abs(ud.gazeY) < 0.004 && Math.abs(lead) < 0.004) return;
 
-      // Neck carries the smaller share; the head finishes the turn.
+      /* LEFT AND RIGHT ONLY, AND ONE PLACE THAT DOES IT.
+
+         Three separate functions used to write this joint — the gaze in yaw
+         AND pitch, leadTrunk in yaw, the fatigue layer in pitch — each with a
+         defensible amount and none of them aware of the others. Tuning the
+         amplitudes down twice did not fix it, because the problem was never
+         one amplitude: it was that nothing owned the sum, and two of the three
+         were tipping the skull up and down while it turned.
+
+         So the head now does exactly one thing. A single yaw, about the bone's
+         own Y, applied in a single place, with the turn lead folded into the
+         same budget and the total hard-limited to 80 degrees either side. No
+         pitch, no roll, no second writer. Whatever the clip has baked survives
+         underneath — that is what keeps the eyes level against a leaning
+         trunk — but nothing this renderer adds can tilt a head again. */
+      var total = ud.gazeY + lead * LEAD_HEAD_SHARE;
+      if (total > HEAD_YAW_LIMIT) total = HEAD_YAW_LIMIT;
+      else if (total < -HEAD_YAW_LIMIT) total = -HEAD_YAW_LIMIT;
+      ud.headYaw = total;
+
+      /* COMPOSE THE NECK FROM ITS REST POSE, DO NOT MULTIPLY ONTO IT.
+
+         This is what was actually wrong with the heads, and it was not the
+         range. Layering after the mixer works because the mixer rewrites the
+         bone every frame, so multiplying an offset onto it biases a fresh
+         value. NO CLIP ANIMATES THE NECK — the .glb has tracks for Hips,
+         Spine, Chest and Head and none for Neck — so nothing ever reset it,
+         and this multiply compounded on its own output frame after frame.
+
+         Measured before the fix, consecutive samples off one player's neck:
+         88, 93, 98, 103, 108, 113, 119, 124, 128 degrees, still climbing,
+         while the offset being applied was eight. It wound up like a spring
+         and topped out at 179. That is the spin, it has been there since the
+         gaze shipped in v2.33, and it is why cutting the range twice changed
+         nothing — a smaller offset only made it wind up more slowly.
+
+         The head is genuinely fine to multiply: the mixer does write it. */
       if (neck) {
-        _gzQ.setFromAxisAngle(_gzY, ud.gazeY * GAZE_NECK_SHARE); neck.quaternion.multiply(_gzQ);
-        _gzQ.setFromAxisAngle(_gzX, -ud.gazeP * 0.35); neck.quaternion.multiply(_gzQ);
+        if (!ud.neckRest) ud.neckRest = neck.quaternion.clone();
+        _gzQ.setFromAxisAngle(_gzY, total * GAZE_NECK_SHARE);
+        neck.quaternion.copy(ud.neckRest).multiply(_gzQ);
       }
-      if (head) {
-        _gzQ.setFromAxisAngle(_gzY, ud.gazeY * GAZE_HEAD_SHARE); head.quaternion.multiply(_gzQ);
-        _gzQ.setFromAxisAngle(_gzX, -ud.gazeP * 0.65); head.quaternion.multiply(_gzQ);
-      }
+      if (head) { _gzQ.setFromAxisAngle(_gzY, total * GAZE_HEAD_SHARE); head.quaternion.multiply(_gzQ); }
     }
 
     /* ---- FATIGUE ---------------------------------------------------------
@@ -689,9 +721,11 @@
       var k = resting ? 1.55 : 1.0;
       if (n.Spine) { _ftQ.setFromAxisAngle(_ftX, 0.115 * f * k); n.Spine.quaternion.multiply(_ftQ); }
       if (n.Chest) { _ftQ.setFromAxisAngle(_ftX, 0.070 * f * k); n.Chest.quaternion.multiply(_ftQ); }
-      // The head drops, and then some of it comes back because you still have
-      // to see where you are going.
-      if (n.Head)  { _ftQ.setFromAxisAngle(_ftX, 0.105 * f * k); n.Head.quaternion.multiply(_ftQ); }
+      /* The head is deliberately left alone. A tired man does drop his head,
+         but the head is now a left-right joint with one writer and one limit,
+         and quietly adding a pitch here is exactly how it got out of hand. The
+         fold is carried by the spine and chest above, which is most of the
+         read anyway. */
       for (var i = 0; i < 2; i++) {
         var S = i ? 'R' : 'L', sgn = i ? -1 : 1;
         var up = n['UpperArm_' + S], lo = n['LowerArm_' + S];
@@ -988,7 +1022,7 @@
           ud: { idx: idx, yaw: seedYaw, celebT: 0, _wasPulled: false, _pulled: false, _threw: false,
                 _caught: false, _juked: false, _spiked: false, clip: 'idle',
                 carryKey: '', carrySide: 0, carryW: 0, carryAmp: 0, grabW: 0,
-                pvx: 0, pvy: 0, fLat: 0, fHold: 0, fTan: 0, bank: 0, pitch: 0, lead: 0, gazeY: 0, gazeP: 0, gazeOn: false, fatigue: 0 }
+                pvx: 0, pvy: 0, fLat: 0, fHold: 0, fTan: 0, bank: 0, pitch: 0, lead: 0, gazeY: 0, headYaw: 0, neckRest: null, gazeOn: false, fatigue: 0 }
         });
       });
       playersRef = players;
@@ -1335,7 +1369,7 @@
       if (Math.abs(ud.lead) > 0.004 && !P._oneShot) leadTrunk(P, ud.lead);
 
       // ...and then the head goes to the ball, over the top of all of it.
-      gazeAt(P, ud, gp, state, dt);
+      gazeAt(P, ud, gp, state, dt, ud.lead || 0);
 
       /* Fatigue last, so it bends whatever posture the rest arrived at. Not
          during a one-shot: a throw, a catch and a dive are committed actions
@@ -2057,9 +2091,9 @@
                      /* What this renderer actually adds to the head and neck,
                         summed across every layer that writes them. The layers
                         were each reasonable alone and nobody had added them up. */
-                     headYaw: e.ud.gazeY * GAZE_HEAD_SHARE + e.ud.lead * LEAD_HEAD_SHARE,
-                     gazeCap: GAZE_YAW_MAX, gazeOn: !!e.ud.gazeOn,
-                     neckYaw: e.ud.gazeY * GAZE_NECK_SHARE, fatigue: e.ud.fatigue, stam: (gp.stam == null ? 1 : gp.stam),
+                     headYaw: (e.ud.headYaw || 0) * GAZE_HEAD_SHARE,
+                     gazeCap: GAZE_YAW_MAX, gazeOn: !!e.ud.gazeOn, oneShot: !!(e.P && e.P._oneShot),
+                     neckYaw: (e.ud.headYaw || 0) * GAZE_NECK_SHARE, fatigue: e.ud.fatigue, stam: (gp.stam == null ? 1 : gp.stam),
                      a: g ? g.a : '-', b: g ? g.b : '-', blend: g ? g.blend : 0,
                      rate: g ? g.rate : 0, phase: g ? g.phase : 0, w: g ? g.weight : 0 });
         }
