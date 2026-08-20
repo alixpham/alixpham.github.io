@@ -27,9 +27,13 @@
                 are lying. Percentage of moving frames spent saturated, which is
                 the fraction of the game where sliding is guaranteed by design.
 
-   clipUse      Which of the clips in the .glb ever actually play. A clip that
-                never fires is dead weight and usually a bug — flag guarding
-                shipped in v2.17.0 with no call sites and nobody noticed.
+   clipUse      Which of the clips in the .glb ever actually play, counted in
+                player-frames. A clip that never fires is dead weight and
+                usually a bug — flag guarding shipped in v2.17.0 with no call
+                sites and nobody noticed. Note that the celebrations are rare by
+                nature: a 90-second sample may hold one touchdown and no
+                takeaway at all, so an unused celebration here is a prompt to
+                look, not a verdict.
 
    phaseSpread  Ten players sharing one stride phase march in lockstep. This is
                 the spread of stridePhase() across everyone on the field; near
@@ -93,33 +97,12 @@ page.on('pageerror', e => errors.push('pageerror: ' + e.message));
 
 await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'load' });
 await page.waitForSelector('.menu-tiles', { timeout: 30000 });
-/* Wrap the model factory BEFORE any player is built. Wrapping the api objects
-   after the fact missed every call, because by then they were already made and
-   the renderer holds its own references. */
-await page.evaluate(() => {
-  const wrap = () => {
-    const PM = window.FLAGSTER && window.FLAGSTER.Player3D;
-    if (!PM || PM.__wrapped) return !!PM;
-    const orig = PM.build.bind(PM);
-    window.__CLIPUSE = {};
-    PM.build = function (...a) {
-      const api = orig(...a);
-      for (const fn of ['play', 'oneShot']) {
-        if (typeof api[fn] !== 'function') continue;
-        const f = api[fn].bind(api);
-        api[fn] = function (name, ...rest) {
-          const k = String(name);
-          window.__CLIPUSE[k] = (window.__CLIPUSE[k] || 0) + 1;
-          return f(name, ...rest);
-        };
-      }
-      return api;
-    };
-    PM.__wrapped = true;
-    return true;
-  };
-  wrap();
-});
+/* There used to be a second clip-usage instrument here — a wrap around the
+   Player3D factory, filling a window.__CLIPUSE nothing ever read. Two
+   instruments for one number, one of them dead and the other broken, is how
+   the report came to say "unavailable" for months without anybody noticing
+   there was a working one three lines away. The renderer's own telemetry
+   answers it now (see below), so this is gone rather than duplicated. */
 await page.getByRole('button', { name: /Watch Demo/i }).click();
 await page.waitForFunction(() => {
   const sh = window.FLAGSTER && window.FLAGSTER.activeShell;
@@ -169,6 +152,18 @@ const install = await page.evaluate(() => {
          that reset as a 941 deg/s head snap — the renderer never turned
          anything, a new object simply appeared where the old one was. */
       if (s.phase !== A.lastPhase2) { A.lastGaze = {}; A.lastDir = {}; A.lastPhase2 = s.phase; }
+
+      /* CLIPS ARE SAMPLED BEFORE THE LIVE GATE, and that is the entire point of
+         where this sits. Every celebration in the game plays while the ball is
+         DEAD — the engine stops moving bodies the moment the whistle goes — so
+         a probe that returns early on anything but 'live' can sit through a
+         hundred touchdowns and report that nothing but the gait ever plays. */
+      for (const d of f3.debugPlayers()) {
+        if (!d.clip) continue;
+        A.clipUse[d.clip] = (A.clipUse[d.clip] || 0) + 1;
+        A.clipFrames++;
+      }
+
       if (s.phase !== 'live') return;
       A.live++;
       const dt = e._dt || 1 / 60;
@@ -297,21 +292,17 @@ const install = await page.evaluate(() => {
     } catch (err) { A.err = String((err && err.message) || err); }
   };
 
-  // Clip usage: wrap play/oneShot on every rendered player.
-  const apis = [];
-  scene.traverse(o => { if (o.userData && o.userData.p3d) apis.push(o.userData.p3d); });
-  A.apiCount = apis.length;
-  for (const api of apis) {
-    for (const fn of ['play', 'oneShot']) {
-      if (typeof api[fn] !== 'function') continue;
-      const orig = api[fn].bind(api);
-      api[fn] = function (name, ...rest) {
-        A.clipUse[String(name)] = (A.clipUse[String(name)] || 0) + 1;
-        return orig(name, ...rest);
-      };
-    }
-  }
-  return { ok: true, rigs: rigs.length, apis: apis.length };
+  /* Clip usage. This used to wrap play()/oneShot() on every object in the
+     scene carrying a `userData.p3d` back-reference — of which there are none,
+     and never were, so the count was empty every time it has ever been run and
+     the report said "unavailable" forever. It is read off debugPlayers now,
+     one sample per player per frame, which needs no back-reference and cannot
+     be lost when a formation change rebuilds every player.
+
+     Frames, not calls: a clip that plays for two seconds counts higher than
+     one that plays for a tenth, which is the more useful reading anyway. */
+  A.clipFrames = 0;
+  return { ok: true, rigs: rigs.length, clipTelemetry: true };
 });
 
 if (!install.ok) { console.error('probe could not attach: ' + install.why); await browser.close(); server.close(); process.exit(1); }
@@ -326,7 +317,7 @@ const out = await page.evaluate(() => {
     frames: A.frames, liveFrames: A.live, players: A.rigCount, apis: A.apiCount,
     
     rateClampPct: A.moving ? +(100 * A.clamped / A.moving).toFixed(1) : null,
-    rungUse: A.rungUse, clipUse: A.clipUse,
+    rungUse: A.rungUse, clipUse: A.clipUse, clipWrapAttached: A.clipFrames > 0,
     phaseSpread: avg(A.phases),
     skewMedianDeg: q(A.skews.map(x => x * 57.2958), 0.5),
     skewP95Deg: q(A.skews.map(x => x * 57.2958), 0.95),
@@ -410,12 +401,21 @@ console.log('\n  gait rungs in use:', JSON.stringify(report.rungUse));
 if (!report.clipWrapAttached || !Object.keys(report.clipUse).length) {
   // Saying "every clip is unused" when Idle plainly plays would be worse than
   // saying nothing. Report the instrument's failure, not a fake result.
-  console.log('  clip usage:        unavailable (wrap attached: ' + report.clipWrapAttached + ')');
+  console.log('  clip usage:        unavailable (telemetry attached: ' + report.clipWrapAttached + ')');
 } else {
   console.log('  clips played:     ', JSON.stringify(report.clipUse));
   if (report.clipsInFile) {
-    const unused = report.clipsInFile.filter(c => !Object.keys(report.clipUse).some(u => u.toLowerCase() === c.toLowerCase()));
+    /* A GAIT RUNG IS NOT AN UNUSED CLIP. Walk, Jog, Run and Sprint are mounted
+       as a blended PAIR with the mixer's current action left empty, so they
+       never appear in the clip telemetry however hard the squad is running —
+       and listing them as never used, directly under a line reporting 896
+       frames of Jog+Run, is a report arguing with itself. They are credited
+       from the rung usage, which is where they actually show up. */
+    const rungs = new Set(Object.keys(report.rungUse).flatMap(k => k.split('+')));
+    const used = c => Object.keys(report.clipUse).some(u => u.toLowerCase() === c.toLowerCase()) || rungs.has(c);
+    const unused = report.clipsInFile.filter(c => !used(c));
     console.log('  clips NEVER used: ', unused.join(', ') || '(none)');
+    console.log('                     (celebrations are rare — see tools/celebcheck.mjs)');
   }
 }
 if (report.probeError) console.log('\n  probe error: ' + report.probeError);

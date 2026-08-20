@@ -79,6 +79,25 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   a stance that creeps then whips through toe-off averages out right while the
   support foot slides for the part of it the eye watches. `measure-clip` prints
   the median and spread; `GAIT_DEBUG=1` on the builder prints the series.
+- **A foot that never lands is as wrong as one through the turf**, and only one
+  of those had a check. `groundedHips` hangs the pelvis off whichever sole is
+  lowest, so a pose the two legs cannot both reach reports a contented zero
+  while the other foot hovers — Flex and Spike stood with the front foot four
+  centimetres in the air for their whole lives. Author a stance foot as
+  `[z, knee]` with no ankle and it is solved flat; `measure-clip` prints each
+  foot's closest approach.
+- **A celebration pool is five long because the roster is.** `state.players` is
+  always the five on offence and then the five on defence, so a touchdown is
+  celebrated by slots 0-4 and a takeaway by slots 5-9, forever. Indexing a pool
+  of seven by the global slot reaches five of them and always the same five —
+  two clips in the .glb that no one can ever see. Pools are five, indexed by
+  `idx % 5` (the player's slot within his own side) with a stride co-prime to 5.
+- **Celebrations only play while the ball is DEAD**, which is the one thing a
+  headless probe forgets: `animcheck` returned early on any phase but `live` and
+  so had never once sampled a celebration. And a probe that waits in WALL time
+  measures nothing here — swiftshader renders about twice a second against a
+  50ms clamped delta, so sim time runs at a tenth of real. `celebcheck` waits
+  for the celebration to end, not for a number of seconds.
 - The camera sits behind whoever HAS THE BALL, and the offence always attacks
   +x, so it never turns round; `engine.viewSign()` is the seam that says which
   way is downfield and now always returns 1.
@@ -124,7 +143,10 @@ merges, restart the branch instead — `git checkout -B <branch> origin/master`
   different art style. When verifying, check `shell.field3d` is still non-null
   and wrap `engine.externalRender` to catch what it threw.
 - `npm run lint` (syntax across every source file), `npm test` (rules
-  regression), `node tools/simstats.mjs` (box score). Playwright is a
+  regression), `node tools/simstats.mjs` (box score), `npm run celebs`
+  (every celebration, forced and read back off the renderer),
+  `node tools/posesheet.mjs <Clip>` (a clip big enough to judge the pose —
+  measure-clip says whether it is correct, this says whether it is any good). Playwright is a
   devDependency purely so the browser harnesses survive a new container — the
   **site itself still ships no npm dependencies and no build step**.
 - **Verify before claiming done:** drive the real thing in headless Chromium

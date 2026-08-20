@@ -570,7 +570,25 @@
       _returnTo: 'idle'
     };
 
+    /* THE FALLBACK RIG HAS ONE CELEBRATION AND THE MODEL HAS TEN.
+
+       play() returns silently for a clip it doesn't carry, so every name the
+       renderer picked out of CELEB_LOOPS that this rig never had — dance, flex,
+       highstep, and now five more — left a celebrating player standing exactly
+       as he was. Silent, and invisible until you are looking at the 2D-ish
+       fallback, which is the one place nobody looks. So they resolve to the hop
+       instead: a fallback that celebrates badly beats one that doesn't.
+
+       LOOPS ONLY. A one-shot aliased onto a looping clip would never fire the
+       mixer's 'finished' event, and _oneShot would stay latched for the rest of
+       the game — so spike and point are deliberately absent here, and simply
+       don't play on this rig. */
+    var LOOP_ALIAS = {
+      dance: 'celebrate', flex: 'celebrate', highstep: 'celebrate',
+      bow: 'celebrate', lasso: 'celebrate', salute: 'celebrate', griddy: 'celebrate'
+    };
     api.play = function (name, fade) {
+      if (!actions[name] && LOOP_ALIAS[name]) name = LOOP_ALIAS[name];
       if (!actions[name]) return;
       if (current === actions[name] && actions[name].loop === THREE.LoopRepeat) return;
       var next = actions[name];
@@ -601,6 +619,14 @@
       if (current && current !== a) { a.play(); current.crossFadeTo(a, fade == null ? 0.15 : fade, false); }
       else a.play();
       current = a; api._oneShot = a;
+    };
+
+    // Same question, same answer shape, so a probe doesn't have to know which
+    // rig it got (see PlayerModel.clipInfo).
+    api.clipInfo = function () {
+      var c = api._oneShot || current;
+      var cl = c && (c.getClip ? c.getClip() : c._clip);
+      return { clip: cl ? cl.name : null, oneShot: !!api._oneShot };
     };
 
     api.setSpeed = function (mult) {           // scale run/walk cadence
