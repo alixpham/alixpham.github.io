@@ -451,3 +451,51 @@ that read "94° of neck turn against a 70° cap" — and dismissed it as an
 instrument error because it looked impossible. The total was real; what the
 probe could not do was attribute it to a layer. Impossible readings deserve a
 second look before they are filed as noise.
+
+## B5 — The real cause: the neck was never reset. 3.0.3.
+
+Reported a third time: *"heads still look crazy in 3.0.2."* They were, and both
+previous fixes had been treating symptoms of a bug neither of them touched.
+
+**No clip in `flagplayer.glb` animates the Neck bone.** The file has tracks for
+Hips, Spine, Chest and Head, and none for Neck. Layering after the mixer is only
+safe because the mixer rewrites the bone every frame, so multiplying an offset
+onto it biases a fresh value — but with nothing ever writing the neck, the gaze's
+`neck.quaternion.multiply(offset)` compounded on **its own output**, every frame,
+since v2.33.
+
+Measured off one player's neck on consecutive frames, while the offset being
+applied was eight degrees:
+
+> 88° → 93° → 98° → 103° → 108° → 113° → 119° → 124° → 128° … topping out at 179°
+
+It wound up like a spring. That is the spin, and it explains why cutting the
+range twice changed nothing: **a smaller offset only makes it wind up more
+slowly.** It also explains the reading I dismissed as impossible two rounds ago
+— 94° of neck turn against a 70° cap. It was not impossible and it was not the
+instrument; the neck really was there, and climbing.
+
+| | 3.0.2 | 3.0.3 |
+| --- | --- | --- |
+| rendered neck+head yaw, p99 | 183.7° | **42.4°** |
+| worst seen | **218.4°** | **63.1°** |
+| of which the neck alone, worst | 179.2° | 24.3° |
+
+The neck is composed from a cached rest pose now rather than multiplied onto
+itself. The head keeps its multiply, because the mixer does write that one.
+
+Also in this release, as asked: the head is a **left–right joint only**, limited
+to 80° either side. Three functions used to write it — the gaze in yaw *and*
+pitch, `leadTrunk` in yaw, fatigue in pitch — each with a defensible amount and
+none aware of the others. There is one writer now, one budget with the turn lead
+folded into it, and one clamp. No pitch, no roll. Whatever a clip bakes survives
+underneath, which is what keeps the eyes level against a leaning trunk.
+
+### The lesson
+
+Three rounds were spent tuning amplitudes on a layer that was not the problem,
+because every number I could see agreed with me: the *offset* being applied was
+always small and correct. What nobody was measuring was the bone that ended up
+on screen. `animcheck` reads the actual rendered joint now, separately from what
+the renderer intended, and the gap between those two numbers is what a
+layered-animation bug looks like.
