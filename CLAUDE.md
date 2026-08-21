@@ -23,6 +23,10 @@ flagster/js/            boot3d (ESM bootstrap), engine, ui, field3d, hero3d,
 flagster/lib/three/     vendored Three.js r185 (ESM) + jsm addons
 flagster/lib/flagplayer.glb   rigged, skinned, team-tintable player
 tools/build-player-glb.mjs    regenerates flagplayer.glb (no deps, no Blender)
+tools/rig-def.mjs             the bone table + sole geometry, imported everywhere
+tools/rig-fk.mjs              general quaternion FK + the ground-speed measurement
+tools/mocap/                  CMU .asf/.amc -> this rig (fetch, asf, retarget)
+tools/motion/*.json           retargeted clips, committed; the .amc never is
 tools/measure-clip.mjs        reads a baked clip back out as joint angles
 tools/simstats.mjs            headless CPU-vs-CPU box score
 VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
@@ -98,6 +102,30 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   measures nothing here — swiftshader renders about twice a second against a
   50ms clamped delta, so sim time runs at a tenth of real. `celebcheck` waits
   for the celebration to end, not for a number of seconds.
+- **The rig is defined once, in `tools/rig-def.mjs`.** Bone table, sole offsets,
+  leg lengths. The builder, the measurer and the retargeter all import it —
+  three copies of a rig is three chances for one to drift, which is the same
+  failure that put a hand-copied ground speed out of step with its stride table
+  twice.
+- **A gait's ground speed is measured off the BAKED clip, through full
+  kinematics** (`tools/rig-fk.mjs`), not off the table it was authored from. A
+  planar solve cannot see the pelvis, and a walking pelvis yaws, lists and sways
+  — all of which move the hip joint fore and aft over the standing foot. The
+  walk's own table said 1.78 m/s and the clip it produced does 1.77 only because
+  the pelvis is now re-solved through the same kinematics; before that it was
+  holding its stance foot up to 5.5mm off the turf and measuring a 38% flight
+  phase, which a walk does not have at all. Stride tables SHAPE a gait; they do
+  not get the last word on how fast it covers the ground.
+- **Motion capture goes through `tools/mocap/`, and lands as JSON.** A file in
+  `tools/motion/` whose clip name matches an authored clip REPLACES it at build
+  time — that is the whole swap mechanism. Sources are CMU (free, no account,
+  plain text, credited in `tools/mocap/README.md`). Three things that bite:
+  CMU's own index calls every trial 120Hz and some are not (the retargeter
+  prints stride length beside stride rate and says when the pair is
+  impossible); the capture volume is 3m x 8m so nobody sprints in it, and
+  `Sprint` stays authored; and a retargeted clip is asymmetric and slightly
+  non-contralateral because a person is, so `measure-clip` gives clips carrying
+  `extras.mocap` the numbers without the verdict.
 - The camera sits behind whoever HAS THE BALL, and the offence always attacks
   +x, so it never turns round; `engine.viewSign()` is the seam that says which
   way is downfield and now always returns 1.

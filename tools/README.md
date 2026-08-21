@@ -76,12 +76,17 @@ The renderer blends the two rungs that bracket a player's speed
 long as it was authored, and real speed is stride length times stride frequency
 with both of them rising.
 
-| | speed | cadence | step |
-|---|---|---|---|
-| `Walk` | 1.8 m/s | 120 /min | 0.9 m |
-| `Jog` | 3.5 m/s | 167 /min | 1.2 m |
-| `Run` | 6.1 m/s | 194 /min | 1.9 m |
-| `Sprint` | 9.0 m/s | 250 /min | 2.2 m |
+| | speed | cadence | step | source |
+|---|---|---|---|---|
+| `Walk` | 1.8 m/s | 120 /min | 0.9 m | authored |
+| `Jog` | 3.4 m/s | 167 /min | 1.2 m | CMU 35_21, retargeted |
+| `Run` | 6.2 m/s | 194 /min | 1.9 m | authored |
+| `Sprint` | 9.1 m/s | 250 /min | 2.2 m | authored |
+
+Speeds are **measured off the baked clip** through `rig-fk.mjs`, not off the
+table it was authored from — see the note under `rig-fk.mjs` for why those two
+are not the same number. CMU's capture volume is 3m x 8m, so nobody sprints in
+it and the top two rungs will stay authored.
 
 Two invariants make the blend work, and both are checked by `measure-clip`:
 
@@ -374,3 +379,38 @@ clip, which is not even the length of the one-shot. Waiting three seconds is how
 the first version of this reported that a first down plays the *Spike* — it was
 still watching the touchdown from the previous case. Nothing here waits a number
 of seconds; it waits for the celebration the renderer is running to end.
+
+---
+
+## `rig-def.mjs` / `rig-fk.mjs` — the rig, and kinematics over it
+
+`rig-def.mjs` holds the bone table, the three sole offsets and the leg
+dimensions, and every other tool imports them. They used to be typed out in the
+builder and again in the measurer; adding a third consumer (the mocap
+retargeter) would have made three copies of a rig and three chances for one of
+them to drift, which is the same failure that put a hand-copied ground speed out
+of step with its own stride table twice.
+
+`rig-fk.mjs` is the general case of what the builder does in the plane:
+quaternion forward kinematics over the whole skeleton, the lowest of the three
+sole points per foot, and the ground-speed measurement — same 4mm contact
+tolerance, same outputs, so a retargeted clip's `extras` mean exactly what an
+authored clip's do and both can hang off one blend ladder.
+
+**This is now what measures every gait.** The stride tables still SHAPE a walk;
+they no longer get the last word on how fast it covers the ground. A planar
+solve cannot see the pelvis, and a walking pelvis yaws, lists and sways — all
+three of which move the hip joint fore and aft over the standing foot. Reading
+the baked clip back through full kinematics put the walk 7% away from what its
+own table claimed, and showed the authored walk holding its stance foot up to
+5.5mm off the turf for the whole of stance. The builder now re-solves the pelvis
+height through these kinematics and measures the result: the walk's flight phase
+went from a reported 38% to the 0% a walk actually has.
+
+---
+
+## `mocap/` — motion capture, retargeted
+
+See [`mocap/README.md`](mocap/README.md). Converts CMU Graphics Lab `.asf`/`.amc`
+captures onto this rig and writes `tools/motion/<Clip>.json`, which the builder
+bakes; a name that matches an authored clip replaces it.
