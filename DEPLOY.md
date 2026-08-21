@@ -4,7 +4,8 @@ Flagster is served by GitHub Pages from the `master` branch at
 **https://alixpham.github.io/**. This file records the commit id behind each
 notable live deploy (newest first).
 
-Version tags (see `VERSION`): **v3.1.0** = `01f52dc6fbfdfaf9b71e2fe7376ccf75b1f7b2f9`,
+Version tags (see `VERSION`): **v3.2.0** = _(pending merge)_,
+**v3.1.0** = `01f52dc6fbfdfaf9b71e2fe7376ccf75b1f7b2f9`,
 **v3.0.3** = `5ae6c5b986b01cf5356e0bed71d7ba225ac3e9b0`,
 **v3.0.2** = `f6c38c5126a77caae899cc5d7f6a808f5f83d2fd`,
 **v3.0.1** = `e4e6f42f989f3f3328fb6fc4efcaa32e4c8d0bb3`,

@@ -35,6 +35,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SOLE, HEEL_Z, MTP_Z, TOE_DROP, TOE_LEN } from './rig-def.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const GLB = path.resolve(HERE, '..', 'flagster', 'lib', 'flagplayer.glb');
@@ -235,7 +236,8 @@ function measure(W) {
      joint and moves with it, so once the gait clips started extending the MTP
      at toe-off (which is the whole point of having a Toe bone) a rigid
      heel-to-tip model reported a phantom point 26mm under the turf while the
-     real shoe was flat on it. Same three offsets the builder's solePoints uses. */
+     real shoe was flat on it. The three offsets are imported from rig-def.mjs, which is
+     where the builder's solePoints reads them too. */
   const xform = (m, p) => [
     m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12],
     m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13],
@@ -244,9 +246,9 @@ function measure(W) {
   const sole = s => {
     const f = W['Foot_' + s], t = W['Toe_' + s];
     const pts = [
-      xform(f, [0, -0.090, -0.075]),          // heel
-      xform(f, [0, -0.090, 0.115]),           // ball, under the MTP joint
-      xform(t, [0, -0.035, 0.068])            // toe tip, on the toe segment
+      xform(f, [0, -SOLE, HEEL_Z]),           // heel
+      xform(f, [0, -SOLE, MTP_Z]),            // ball, under the MTP joint
+      xform(t, [0, -TOE_DROP, TOE_LEN])       // toe tip, on the toe segment
     ];
     let lo = pts[0];
     for (const p of pts) if (p[1] < lo[1]) lo = p;
@@ -387,6 +389,15 @@ for (const side of ['L', 'R']) {
    report the gap. Zero is a runner. Anything past about 8% of a cycle is worth
    looking at; 50% is a toy soldier.
 
+   A RETARGETED CLIP IS HELD TO A DIFFERENT STANDARD on both of these. An
+   authored gait is built by mirroring one leg table, so its two sides agree to
+   the micron and its arms are placed against the legs on purpose: any
+   asymmetry there is a bug. A capture is one person taking two different
+   steps. Real walkers carry 30-40mm of left/right difference and swing their
+   arms a tenth of a cycle away from the textbook, and calling that a limp
+   trains you to ignore the warning that matters. The numbers still print; only
+   the verdict changes, and only for clips that came out of tools/mocap/.
+
    Fore/aft is measured in the PELVIS frame — the clip has no root motion, but
    the hips yaw through the cycle, and a world-frame reading folds that yaw into
    the arm swing it is trying to measure. */
@@ -444,7 +455,9 @@ if (clip.extras.gait) {
       `   forward ${(phaseOf(r.front) * 100).toFixed(0).padStart(4)}%` +
       `   swing ${r.reach.toFixed(2)}m` +
       (r.err == null ? '' : `   arm/leg error ${(r.err * 100).toFixed(0).padStart(4)}%` +
-        (Math.abs(r.err) > 0.08 ? '   <-- NOT CONTRALATERAL' : '')));
+        (Math.abs(r.err) <= 0.08 ? ''
+          : clip.extras.mocap ? '   (captured, not authored — a real runner is not exact)'
+            : '   <-- NOT CONTRALATERAL')));
   }
   const cL = report[0].contact, cR = report[1].contact;
   if (cL != null && cR != null) {
@@ -476,7 +489,9 @@ if (clip.extras.gait) {
     }
     console.log(`  step symmetry   left vs right shifted half a cycle: ` +
       `${(worst * 1000).toFixed(2)}mm worst, at ${(phaseOf(worstAt) * 100).toFixed(0)}%` +
-      (worst > 0.004 ? '   <-- LIMPING' : '   (symmetric)'));
+      (worst <= 0.004 ? '   (symmetric)'
+        : clip.extras.mocap ? '   (captured, not authored — nobody is symmetric)'
+          : '   <-- LIMPING'));
   }
   const e = clip.extras;
   console.log(`  extras          ${e.groundSpeed.toFixed(2)} m/s, stride ${(e.groundSpeed * e.cycle).toFixed(2)}m,` +

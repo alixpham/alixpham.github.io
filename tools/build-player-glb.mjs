@@ -29,49 +29,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  BONES, HEIGHT_M, THIGH, SHIN, HIP_Y, HIP_HALF,
+  SOLE, HEEL_Z, MTP_Z, MTP_DROP, TOE_DROP, TOE_LEN
+} from './rig-def.mjs';
+import { fk, lowestSole, metrics as poseMetrics } from './rig-fk.mjs';
+import { qSlerp } from './mocap/asf.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const OUT = path.resolve(HERE, '..', 'flagster', 'lib', 'flagplayer.glb');
 
 const TAU = Math.PI * 2;
-const HEIGHT_M = 1.850;                 // documented author height
 
 /* ============================================================ 1. ARMATURE */
 /* [name, parent, localTranslation]. Order defines the joint index. */
-const BONES = [
-  ['Hips',            null,             [0, 1.000, 0]],
-  ['Spine',           'Hips',           [0, 0.125, 0]],
-  ['Chest',           'Spine',          [0, 0.175, 0]],
-  ['Neck',            'Chest',          [0, 0.250, 0]],
-  ['Head',            'Neck',           [0, 0.080, 0]],
-
-  ['Shoulder_L',      'Chest',          [ 0.050, 0.200, 0]],
-  ['UpperArm_L',      'Shoulder_L',     [ 0.150, 0.000, 0]],
-  ['LowerArm_L',      'UpperArm_L',     [0, -0.335, 0]],
-  ['Hand_L',          'LowerArm_L',     [0, -0.270, 0]],
-  ['Socket_Hand_L',   'Hand_L',         [0, -0.090, 0.035]],
-
-  ['Shoulder_R',      'Chest',          [-0.050, 0.200, 0]],
-  ['UpperArm_R',      'Shoulder_R',     [-0.150, 0.000, 0]],
-  ['LowerArm_R',      'UpperArm_R',     [0, -0.335, 0]],
-  ['Hand_R',          'LowerArm_R',     [0, -0.270, 0]],
-  ['Socket_Hand_R',   'Hand_R',         [0, -0.090, 0.035]],
-
-  ['UpperLeg_L',      'Hips',           [ 0.098, -0.040, 0]],
-  ['LowerLeg_L',      'UpperLeg_L',     [0, -0.460, 0]],
-  ['Foot_L',          'LowerLeg_L',     [0, -0.410, 0]],
-  ['Toe_L',           'Foot_L',         [0, -0.055, 0.115]],
-
-  ['UpperLeg_R',      'Hips',           [-0.098, -0.040, 0]],
-  ['LowerLeg_R',      'UpperLeg_R',     [0, -0.460, 0]],
-  ['Foot_R',          'LowerLeg_R',     [0, -0.410, 0]],
-  ['Toe_R',           'Foot_R',         [0, -0.055, 0.115]],
-
-  ['Socket_Flag_L',   'Hips',           [ 0.222, 0.015, -0.045]],
-  ['Flag_L',          'Socket_Flag_L',  [0, 0, 0]],
-  ['Socket_Flag_R',   'Hips',           [-0.222, 0.015, -0.045]],
-  ['Flag_R',          'Socket_Flag_R',  [0, 0, 0]]
-];
+/* The bone table itself lives in rig-def.mjs, imported above — the measurer
+   and the mocap retargeter have to agree with it exactly, and three copies of
+   a rig is three chances for one of them to drift. */
 
 const BI = {};                                   // name -> joint index
 const BWORLD = {};                               // name -> world rest position
@@ -1364,13 +1338,7 @@ function fundamental(sig) {
    one part a runner's pelvis does that the kinematics can't know about: for a
    moment nothing is holding the body up at all. A walk never leaves the
    ground, so it passes lift = 0. */
-const THIGH = 0.460, SHIN = 0.410;
-const HIP_Y = 1.000 - 0.040;                       // UpperLeg height at rest
-const SOLE = 0.090;                                // ankle joint above the sole
-const HEEL_Z = -0.075;                             // back of the heel, in the foot frame
-const MTP_Z = 0.115;                               // ball of the foot == the Toe joint
-const MTP_DROP = 0.055;                            // Toe joint above the sole under it
-const TOE_DROP = 0.035, TOE_LEN = 0.068;           // sole under, and length past, that joint
+/* THIGH, SHIN, HIP_Y and the six sole offsets are imported from rig-def.mjs. */
 
 /* THE FOOT IS TWO SEGMENTS, NOT A PADDLE.
 
@@ -1558,7 +1526,7 @@ function standHipY(legL, legR) {
    other by 0.098*sin(theta): the Juke rolls 23 degrees at the plant, which is
    38mm — twice the tolerance this holds ground contact to, and enough on its
    own to put the inside foot through the turf while every leg angle is right. */
-const HIP_HALF = 0.098;                            // UpperLeg offset from the spine
+/* HIP_HALF is imported from rig-def.mjs. */
 
 /* A leg swung out to the SIDE is shorter straight down than it is long.
    soleHeight is a sagittal solve — everything it computes has x = 0 — so a hip
@@ -1676,11 +1644,10 @@ function cyclicGait(name, dur, cfg) {
      millimetres at the amplitudes here, which is three times the tolerance this
      project holds ground contact to, so leaving it out puts a foot through the
      turf on the very frames the tilt is deepest. */
-  const HIP_X = 0.098;                             // UpperLeg offset from the spine
   const hipsY = [], hipRise = [];
   for (let i = 0; i < STEPS; i++) {
     const th = (cfg.obliq || 0) * load[i];
-    const dy = HIP_X * Math.sin(th);               // + raises the LEFT hip joint
+    const dy = HIP_HALF * Math.sin(th);               // + raises the LEFT hip joint
     hipRise.push(dy);
     const lowL = soleHeight(...legAt(i, false)) + dy;
     const lowR = soleHeight(...legAt(i, true)) - dy;
@@ -1720,10 +1687,11 @@ function cyclicGait(name, dur, cfg) {
   const B = sampleGait(cfg.arm, 2);
   const Sr = halfCycle(S), Er = halfCycle(E), Br = halfCycle(B);
 
-  const key = (node, vals) => rot(node, T, closeLoop(vals));
   const splay = cfg.splay == null ? 0.02 : cfg.splay;
+  const key = (node, vals) => rot(node, T, closeLoop(vals));
+  const hipsTrack = pos('Hips', T, closeLoop(hipsY.map((y, i) => [hipsX[i], y, 0])));
   const tracks = [
-    pos('Hips', T, closeLoop(hipsY.map((y, i) => [hipsX[i], y, 0]))),
+    hipsTrack,
     key('Hips', pelvis), key('Spine', spine), key('Chest', chest), key('Head', head),
     key('UpperLeg_L', H.map(v => [hip(v), 0, splay])),
     key('LowerLeg_L', K.map(v => [knee(v), 0, 0])),
@@ -1740,6 +1708,33 @@ function cyclicGait(name, dur, cfg) {
     key('Flag_L', H.map(v => [-0.004 * v, 0, 0.06])),
     key('Flag_R', Hr.map(v => [-0.004 * v, 0, -0.06]))
   ];
+
+  /* ---- RE-SOLVE THE PELVIS THROUGH FULL KINEMATICS ------------------------
+     Everything above is plane geometry, and a plane cannot see a pelvis. The
+     hips yaw, list and sway under a walking figure, and each of those moves
+     the hip joint — so the leg angles that the planar solve placed exactly on
+     the turf arrive up to 5.5mm above it once the pelvis is actually applied.
+     Five millimetres is not a visible hover, but it is a foot that never quite
+     lands, and the ground-speed measurement downstream reads a fifth of the
+     stance as "airborne" because of it: the authored walk measured a 38%
+     flight phase, which a walk does not have at all.
+
+     So the height comes out of the same kinematics that will render it. The
+     sole's height is linear in the pelvis's, so this is exact in one pass —
+     drop the hips by whatever the lowest sole is, and add back the flight lift
+     the stride table asked for. */
+  const localAt = i => {
+    const L = {};
+    for (const tr of tracks) if (tr.path === 'rotation') L[tr.node] = tr.values[i];
+    return L;
+  };
+  for (let i = 0; i < STEPS; i++) {
+    const q = (i / STEPS) % 0.5;
+    const air = span > 0 && q > stanceEnd ? Math.sin(Math.PI * (q - stanceEnd) / span) : 0;
+    const W = fk(localAt(i), [hipsX[i], 0, 0]);
+    hipsY[i] = -Math.min(lowestSole(W, 'L')[1], lowestSole(W, 'R')[1]) + (cfg.lift || 0) * air;
+  }
+  hipsTrack.values = closeLoop(hipsY.map((y, i) => [hipsX[i], y, 0]));
 
   // Where the turf sits relative to the pelvis at each sample: the solve above
   // dropped the pelvis to `hipsY`, so a sole point's height above the field is
@@ -3019,21 +3014,121 @@ for (const r of REGIONS) {
    divides by it. Anyone re-authoring a stride gets a new curve for free, which
    is the entire reason it is computed here and not typed into the renderer —
    this file has had two hand-copied constants drift out of step already. */
+/* ---------------------------------------------- retargeted motion capture
+   Anything in tools/motion/ is baked here, and a file whose clip name matches
+   an authored one REPLACES it — that is the whole swap mechanism, and it is
+   deliberately the file system rather than a flag, so what shipped is a matter
+   of looking in a directory. The JSON is committed; the .amc it came from is
+   not, so a build in a fresh container needs no network. See
+   tools/mocap/README.md. */
+const MOTION = path.resolve(HERE, 'motion');
+if (fs.existsSync(MOTION)) {
+  for (const f of fs.readdirSync(MOTION).sort()) {
+    if (!f.endsWith('.json')) continue;
+    const m = JSON.parse(fs.readFileSync(path.join(MOTION, f), 'utf8'));
+    const n = m.hips.length - 1;
+    const times = Array.from({ length: n + 1 }, (_, i) => (i / n) * m.duration);
+    const tracks = [pos('Hips', times, m.hips)];
+    for (const b in m.bones) tracks.push(rotq(b, times, m.bones[b]));
+    const entry = { name: m.name, duration: m.duration, tracks, extras: m.extras || {} };
+    const at = CLIPS.findIndex(c => c.name === m.name);
+    if (at >= 0) CLIPS[at] = entry; else CLIPS.push(entry);
+    console.log('  mocap ' + m.name.padEnd(10) + (at >= 0 ? 'replaces authored' : 'added').padEnd(18) +
+      m.source.trial + ' frames ' + m.source.from + '-' + m.source.to);
+  }
+}
+
+/* ---- the pose a baked clip actually holds, sampled off its own tracks ----
+   Everything below measures BAKED clips rather than the tables they were
+   authored from, which is the only way one measurement can cover a stride
+   table and a retargeted capture at the same time. */
+function clipPose(cl, t) {
+  const local = {};
+  let hips = [0, 1, 0];
+  for (const tr of cl.tracks) {
+    const times = tr.times;
+    let i = 0;
+    while (i < times.length - 2 && times[i + 1] < t) i++;
+    const u = times[i + 1] === times[i] ? 0 : Math.min(1, Math.max(0, (t - times[i]) / (times[i + 1] - times[i])));
+    if (tr.path === 'rotation') local[tr.node] = qSlerp(tr.values[i], tr.values[i + 1] || tr.values[i], u);
+    else if (tr.node === 'Hips') {
+      const a = tr.values[i], b = tr.values[i + 1] || a;
+      hips = a.map((v, k) => v + (b[k] - v) * u);
+    }
+  }
+  return { local, hips };
+}
+const clipFrames = (cl, steps) => Array.from({ length: steps }, (_, i) => {
+  const P = clipPose(cl, (i / steps) * cl.duration);
+  return fk(P.local, P.hips);
+});
+
+/* ---- EVERY GAIT IS MEASURED OFF THE TRACKS THAT SHIP ---------------------
+
+   The stride tables are solved in the SAGITTAL PLANE, and so was the ground
+   speed that came out of them — which means the measurement could not see the
+   pelvis. A walking pelvis yaws, lists and sways, and all three move the hip
+   joint fore and aft under the standing foot; none of it appeared in a solve
+   that only ever knew four angles per leg. Reading the baked clip back through
+   full kinematics puts the walk at 1.91 m/s where its own table said 1.78, a
+   seven percent error in the one number the renderer divides by to choose a
+   playback rate. That is a skate of a centimetre every step, invisible in any
+   still and quite visible in motion.
+
+   So the authored solve still SHAPES the stride (its per-row debug is how an
+   uneven stance gets found), but it no longer gets the last word on how fast
+   the ground goes by. The clip that ships is the clip that is measured. */
+for (const cl of CLIPS) {
+  if (!cl.extras || !cl.extras.gait) continue;
+  const before = cl.extras.groundSpeed;
+  const m = poseMetrics(clipFrames(cl, STEPS), cl.duration);
+  // Everything the measurement does not produce survives it: the blend curve
+  // computed below, and the flag that says this clip came off a capture rather
+  // than out of a stride table (the measurer holds the two to different
+  // symmetry standards, and rightly).
+  const { blendUp, mocap } = cl.extras;
+  cl.extras = { ...m };
+  if (blendUp) cl.extras.blendUp = blendUp;
+  if (mocap) cl.extras.mocap = mocap;
+  const d = before ? (m.groundSpeed - before) / before : 0;
+  console.log('  gait  ' + cl.name.padEnd(10) + m.groundSpeed.toFixed(2) + ' m/s' +
+    (Math.abs(d) > 0.005 ? `   (planar solve said ${before.toFixed(2)}, ${(d * 100).toFixed(0)}%)` : '') +
+    `   stance ${(m.stance * 100).toFixed(0)}%  flight ${(m.flight * 100).toFixed(0)}%  spread ${(m.even * 100).toFixed(0)}%`);
+}
+
+/* ---- HOW FAST A BLEND OF TWO GAITS REALLY IS ----------------------------
+   A blend of two clips is not solved onto the ground by anybody, so its true
+   ground speed is not the interpolation of the two speeds either side of it —
+   halfway between a walk and a jog the support foot sweeps a little further
+   than the average of the two sweeps, and playing it at the average rate
+   therefore skates. The correction is measured here at three mixes and baked
+   onto the slower clip as `blendUp`, which playermodel.js reads back.
+
+   It used to be measured through the builder's own planar leg solve, which
+   worked only because every rung was authored as four angles per leg. A
+   retargeted rung is not, so the measurement now runs on the BAKED tracks
+   through the general kinematics in rig-fk.mjs — the same code that measures a
+   mocap clip, which is the point. */
 const BLEND_LADDER = ['Walk', 'Jog', 'Run', 'Sprint'];
+const rungOf = n => CLIPS.find(c => c.name === n && c.extras && c.extras.gait);
 for (let i = 0; i < BLEND_LADDER.length - 1; i++) {
-  const A = GAIT_SOLVE[BLEND_LADDER[i]], B = GAIT_SOLVE[BLEND_LADDER[i + 1]];
+  const A = rungOf(BLEND_LADDER[i]), B = rungOf(BLEND_LADDER[i + 1]);
   if (!A || !B) continue;
-  const mix = (a, b, w) => a + (b - a) * w;
   const curve = [1];
   for (const w of [0.25, 0.5, 0.75]) {
-    const legAt = (k, right) => {
-      const p = A.legAt(k, right), q = B.legAt(k, right);
-      return [mix(p[0], q[0], w), mix(p[1], q[1], w), mix(p[2], q[2], w), mix(p[3], q[3], w)];
-    };
-    const rise = (k, right) => mix(A.rise(k, right), B.rise(k, right), w);
-    const m = gaitMetrics(mix(A.dur, B.dur, w), legAt, rise,
-      process.env.GAIT_DEBUG ? BLEND_LADDER[i] + '+' + w : null);
-    const linear = mix(A.extras.groundSpeed, B.extras.groundSpeed, w);
+    const frames = [];
+    for (let k = 0; k < STEPS; k++) {
+      const pa = clipPose(A, (k / STEPS) * A.duration), pb = clipPose(B, (k / STEPS) * B.duration);
+      const local = {};
+      for (const [name] of BONES) {
+        const qa = pa.local[name] || [0, 0, 0, 1], qb = pb.local[name] || [0, 0, 0, 1];
+        local[name] = qSlerp(qa, qb, w);
+      }
+      frames.push(fk(local, pa.hips.map((v, j) => v + (pb.hips[j] - v) * w)));
+    }
+    const dur = A.duration + (B.duration - A.duration) * w;
+    const m = poseMetrics(frames, dur);
+    const linear = A.extras.groundSpeed + (B.extras.groundSpeed - A.extras.groundSpeed) * w;
     curve.push(linear > 0 ? m.groundSpeed / linear : 1);
   }
   curve.push(1);
@@ -3041,6 +3136,8 @@ for (let i = 0; i < BLEND_LADDER.length - 1; i++) {
   console.log('  blend ' + (BLEND_LADDER[i] + '->' + BLEND_LADDER[i + 1]).padEnd(14) +
     A.extras.blendUp.map(v => v.toFixed(3)).join('  '));
 }
+
+
 
 for (const c of CLIPS) {
   const samplers = [], channels = [];
