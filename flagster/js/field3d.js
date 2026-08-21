@@ -761,6 +761,8 @@
                       beat: a bounce, a turn toward the man who moved the
                       chains, and a ring a third the size.
 
+       Which CLIPS each of those plays is CELEB_LOOPS, further down.
+
        NO CONFETTI. It used to bury the shot in paper — five waves of 130
        pieces at a touchdown, drifting through the frame for six seconds. The
        celebration is what the players do; the paper was in front of it.
@@ -789,23 +791,64 @@
     };
     var HOP_RATE = Math.PI * 2;
 
-    /* WHO DOES WHAT IN THE END ZONE.
+    /* WHO DOES WHAT, AND FOR WHICH PIECE OF NEWS.
 
-       The scorer spikes the ball — once, because a spike is an event — and then
-       dances. Everyone else picks one of the four looping celebrations off
-       their own roster index, so a group is four different silhouettes rather
-       than one clip played ten times in unison. Deterministic in the index, so
-       the same player celebrates the same way all game and it reads as
-       character instead of noise.
+       The man it happened to fires a one-shot — once, because a spike is an
+       event and so is a first-down signal — and then settles into a loop.
+       Everybody else takes a looping celebration off their own roster index, so
+       a group is several silhouettes rather than one clip played ten times in
+       unison. Deterministic in the index, so the same player celebrates the
+       same way all game and it reads as character instead of noise.
 
-       Only a touchdown gets the full range: a first down is a beat, not a
-       party, so it keeps the hop everyone already knows. */
-    var CELEB_LOOPS = ['dance', 'highstep', 'flex', 'celebrate'];
+       The PALETTES differ by kind for the same reason the durations do.
+
+         td         the offence's, and the one moment the game gives a player
+                    to do something ridiculous: a dance, a griddy, a bow, a
+                    lasso and a flex, one each, five different silhouettes.
+         takeaway   the defence's, and the defence celebrates differently — the
+                    poses that hold still and stare rather than the ones that
+                    bounce. Its star salutes instead of dancing.
+         firstdown  a beat, not a party: everyone keeps the hop they already
+                    know, and the one man who gets something new is the one who
+                    actually moved the chains, who signals it himself.
+
+       AND FIVE ENTRIES EACH IS NOT A ROUND NUMBER — it is the roster.
+
+       state.players is always the five on offence and then the five on defence,
+       in that order, on every snap of every game. So a touchdown is always
+       celebrated by slots 0-4 and a takeaway always by slots 5-9, and the
+       obvious `pool[idx * 3 + 1 % pool.length]` over a pool of SEVEN reaches
+       only five of them — the same five, forever, because the offence is always
+       the same five indices. Two of these clips would have been in the .glb,
+       wired up, tested, and impossible to see in a real game.
+
+       `idx % 5` is a player's index within his own SIDE, which makes a pool of
+       five exactly one clip each whichever side is celebrating. The stride of 3
+       is co-prime with 5, so it covers the pool AND gives neighbours in the
+       formation different celebrations rather than running down the list.   */
+    var CELEB_LOOPS = {
+      td:        ['dance', 'griddy', 'bow', 'lasso', 'flex'],
+      takeaway:  ['salute', 'highstep', 'flex', 'lasso', 'celebrate'],
+      firstdown: ['celebrate']
+    };
+    // What the man it happened to fires once, and what he lands in afterwards.
+    var CELEB_STAR = {
+      td:        { once: 'spike', loop: 'dance' },
+      takeaway:  { once: '',      loop: 'salute' },
+      firstdown: { once: 'point', loop: 'celebrate' }
+    };
     function celebClipFor(ud, cel) {
-      if (cel.cfg.radius !== Infinity) return 'celebrate';
-      if (cel.star) return 'dance';
-      return CELEB_LOOPS[(ud.idx * 3 + 1) % CELEB_LOOPS.length];
+      var star = CELEB_STAR[celeb.kind];
+      if (cel.star && star) return star.loop;
+      var pool = CELEB_LOOPS[celeb.kind] || CELEB_LOOPS.firstdown;
+      return pool[((ud.idx % 5) * 3 + 1) % pool.length];
     }
+    /* A flag pull is one man's small moment, so it gets a small pool of its
+       own — and every clip in it keeps the near arm HIGH, because FlagGrab
+       ends with the flag held up and a crossfade into a clip with the arms
+       down is a swing through the whole range in a fifth of a second. */
+    var PULL_CELEBS = ['celebrate', 'flex', 'lasso'];
+    function pullCelebFor(ud) { return PULL_CELEBS[(ud.idx * 2 + 1) % PULL_CELEBS.length]; }
     var celeb = { kind: '', cfg: null, t: 0, dur: 0, team: null, x: MID, y: WID / 2 };
 
     // The shockwave on the turf — the only thing the celebration draws that
@@ -1020,7 +1063,7 @@
         pMeshes.push({
           P: P, holder: holder, ring: ring,
           ud: { idx: idx, yaw: seedYaw, celebT: 0, _wasPulled: false, _pulled: false, _threw: false,
-                _caught: false, _juked: false, _spiked: false, clip: 'idle',
+                _caught: false, _juked: false, _celOnce: false, clip: 'idle',
                 carryKey: '', carrySide: 0, carryW: 0, carryAmp: 0, grabW: 0,
                 pvx: 0, pvy: 0, fLat: 0, fHold: 0, fTan: 0, bank: 0, pitch: 0, lead: 0, gazeY: 0, headYaw: 0, neckRest: null, gazeOn: false, fatigue: 0 }
         });
@@ -1295,23 +1338,25 @@
          guessed here by scanning for the nearest opponent to the man who went
          down; the engine names them (pullFx), so take the name. */
       if ((gp.pullFx || 0) > 0 && !ud._pulled) {
-        P.oneShot('flagGrab', 'celebrate');
+        P.oneShot('flagGrab', pullCelebFor(ud));
         ud._pulled = true;
         ud.celebT = 1.6;                          // hold the celebration after it
       }
       if (!(gp.pullFx > 0)) ud._pulled = false;
 
       // ---- LOOP clip selection (skip while a one-shot is running) ----------
-      /* THE SPIKE, fired once when a scorer starts celebrating. It is a
-         one-shot rather than part of the loop selection below because it is an
-         event with a beginning and an end, and because its last pose is the
-         arms-wide finish the Dance it hands over to begins from — which is what
-         keeps the crossfade out of it from swinging both arms down and straight
-         back up again. */
-      if (cel && cel.star && cel.cfg.radius === Infinity && celeb.kind === 'td' && !ud._spiked) {
-        P.oneShot('spike', 'dance'); ud._spiked = true;
+      /* THE ONE-SHOT THE NEWS DESERVES, fired once when the man it happened to
+         starts celebrating: the Spike for a score, the first-down signal for a
+         set of chains. They are one-shots rather than part of the loop
+         selection below because each is an event with a beginning and an end,
+         and because each ends in the pose the loop it hands over to begins
+         from — which is what keeps the crossfade out of it from swinging both
+         arms down and straight back up again. */
+      var celOnce = (cel && cel.star) ? CELEB_STAR[celeb.kind] : null;
+      if (celOnce && celOnce.once && !ud._celOnce) {
+        P.oneShot(celOnce.once, celOnce.loop); ud._celOnce = true;
       }
-      if (!cel) ud._spiked = false;
+      if (!cel) ud._celOnce = false;
 
       if (!P._oneShot) {
         if (cel) {
@@ -2075,6 +2120,7 @@
           var e = pMeshes[i], gp = (playersRef || [])[i];
           if (!gp) continue;
           var g = e.P.gaitInfo ? e.P.gaitInfo() : null;
+          var ci = e.P.clipInfo ? e.P.clipInfo() : null;
           var vx = gp.rvx != null ? gp.rvx : (gp.vx || 0);
           var vy = gp.rvy != null ? gp.rvy : (gp.vy || 0);
           var sp = Math.hypot(vx, vy);
@@ -2094,6 +2140,7 @@
                      headYaw: (e.ud.headYaw || 0) * GAZE_HEAD_SHARE,
                      gazeCap: GAZE_YAW_MAX, gazeOn: !!e.ud.gazeOn, oneShot: !!(e.P && e.P._oneShot),
                      neckYaw: (e.ud.headYaw || 0) * GAZE_NECK_SHARE, fatigue: e.ud.fatigue, stam: (gp.stam == null ? 1 : gp.stam),
+                     clip: ci ? ci.clip : null,
                      a: g ? g.a : '-', b: g ? g.b : '-', blend: g ? g.blend : 0,
                      rate: g ? g.rate : 0, phase: g ? g.phase : 0, w: g ? g.weight : 0 });
         }

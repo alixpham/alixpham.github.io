@@ -499,3 +499,67 @@ always small and correct. What nobody was measuring was the bone that ended up
 on screen. `animcheck` reads the actual rendered joint now, separately from what
 the renderer intended, and the gap between those two numbers is what a
 layered-animation bug looks like.
+
+## C1 — One celebration, played ten times. 3.1.0.
+
+The end zone had five celebrations and a rule for handing them out, which was
+already better than the single hop it replaced. Watch a whole game of it and it
+is still one idea: **all five are a man standing upright moving his arms.**
+Spike, Dance, Flex and HighStep differ in *what the arms do*; nothing in the set
+differs in what the *body* does, which is the only thing that survives at the
+distance the game is actually seen from.
+
+So the five new ones are chosen along the axes the set did not have, not by
+"more arm poses":
+
+| | the axis it adds |
+| --- | --- |
+| **Bow** | the only **fold** — 69° of trunk flexion at the bottom, measured; everything else stays within 20° of vertical |
+| **Lasso** | the only large **moving** element — a near-straight arm circling a half-metre radius over the head, once a second |
+| **Salute** | the only **narrow** one. Flex holds a silhouette by being wide; this holds one by being a column, and by being the man in the group who is not waving |
+| **Griddy** | the only motion in the **frontal plane below the pelvis** — the legs swinging out at the hip, which is what a heel-toe step is |
+| **Point** | the first one about the **down** rather than the man: the referee's first-down chop, thrown by the player who just moved the chains |
+
+And the news is no longer told the same way three times. A touchdown is the
+offence's, and gets the ridiculous end of the range; a takeaway is the defence's
+and gets the poses that hold still and stare, with the man who took it saluting
+rather than dancing; a first down stays a beat rather than a party, with the
+carrier signalling it himself.
+
+### What the tooling could not see
+
+**Every ground check ever written here asks whether a foot went *through* the
+turf.** A pose can fail the opposite way: `groundedHips` hangs the pelvis off
+whichever sole is lowest, so if the two legs cannot both reach the ground in the
+pose as authored, the other foot simply hovers — and the solver reports a
+perfect zero the whole time, because it is measuring the foot that *is* down.
+
+That is what a symmetric fore/aft stagger does. Two legs at the same knee
+flexion with the ankles 0.3 m apart in z have their ankles at exactly the same
+height — but the back shank is raked and the front one is not, so the same ankle
+angle puts the back foot on its toe and leaves the front one in the air:
+
+| | front foot's closest approach to the turf |
+| --- | --- |
+| Flex | 26 mm |
+| FlagGrab | 33 mm — in a clip whose own comment says "two planted feet" |
+| Spike | **39 mm**, for its whole duration |
+
+The ankle is what accommodates on a real stance, so it is solved now: a leg
+written `[z, knee]` with no third number means *this foot is on the ground*.
+Every clip in the file lands both feet within 3 mm.
+
+**And `animcheck` had never once sampled a celebration.** Its clip-usage report
+had said `unavailable` for months — it wrapped `play()` on scene objects
+carrying a `userData.p3d` back-reference, of which there are none and never
+were, while a second instrument three lines away filled a `window.__CLIPUSE`
+that nothing read. Both are gone; usage is read off the renderer's own telemetry
+now, which survives the player rebuild that happens between every play. Even
+fixed it would have measured nothing, because it returned early on any phase but
+`live` — and every celebration in the game plays while the ball is dead.
+
+`posesheet.mjs` is the other half. `measure-clip.mjs` says whether a clip is
+correct; it cannot say whether a pose is any good, and a celebration is judged
+on nothing else. Rendering the first Bow at 300 px showed both arms sweeping
+down symmetrically with the elbows open — a perfect T-pose, held for a third of
+a second, measuring perfectly clean.

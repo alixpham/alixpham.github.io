@@ -1514,6 +1514,24 @@ function plantHip(zTarget, kneeDeg) {
   return ((lo + hi) / 2) / D;
 }
 
+/* --- And the ankle that puts that foot FLAT, solved the same way -----------
+   Two legs at the same knee flexion have their ankles at exactly the same
+   height whatever the fore/aft stagger, because the hip-ankle distance is fixed
+   by the knee alone and only z^2 enters. Their SOLES are another matter: the
+   back shank is raked and the front one is not, so feeding both the same ankle
+   angle rakes the back foot toe-down and leaves the front one four centimetres
+   in the air — groundedHips hangs the pelvis off the lowest point it can find,
+   reports a contented zero, and the man stands on one toe.
+
+   Nothing caught that for the life of the file, because every ground check ever
+   written here asks whether a foot went THROUGH the turf. So the ankle becomes
+   what it is on a real stance — the joint that accommodates — and a leg written
+   [z, knee] with no third number means "this foot is on the ground", with the
+   angle solved rather than guessed. f = t - k + ankle = 0, so:                */
+const flatAnkle = (z, kneeDeg) => kneeDeg - plantHip(z, kneeDeg);
+// One leg of a posed row: [z, knee, ankle?, toe?], ankle solved when omitted.
+const legOf = L => [plantHip(L[0], L[1]), L[1], L[2] == null ? flatAnkle(L[0], L[1]) : L[2], L[3] || 0];
+
 /* Pelvis height for a NON-cyclic pose: drop it until the lower of the two
    soles is exactly on the turf. Same solve as solveHipY, without the cycle. */
 function standHipY(legL, legR) {
@@ -1541,31 +1559,48 @@ function standHipY(legL, legR) {
    38mm — twice the tolerance this holds ground contact to, and enough on its
    own to put the inside foot through the turf while every leg angle is right. */
 const HIP_HALF = 0.098;                            // UpperLeg offset from the spine
-function groundedHips(times, legL, legR, lift, roll, step = 0.02) {
+
+/* A leg swung out to the SIDE is shorter straight down than it is long.
+   soleHeight is a sagittal solve — everything it computes has x = 0 — so a hip
+   abduction of theta is a rotation of that whole chain about the leg's own Z,
+   which sends a point at (0, y, z) to (-y*sin, y*cos, z). The height therefore
+   scales exactly about the hip joint, with no approximation:
+       y' = HIP_Y + (y - HIP_Y) * cos(theta)
+   Which is the only reason abduction can be authored per-key at all: without
+   it the solver would keep planting a foot that is no longer under the player,
+   and drop the pelvis 60mm to do it. */
+const abducted = (h, a) => (a ? HIP_Y + (h - HIP_Y) * Math.cos(a) : h);
+
+function groundedHips(times, legL, legR, lift, roll, abd, step = 0.02) {
   const lerpLeg = (A, B, u) => A.map((v, i) => v + (B[i] - v) * u);
   const up = k => (lift ? lift[k] : 0);
   const rz = k => (roll ? roll[k] : 0);
+  const ab = k => (abd ? abd[k] : [0, 0]);
   // Lowest sole of either leg with the pelvis tilted by `th`, whose two hip
   // joints therefore sit +/- HIP_HALF*sin(th) either side of the pelvis.
-  const low = (L, R, th) => {
+  const low = (L, R, th, aL, aR) => {
     const dy = HIP_HALF * Math.sin(th);            // + raises the LEFT hip joint
-    return Math.min(soleHeight(...L) + dy, soleHeight(...R) - dy);
+    return Math.min(abducted(soleHeight(...L), aL) + dy,
+                    abducted(soleHeight(...R), aR) - dy);
   };
   const T = [], Y = [];
   for (let k = 0; k < times.length - 1; k++) {
     const span = times[k + 1] - times[k];
     const n = Math.max(1, Math.round(span / step));
+    const a0 = ab(k), a1 = ab(k + 1);
     for (let i = 0; i < n; i++) {
       const u = i / n;
       T.push(times[k] + span * u);
       Y.push(1.000 - low(lerpLeg(legL[k], legL[k + 1], u), lerpLeg(legR[k], legR[k + 1], u),
-        rz(k) + (rz(k + 1) - rz(k)) * u)
+        rz(k) + (rz(k + 1) - rz(k)) * u,
+        a0[0] + (a1[0] - a0[0]) * u, a0[1] + (a1[1] - a0[1]) * u)
         + up(k) + (up(k + 1) - up(k)) * u);
     }
   }
   const last = times.length - 1;
   T.push(times[last]);
-  Y.push(1.000 - low(legL[legL.length - 1], legR[legR.length - 1], rz(last)) + up(last));
+  Y.push(1.000 - low(legL[legL.length - 1], legR[legR.length - 1], rz(last),
+    ab(last)[0], ab(last)[1]) + up(last));
   return pos('Hips', T, Y.map(y => [0, y, 0]));
 }
 
@@ -2364,20 +2399,20 @@ clip('Dive', 1.20, [
      flexion on its own, which is the whole point of solving it. */
   const G = [
     // t      pelvis trunk lean tilt | lead foot: [z, knee, ankle] | back foot | reaching arm (R)       | off arm (L)
-    { t: 0.00, pel:  0, trk:   0, lean:  8, tilt:  0, L: [0.10, 30, 10], R: [-0.10, 30, 10], arm: [ 16,  20,  10,  55], off: [ 16,  20,  10,  55] },
-    { t: 0.14, pel: -2, trk:  -4, lean: 22, tilt:  0, L: [0.10, 42, 13], R: [-0.10, 42, 12], arm: [ 48,  72,  20,  62], off: [ 44,  70,  16,  66] },
-    { t: 0.28, pel: -3, trk:  -6, lean: 34, tilt:  0, L: [0.10, 50, 15], R: [-0.10, 50, 13], arm: [ 62,  80,  10,  22], off: [ 58,  78,   8,  28] },
-    { t: 0.40, pel:  0, trk:   2, lean: 30, tilt: -2, L: [0.10, 46, 14], R: [-0.10, 46, 12], arm: [ 58,  62,  -6,  34], off: [ 52,  60,   0,  40] },
-    { t: 0.55, pel:  8, trk:  16, lean: 12, tilt: -4, L: [0.10, 36, 12], R: [-0.10, 36, 11], arm: [118,   4, -30,  66], off: [ 30, -20, -20,  80] },
-    { t: 0.72, pel:  5, trk:  10, lean:  2, tilt: -2, L: [0.10, 30, 11], R: [-0.10, 30, 11], arm: [150,  -6, -10,  42], off: [ 20,  -8,  -6,  62] },
+    { t: 0.00, pel:  0, trk:   0, lean:  8, tilt:  0, L: [0.10, 30], R: [-0.10, 30], arm: [ 16,  20,  10,  55], off: [ 16,  20,  10,  55] },
+    { t: 0.14, pel: -2, trk:  -4, lean: 22, tilt:  0, L: [0.10, 42], R: [-0.10, 42], arm: [ 48,  72,  20,  62], off: [ 44,  70,  16,  66] },
+    { t: 0.28, pel: -3, trk:  -6, lean: 34, tilt:  0, L: [0.10, 50], R: [-0.10, 50], arm: [ 62,  80,  10,  22], off: [ 58,  78,   8,  28] },
+    { t: 0.40, pel:  0, trk:   2, lean: 30, tilt: -2, L: [0.10, 46], R: [-0.10, 46], arm: [ 58,  62,  -6,  34], off: [ 52,  60,   0,  40] },
+    { t: 0.55, pel:  8, trk:  16, lean: 12, tilt: -4, L: [0.10, 36], R: [-0.10, 36], arm: [118,   4, -30,  66], off: [ 30, -20, -20,  80] },
+    { t: 0.72, pel:  5, trk:  10, lean:  2, tilt: -2, L: [0.10, 30], R: [-0.10, 30], arm: [150,  -6, -10,  42], off: [ 20,  -8,  -6,  62] },
     // Ends with the flag still held up, because what follows it is Celebrate,
     // whose arms are also up: dropping to a rest pose here would put a fast
     // arm-swing down and straight back up either side of the crossfade.
-    { t: 0.90, pel:  0, trk:   0, lean:  5, tilt:  0, L: [0.10, 30, 11], R: [-0.10, 30, 11], arm: [146,  -2,  -6,  44], off: [ 18,   4,   4,  56] }
+    { t: 0.90, pel:  0, trk:   0, lean:  5, tilt:  0, L: [0.10, 30], R: [-0.10, 30], arm: [146,  -2,  -6,  44], off: [ 18,   4,   4,  56] }
   ];
   const T = G.map(k => k.t);
-  const legL = G.map(k => [plantHip(k.L[0], k.L[1]), k.L[1], k.L[2]]);
-  const legR = G.map(k => [plantHip(k.R[0], k.R[1]), k.R[1], k.R[2]]);
+  const legL = G.map(k => legOf(k.L));
+  const legR = G.map(k => legOf(k.R));
   clip('FlagGrab', 0.90, [
     groundedHips(T, legL, legR),
     rot('Hips', T, G.map(k => [0, k.pel * D, 0])),
@@ -2488,20 +2523,34 @@ clip('Celebrate', 1.00, [
    rows:  t     seconds
           pel   pelvis yaw, degrees        trk  trunk yaw, degrees
           lean  trunk flexion, + forward   tilt trunk side-bend
-          L, R  [z, knee, ankle] — the foot's fore/aft POSITION in metres, its
-                knee flexion and its ankle; the hip angle is solved from them so
-                a planted foot stays where it was put
+          L, R  [z, knee, ankle, toe] — the foot's fore/aft POSITION in metres,
+                its knee flexion, its ankle and its MTP; the hip angle is solved
+                from them so a planted foot stays where it was put. OMIT the
+                ankle and it is solved too, for a foot flat on the turf, which
+                is what a stance wants and what a stagger cannot be given by
+                hand (see flatAnkle)
+          abd   optional [left, right] hip ABDUCTION in degrees, + = swung out
+                to that side. The ground solve knows about it, so the leg that
+                is out can never be the one the pelvis is hung from
           up    how far the whole body is off the turf, metres (a hop)
           arm   [elev, horiz, er, elbow] for the RIGHT arm, through armQ
           off   ditto for the LEFT
-          look  optional [pitch, yaw] for the head, radians                    */
+          look  optional [pitch, yaw] for the head, radians; NEGATIVE pitch is
+                the chin coming UP, which is why the default counters lean     */
 function posedClip(name, dur, rows, opts = {}) {
   const T = rows.map(k => k.t);
-  const legL = rows.map(k => [plantHip(k.L[0], k.L[1]), k.L[1], k.L[2]]);
-  const legR = rows.map(k => [plantHip(k.R[0], k.R[1]), k.R[1], k.R[2]]);
+  // The toe goes into the LEG rather than only onto its own track: MTP
+  // extension lifts the sole off the forefoot, and a solver that doesn't know
+  // that hangs the pelvis from a toe tip which is no longer the lowest point.
+  const legL = rows.map(k => legOf(k.L));
+  const legR = rows.map(k => legOf(k.R));
   const lift = rows.map(k => k.up || 0);
   const sway = k => (k.sway || 0);
-  const hips = groundedHips(T, legL, legR, lift, rows.map(k => (k.roll || 0) * D));
+  const splay = opts.splay == null ? 0.03 : opts.splay;
+  const abdL = k => ((k.abd ? k.abd[0] : 0) * D);
+  const abdR = k => ((k.abd ? k.abd[1] : 0) * D);
+  const hips = groundedHips(T, legL, legR, lift, rows.map(k => (k.roll || 0) * D),
+    rows.map(k => [abdL(k), abdR(k)]));
   // groundedHips only writes height; fold the lateral shift in on the same
   // dense grid it produced, so a dance can put its weight over one foot.
   if (rows.some(k => k.sway)) {
@@ -2524,14 +2573,14 @@ function posedClip(name, dur, rows, opts = {}) {
     rot('LowerArm_R', T, rows.map(k => [elbow(k.arm[3]), 0, -0.05])),
     rotq('UpperArm_L', T, rows.map(k => armQ('L', k.off[0], k.off[1], k.off[2]))),
     rot('LowerArm_L', T, rows.map(k => [elbow(k.off[3]), 0, 0.05])),
-    rot('UpperLeg_L', T, legL.map(l => [hip(l[0]), 0, (opts.splay == null ? 0.03 : opts.splay)])),
+    rot('UpperLeg_L', T, legL.map((l, i) => [hip(l[0]), 0, splay + abdL(rows[i])])),
     rot('LowerLeg_L', T, legL.map(l => [knee(l[1]), 0, 0])),
     rot('Foot_L', T, legL.map(l => [ankle(l[2]), 0, 0])),
-    rot('Toe_L', T, rows.map(k => [toe(k.L[3] || 0), 0, 0])),
-    rot('UpperLeg_R', T, legR.map(l => [hip(l[0]), 0, -(opts.splay == null ? 0.03 : opts.splay)])),
+    rot('Toe_L', T, legL.map(l => [toe(l[3]), 0, 0])),
+    rot('UpperLeg_R', T, legR.map((l, i) => [hip(l[0]), 0, -splay - abdR(rows[i])])),
     rot('LowerLeg_R', T, legR.map(l => [knee(l[1]), 0, 0])),
     rot('Foot_R', T, legR.map(l => [ankle(l[2]), 0, 0])),
-    rot('Toe_R', T, rows.map(k => [toe(k.R[3] || 0), 0, 0])),
+    rot('Toe_R', T, legR.map(l => [toe(l[3]), 0, 0])),
     rot('Flag_L', T, rows.map(k => [-0.004 * (k.lean || 0), 0, 0.05])),
     rot('Flag_R', T, rows.map(k => [-0.004 * (k.lean || 0), 0, -0.05]))
   ]);
@@ -2547,18 +2596,18 @@ function posedClip(name, dur, rows, opts = {}) {
    up again either side of a crossfade is the one thing that reads as a glitch. */
 posedClip('Spike', 1.15, [
   // t     pelvis trunk lean tilt |  lead foot        back foot      | throwing arm             off arm
-  { t: 0.00, pel: 0, trk: 0, lean: 8, tilt: 0, L: [0.12, 30, 10], R: [-0.12, 30, 10], arm: [30, 30, 10, 70], off: [24, 24, 8, 62] },
+  { t: 0.00, pel: 0, trk: 0, lean: 8, tilt: 0, L: [0.12, 30], R: [-0.12, 30], arm: [30, 30, 10, 70], off: [24, 24, 8, 62] },
   { t: 0.20, pel: 0, trk: 4, lean: -14, tilt: 0, L: [0.12, 16, -18], R: [-0.12, 16, -20], up: 0.02, arm: [162, 26, 40, 44], off: [140, 34, 30, 58] },
   // the ball is at the top and the body is stretched: heels off, back arched
   { t: 0.30, pel: 0, trk: 6, lean: -20, tilt: 0, L: [0.12, 12, -26], R: [-0.12, 12, -28], up: 0.04, arm: [172, 20, 46, 30], off: [148, 30, 26, 62] },
   // SLAM. Trunk folds, the arm whips through past the knee, the knees give.
-  { t: 0.42, pel: 0, trk: -2, lean: 46, tilt: 0, L: [0.12, 54, 16], R: [-0.12, 54, 14], arm: [24, 8, -60, 16], off: [40, -10, -30, 40] },
-  { t: 0.52, pel: 0, trk: -4, lean: 52, tilt: 0, L: [0.12, 62, 18], R: [-0.12, 62, 16], arm: [16, -14, -70, 22], off: [30, -22, -40, 46] },
+  { t: 0.42, pel: 0, trk: -2, lean: 46, tilt: 0, L: [0.12, 54], R: [-0.12, 54], arm: [24, 8, -60, 16], off: [40, -10, -30, 40] },
+  { t: 0.52, pel: 0, trk: -4, lean: 52, tilt: 0, L: [0.12, 62], R: [-0.12, 62], arm: [16, -14, -70, 22], off: [30, -22, -40, 46] },
   // up out of it, arms thrown wide, chest open, head back — the pose the crowd
   // shot is framed on.
-  { t: 0.74, pel: 0, trk: 0, lean: -14, tilt: 0, L: [0.12, 26, -6], R: [-0.12, 26, -6], arm: [96, -34, 40, 26], off: [96, -34, 40, 26], look: [0.22, 0] },
+  { t: 0.74, pel: 0, trk: 0, lean: -14, tilt: 0, L: [0.12, 26], R: [-0.12, 26], arm: [96, -34, 40, 26], off: [96, -34, 40, 26], look: [0.22, 0] },
   { t: 0.94, pel: 0, trk: 0, lean: -16, tilt: 0, L: [0.12, 22, -10], R: [-0.12, 22, -10], up: 0.03, arm: [118, -26, 50, 22], off: [118, -26, 50, 22], look: [0.26, 0] },
-  { t: 1.15, pel: 0, trk: 0, lean: -8, tilt: 0, L: [0.12, 28, 4], R: [-0.12, 28, 4], arm: [128, -12, 46, 34], off: [128, -12, 46, 34], look: [0.14, 0] }
+  { t: 1.15, pel: 0, trk: 0, lean: -8, tilt: 0, L: [0.12, 28], R: [-0.12, 28], arm: [128, -12, 46, 34], off: [128, -12, 46, 34], look: [0.14, 0] }
 ]);
 
 /* ------------------------------------------------------------------ Dance */
@@ -2582,11 +2631,11 @@ posedClip('Dance', 1.10, [
    'er' near 90 puts the forearms vertical, which is what makes it a flex and
    not a shrug. */
 posedClip('Flex', 1.30, [
-  { t: 0.000, pel: 0, trk: 0, lean: -6, tilt: 0, L: [0.16, 24, 8], R: [-0.16, 24, 8], arm: [82, 4, 88, 128], off: [82, 4, 88, 128], look: [0.06, 0] },
-  { t: 0.325, pel: 6, trk: -6, lean: -10, tilt: -4, L: [0.16, 18, 4], R: [-0.16, 30, 10], arm: [88, -6, 94, 138], off: [78, 10, 82, 122], look: [0.10, -0.14] },
-  { t: 0.650, pel: 0, trk: 0, lean: -6, tilt: 0, L: [0.16, 26, 9], R: [-0.16, 26, 9], arm: [80, 6, 86, 126], off: [80, 6, 86, 126], look: [0.06, 0] },
-  { t: 0.975, pel: -6, trk: 6, lean: -10, tilt: 4, L: [0.16, 30, 10], R: [-0.16, 18, 4], arm: [78, 10, 82, 122], off: [88, -6, 94, 138], look: [0.10, 0.14] },
-  { t: 1.300, pel: 0, trk: 0, lean: -6, tilt: 0, L: [0.16, 24, 8], R: [-0.16, 24, 8], arm: [82, 4, 88, 128], off: [82, 4, 88, 128], look: [0.06, 0] }
+  { t: 0.000, pel: 0, trk: 0, lean: -6, tilt: 0, L: [0.16, 24], R: [-0.16, 24], arm: [82, 4, 88, 128], off: [82, 4, 88, 128], look: [0.06, 0] },
+  { t: 0.325, pel: 6, trk: -6, lean: -10, tilt: -4, L: [0.16, 18], R: [-0.16, 30], arm: [88, -6, 94, 138], off: [78, 10, 82, 122], look: [0.10, -0.14] },
+  { t: 0.650, pel: 0, trk: 0, lean: -6, tilt: 0, L: [0.16, 26], R: [-0.16, 26], arm: [80, 6, 86, 126], off: [80, 6, 86, 126], look: [0.06, 0] },
+  { t: 0.975, pel: -6, trk: 6, lean: -10, tilt: 4, L: [0.16, 30], R: [-0.16, 18], arm: [78, 10, 82, 122], off: [88, -6, 94, 138], look: [0.10, 0.14] },
+  { t: 1.300, pel: 0, trk: 0, lean: -6, tilt: 0, L: [0.16, 24], R: [-0.16, 24], arm: [82, 4, 88, 128], off: [82, 4, 88, 128], look: [0.06, 0] }
 ], { splay: 0.07 });
 
 /* --------------------------------------------------------------- HighStep */
@@ -2621,6 +2670,157 @@ cyclicGait('HighStep', 0.52, {
   yaw: 0.10, yawPhase: 0.25,
   obliq: 0.06, sway: 0.014, tilt: 0.05, splay: 0.03
 });
+
+/* ================= FIVE MORE, AND WHY THESE FIVE ======================
+
+   The first four (Spike, Dance, Flex, HighStep) were chosen to be different in
+   SHAPE, because shape is all that reads at chase-camera distance. They are
+   also, all four, a man standing upright and moving his arms. Watch a whole
+   game of it and the end zone still looks like one idea with four settings.
+
+   So the axes these five add are the ones the set did not have:
+
+     Bow      the only FOLD. Everything else keeps the trunk within twenty
+              degrees of vertical; this one puts it past sixty, which at
+              distance is a completely different silhouette rather than a
+              different arm pose.
+     Lasso    the only thing with a large MOVING element: a straight arm
+              circling a half-metre radius over the head, once a second. Motion
+              that big is legible at a range where a hand is two pixels.
+     Salute   the only NARROW one. Flex holds a silhouette by being wide; this
+              holds one by being a column — heels together, arms in. In a group
+              of five it is the one that isn't waving.
+     Griddy   the only thing that moves in the FRONTAL plane below the pelvis.
+              Dance rocks the pelvis side to side over sagittal legs; this
+              swings the legs themselves out at the hip, which is what the
+              heel-toe step actually is, and is why groundedHips had to learn
+              about abduction before this clip could exist.
+     Point    the first-down signal, and the first celebration in here that is
+              about the DOWN rather than about the man. It is the referee's
+              chop, thrown by the player who just moved the chains, out to the
+              side so it reads as a full-length horizontal line to a camera
+              that is always square behind him.
+
+   Every one is authored the way everything else in this file is: feet by where
+   they are, hips solved so the soles stay on the turf, shoulders through
+   armQ. None of them translates the player — the engine has stopped moving
+   bodies by the time any of them plays.                                     */
+
+/* ------------------------------------------------------------------- Bow */
+/* Take a bow. Arms high and open, then a deep fold with the right hand sweeping
+   across the waist and the left flung back — and the chin stays UP through the
+   bottom of it, because a bow with the face pointing at the grass is a man
+   looking for a contact lens. Loops on a slow 1.9s bar: the one celebration in
+   the set with a long period, so a group of them never falls into step. */
+posedClip('Bow', 1.90, [
+  // t     pelvis trunk lean tilt |  left foot     right foot  | sweeping arm            trailing arm
+  { t: 0.00, pel: 0, trk: 0, lean: -8, tilt: 0, L: [0.10, 20], R: [-0.10, 20], arm: [138, -10, 44, 40], off: [138, 10, 44, 40], look: [-0.22, 0] },
+  // The two arms take DIFFERENT paths down, which is the whole reason this
+  // clip has six keys instead of four: sweep them symmetrically and they pass
+  // through shoulder height together with the elbows open, and for a third of
+  // a second the man is a scarecrow. The right folds in early and low, the left
+  // stays high and goes back.
+  { t: 0.36, pel: 0, trk: -4, lean: 14, tilt: 0, L: [0.10, 24], R: [-0.10, 24], arm: [86, 30, 10, 76], off: [120, -12, 34, 44], look: [-0.14, 0.08] },
+  { t: 0.72, pel: 0, trk: -9, lean: 58, tilt: 0, L: [0.10, 21], R: [-0.10, 23], arm: [36, 78, -18, 104], off: [78, -48, 24, 52], look: [-0.50, 0.16] },
+  // the bottom of it: right hand across the belt, left arm back and open
+  { t: 1.02, pel: 0, trk: -10, lean: 70, tilt: 0, L: [0.10, 19], R: [-0.10, 21], arm: [28, 86, -22, 112], off: [88, -62, 28, 40], look: [-0.58, 0.16] },
+  { t: 1.34, pel: 0, trk: -6, lean: 40, tilt: 0, L: [0.10, 24], R: [-0.10, 25], arm: [50, 60, -6, 96], off: [100, -40, 30, 50], look: [-0.42, 0.10] },
+  { t: 1.62, pel: 0, trk: -2, lean: 2, tilt: 0, L: [0.10, 25], R: [-0.10, 25], arm: [104, 16, 26, 62], off: [122, -14, 36, 46], look: [-0.20, 0.04] },
+  { t: 1.90, pel: 0, trk: 0, lean: -8, tilt: 0, L: [0.10, 20], R: [-0.10, 20], arm: [138, -10, 44, 40], off: [138, 10, 44, 40], look: [-0.22, 0] }
+], { splay: 0.05 });
+
+/* ----------------------------------------------------------------- Lasso */
+/* Roping the crowd. The right arm is nearly straight and swept to an elevation
+   of 132, which armQ turns into a humerus 42 degrees off vertical — so driving
+   `horiz` once round the clock traces a cone, and the hand draws a half-metre
+   circle above the head. That is the whole clip: everything else (the pelvis
+   turning under it, the weight bobbing on the knees, the eyes on the rope) is
+   there so the circle isn't a detached arm.
+
+   Nine keys, because a circle sampled at 45 degrees is a circle and a circle
+   sampled at 90 is a diamond — slerp takes the short way round between two
+   keys, which is a chord, not an arc. */
+{
+  const HZ = [90, 45, 0, -45, -90, -135, -180, -225, -270];   // one full turn
+  const N = HZ.length - 1, DUR = 0.90;
+  posedClip('Lasso', DUR, HZ.map((hz, i) => {
+    const ph = i / N, w = Math.sin(ph * Math.PI * 2), b = Math.cos(ph * Math.PI * 4);
+    return {
+      t: +(DUR * ph).toFixed(4),
+      pel: 7 * w, trk: -9 * w, lean: 2, tilt: -4 * w,
+      L: [0.13, 24 + 6 * b], R: [-0.13, 24 + 6 * b],
+      arm: [132, hz, 62, 22],
+      off: [24, -12, 12, 98],                       // spare hand at the belt
+      look: [-0.20, 0.26 * w]
+    };
+  }), { splay: 0.075 });
+}
+
+/* ---------------------------------------------------------------- Salute */
+/* Heels together, chest up, hand at the brow, and then almost nothing: a slow
+   breath and a two-degree sway. It is deliberately the quiet one. A group
+   celebration is read by contrast, and four men waving next to one man standing
+   perfectly still is a picture; five men waving is wallpaper.
+
+   The right elbow folds 140 degrees about a humerus held out at shoulder height
+   with ER near 80, which is what puts the hand at the temple rather than in
+   front of the face — the difference between a salute and a phone call. */
+posedClip('Salute', 1.50, [
+  { t: 0.00, pel: 0, trk: 0, lean: -5, tilt: 0, L: [0.03, 12], R: [-0.03, 12], arm: [92, 44, 72, 142], off: [10, 4, -6, 8], look: [-0.06, 0] },
+  { t: 0.50, pel: 2, trk: -2, lean: -8, tilt: -2, L: [0.03, 10], R: [-0.03, 14], arm: [95, 47, 74, 145], off: [12, 2, -8, 6], look: [-0.09, -0.07] },
+  { t: 1.00, pel: -2, trk: 2, lean: -8, tilt: 2, L: [0.03, 14], R: [-0.03, 10], arm: [95, 41, 74, 145], off: [12, 6, -4, 6], look: [-0.09, 0.07] },
+  { t: 1.50, pel: 0, trk: 0, lean: -5, tilt: 0, L: [0.03, 12], R: [-0.03, 12], arm: [92, 44, 72, 142], off: [10, 4, -6, 8], look: [-0.06, 0] }
+], { splay: 0.012 });
+
+/* ---------------------------------------------------------------- Griddy */
+/* The heel-toe swing, with the hands as goggles at the eyes. The lower body is
+   the reason this clip is here: each leg in turn swings OUT at the hip, twenty
+   degrees, while the other carries the weight — motion in the frontal plane,
+   which nothing else in the set has below the pelvis.
+   That swing is also why groundedHips learned `abd`. Abducting a leg shortens
+   it straight down by L*(1-cos), which is 55mm on a 0.87m leg at 20 degrees; a
+   solver that didn't know would keep hanging the pelvis off the swinging foot
+   and drop the whole body by that much, twice a cycle, in time with the dance.
+
+   Fast — 0.72s a bar — because the griddy is a fast dance and because a quick
+   period next to Bow's slow one is the other half of making a group read as
+   several people rather than one animation with an offset. */
+posedClip('Griddy', 0.72, [
+  //  t     pel  trk lean tilt sway   abduction      left foot         right foot      | goggles, both hands at the eyes
+  { t: 0.00, pel: 10, trk: -6, lean: 7, tilt: -3, sway: 0.030, abd: [22, 0], L: [0.05, 36, 2], R: [-0.03, 20, 8], arm: [88, 34, 78, 134], off: [88, 34, 78, 134] },
+  { t: 0.18, pel: 0, trk: 0, lean: 9, tilt: 0, sway: 0.000, abd: [4, 4], L: [0.01, 26, 6], R: [-0.01, 26, 6], arm: [85, 38, 75, 130], off: [85, 38, 75, 130], up: 0.022 },
+  { t: 0.36, pel: -10, trk: 6, lean: 7, tilt: 3, sway: -0.030, abd: [0, 22], L: [0.03, 20, 8], R: [-0.05, 36, 2], arm: [88, 34, 78, 134], off: [88, 34, 78, 134] },
+  { t: 0.54, pel: 0, trk: 0, lean: 9, tilt: 0, sway: 0.000, abd: [4, 4], L: [0.01, 26, 6], R: [-0.01, 26, 6], arm: [85, 38, 75, 130], off: [85, 38, 75, 130], up: 0.022 },
+  { t: 0.72, pel: 10, trk: -6, lean: 7, tilt: -3, sway: 0.030, abd: [22, 0], L: [0.05, 36, 2], R: [-0.03, 20, 8], arm: [88, 34, 78, 134], off: [88, 34, 78, 134] }
+], { splay: 0.05 });
+
+/* ----------------------------------------------------------------- Point */
+/* THE FIRST DOWN SIGNAL, thrown by the man who just got it. A one-shot, like
+   the Spike, and for the same reason: it is an event with a beginning (the arm
+   still down from the run), a middle (two hard chops) and an end.
+
+   Out to the SIDE, not downfield. The renderer turns whoever has the ball to
+   face the camera, so an arm thrust at the lens is a fist and three inches of
+   forearm; the same arm thrown laterally is the longest line a body has. The
+   trunk turns and side-bends into each chop so it is a whole player signalling
+   rather than a shoulder joint animating, and the head snaps along the arm.
+
+   It ends high and open, which is the pose the loop it hands over to begins
+   from — the crossfade rule the Spike is written to as well. */
+posedClip('Point', 0.95, [
+  // t     pelvis trunk lean tilt |  left foot        right foot     | signalling arm          off arm
+  { t: 0.00, pel: 0, trk: 0, lean: 8, tilt: 0, L: [0.10, 30], R: [-0.10, 30], arm: [36, 26, 6, 72], off: [34, 22, 4, 68] },
+  // the arm comes up and out, and the plant that stops him goes with it
+  { t: 0.16, pel: -6, trk: 8, lean: 4, tilt: -6, L: [0.16, 24], R: [-0.14, 34], arm: [104, -14, 22, 26], off: [48, 16, 0, 60], look: [-0.10, -0.24] },
+  { t: 0.28, pel: -8, trk: 12, lean: 2, tilt: -10, L: [0.16, 20], R: [-0.14, 30], arm: [122, -20, 26, 8], off: [54, 12, -2, 56], look: [-0.16, -0.34] },
+  // CHOP. Twice, and the second is shorter and harder than the first.
+  { t: 0.42, pel: -6, trk: 8, lean: 6, tilt: -6, L: [0.16, 28], R: [-0.14, 36], arm: [72, -8, 10, 14], off: [50, 14, 0, 58], look: [-0.06, -0.28] },
+  { t: 0.56, pel: -8, trk: 12, lean: 2, tilt: -10, L: [0.16, 22], R: [-0.14, 30], arm: [118, -18, 24, 10], off: [54, 12, -2, 56], look: [-0.16, -0.34] },
+  { t: 0.68, pel: -6, trk: 8, lean: 7, tilt: -5, L: [0.16, 30], R: [-0.14, 36], arm: [78, -6, 12, 16], off: [50, 14, 0, 58], look: [-0.04, -0.26] },
+  // open up: both arms wide and high, back to the camera-square stance
+  { t: 0.82, pel: -2, trk: 2, lean: -6, tilt: -2, L: [0.14, 26], R: [-0.12, 28], arm: [116, -26, 40, 24], off: [96, -20, 32, 30], look: [-0.20, -0.10] },
+  { t: 0.95, pel: 0, trk: 0, lean: -10, tilt: 0, L: [0.13, 24], R: [-0.11, 24], arm: [132, -18, 46, 26], off: [124, -16, 42, 28], look: [-0.24, 0] }
+], { splay: 0.05 });
 
 /* ------------------------------------------------------------------ Juke */
 /* Same treatment as Catch, and it mattered more here: this is the animation a

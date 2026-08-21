@@ -171,9 +171,9 @@
       if (!running || players.length) return;
       players = [
         setupRotation(makeP3D(COL.blue, 'CARTER', 24, -5.0, 1.8),
-          ['run', 'juke', 'highstep', 'run'], { x: -3.1, z: 1.8 }, 0.0),
+          ['run', 'juke', 'griddy', 'run'], { x: -3.1, z: 1.8 }, 0.0),
         setupRotation(makeP3D(COL.red, 'RIVERA', 7, 0.0, 1.8),
-          ['celebrate', 'throw', 'celebrate', 'dive'], { x: 0.0, z: 1.8 }, 1.5),
+          ['lasso', 'throw', 'celebrate', 'dive'], { x: 0.0, z: 1.8 }, 1.5),
         setupRotation(makeP3D(COL.green, 'MÜLLER', 55, 5.0, 1.8),
           ['flagpull', 'run', 'highstep', 'flagpull'], { x: 5.0, z: 1.8 }, 3.0)
       ];   // each takes a {P, carrier} from makeP3D
@@ -279,7 +279,8 @@
   // How long (seconds) each kind of move plays before rotating to the next.
   var MOVE_DUR = {
     run: 5.0, juke: 4.5, highstep: 4.5,
-    throw: 5.5, dive: 4.2, celebrate: 5.0, flagpull: 5.0
+    throw: 5.5, dive: 4.2, celebrate: 5.0, flagpull: 5.0,
+    griddy: 4.6, lasso: 5.0
   };
 
   // Yaw each move wants the body to face. setYaw(y) => rotation.y = PI/2 - y
@@ -327,6 +328,13 @@
     return st;
   }
 
+  // Does this rig carry the clip? Actions are keyed by the .glb's capitalised
+  // name, and play() also accepts the game's lower-camel one, so check both.
+  function hasClip(P, name) {
+    if (!P.actions) return false;
+    return !!(P.actions[name] || P.actions[name.charAt(0).toUpperCase() + name.slice(1)]);
+  }
+
   function enterMove(st, name, ctx) {
     var P = st.P;
     st.entered = true;
@@ -346,7 +354,7 @@
         // There is a real HighStep clip now (knees to the chest, on the spot).
         // This used to be the walk cycle run at 2.1x, which is a man hurrying,
         // not a man showing off. Fall back to that if the rig predates it.
-        if (P.actions && (P.actions.HighStep || P.actions.highstep)) P.play('highstep', 0.25);
+        if (hasClip(P, 'highstep')) P.play('highstep', 0.25);
         else { P.setSpeed(2.1); P.play('walk', 0.25); }
         break;
       case 'throw':
@@ -357,6 +365,13 @@
         break;
       case 'celebrate':
         P.play('celebrate', 0.25);
+        break;
+      // The end-zone repertoire, on the landing screen. Same guard the
+      // HighStep case carries: an older .glb simply doesn't have these, and
+      // the menu must still animate rather than freeze on a T-pose.
+      case 'griddy':
+      case 'lasso':
+        P.play(hasClip(P, name) ? name : 'celebrate', 0.25);
         break;
       case 'flagpull':
         P.oneShot('flagPull', 'idle', 0.2);
@@ -395,6 +410,8 @@
     throw: driveThrow,
     dive: driveDive,
     celebrate: driveCelebrate,
+    griddy: driveCelebrate,
+    lasso: driveCelebrate,
     flagpull: driveFlagPull
   };
 
@@ -457,11 +474,13 @@
     else ball.hide();
   }
 
-  /* Celebrate — face the camera and loop the celebrate clip. No confetti: the
-     celebration belongs to the player, not to paper over the lens. */
+  /* Celebrate — face the camera and loop the celebration. No confetti: the
+     celebration belongs to the player, not to paper over the lens. Drives every
+     looping celebration in the cast, which is why the yaw is read off the move
+     being played rather than hard-coded to this one. */
   function driveCelebrate(st, t, dt, ctx) {
     var P = st.P, b = st.base, ball = ctx.ball;
-    P.face(moveBaseYaw('celebrate') + Math.sin(t * 2) * 0.15, dt);
+    P.face(moveBaseYaw(st.moves[st.moveIdx]) + Math.sin(t * 2) * 0.15, dt);
     st.carrier.position.set(b.x, 0, b.z);
     ball.hide();
   }

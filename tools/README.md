@@ -303,3 +303,74 @@ makes those visible — and the four angles are chosen for what each catches:
 * **back** — the hairline at the nape, and shading seams down the skull
 
 `measure-clip.mjs` does the equivalent job for motion; this one is for form.
+
+---
+
+## `posesheet.mjs` — a clip, big enough to judge
+
+Renders any baked clip full-body at several phases and angles, through the real
+`playermodel.js` build path, onto one contact sheet.
+
+```sh
+node tools/posesheet.mjs Bow Lasso Salute      # -> .posesheets/clip-<name>.png
+node tools/posesheet.mjs --frames 8 --angles three-quarter,front Griddy
+node tools/posesheet.mjs --out /tmp/poses Point
+```
+
+`measure-clip.mjs` is the honest test of whether a clip is *correct* — feet on
+the turf, shoulders where a biomechanist would put them, arms in step with the
+legs. It cannot tell you whether the pose is any *good*, and a celebration is
+judged on nothing else. This is the same argument `headshot.mjs` makes about
+faces, one level up: the game shows a player forty pixels tall from behind, and
+at that size a scarecrow reads as a man with his arms out.
+
+It caught exactly that. The first Bow swept both arms down symmetrically with
+the elbows open, so for a third of a second the player passed through a perfect
+T-pose; the first Griddy had the hands flat over the face rather than at the
+eyes. Both measured clean.
+
+Stills only, deliberately. A timing error is invisible in a still — that is what
+`measure-clip.mjs`'s arm/leg coupling check is for — and the grid at `y = 0` is
+there because half of what goes wrong with a pose is a foot an inch under it.
+
+---
+
+## `celebcheck.mjs` — the celebrations, forced and read back
+
+Drives the real game in headless Chromium, fires each kind of celebration
+through the engine's own entry point, and reports what the ten bodies did.
+
+```sh
+npm run celebs                                # or: node tools/celebcheck.mjs
+node tools/celebcheck.mjs --shots /tmp/celeb  # keep a screenshot of each
+```
+
+```
+  TOUCHDOWN
+    men celebrating    5   over 50 sampled frames
+    clips on screen    Spike, Dance, Idle, Flex, Bow, Lasso
+    per player         *0:Spike/Dance  1:Idle/Flex  2:Idle/Bow  3:Idle/Dance  4:Idle/Lasso
+    distinct clips     6
+    the star ran       Spike -> Dance
+    lowest body        0.100 yd
+```
+
+Celebrations are the rarest thing the renderer draws: a touchdown is about one
+event a minute, the first-down celebration fires only on the down that crosses
+midfield, and a demo can run for minutes without a takeaway. `animcheck.mjs` is
+the honest measure of what a player typically *sees*, and it can watch for three
+minutes and report nothing at all about a clip that is wired up perfectly. So
+this one asks the engine for each piece of news in turn and reads the answer
+back off the renderer.
+
+It exits non-zero if a celebration never starts, if a group of five holds fewer
+than two distinct clips, if the star's one-shot never fires, or if a body ends
+up through the turf.
+
+**It waits in SIM time, not wall time.** swiftshader renders this page about
+twice a second and the engine clamps its frame delta to 50 ms, so animation runs
+at roughly a tenth of wall speed: three real seconds is a third of a second of
+clip, which is not even the length of the one-shot. Waiting three seconds is how
+the first version of this reported that a first down plays the *Spike* — it was
+still watching the touchdown from the previous case. Nothing here waits a number
+of seconds; it waits for the celebration the renderer is running to end.

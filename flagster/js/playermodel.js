@@ -46,7 +46,8 @@
          root.rotation.y = Math.PI / 2 - yaw
    * Clip names in the .glb are capitalised (Idle/Run/.../FlagPulled). play()
      and oneShot() accept the game's lower-camel vocabulary
-     (idle/run/walk/backpedal/throw/catch/dive/flagGrab/flagPulled/celebrate/juke) as well
+     (idle/run/walk/backpedal/throw/catch/dive/flagGrab/flagPulled/celebrate/juke,
+     and the celebrations bow/lasso/salute/griddy/point) as well
      as the canonical names, so no call sites need to change.
    ============================================================================ */
 (function (global) {
@@ -66,15 +67,18 @@
     // reaching out and ripping the flag off; FlagPulled is the ball carrier's
     // reaction to losing it.
     flaggrab: 'FlagGrab', flagpull: 'FlagPulled', flagpulled: 'FlagPulled',
-    // Five celebrations, not one. `celebrate` is the hop the game has always
-    // had; the other four are there so ten men in an end zone don't perform a
-    // single animation in unison. Spike is the only one-shot of them.
+    // TEN celebrations, not one. `celebrate` is the hop the game has always
+    // had; the rest are there so ten men in an end zone don't perform a single
+    // animation in unison, and so a touchdown, a first down and a takeaway are
+    // not the same news told the same way. Spike and Point are the one-shots.
     celebrate: 'Celebrate', spike: 'Spike', dance: 'Dance', flex: 'Flex',
-    highstep: 'HighStep', juke: 'Juke'
+    highstep: 'HighStep', bow: 'Bow', lasso: 'Lasso', salute: 'Salute',
+    griddy: 'Griddy', point: 'Point', juke: 'Juke'
   };
   var LOOPING = {
     Idle: 1, Run: 1, Walk: 1, Backpedal: 1, Jog: 1, Sprint: 1,
-    Celebrate: 1, Dance: 1, Flex: 1, HighStep: 1
+    Celebrate: 1, Dance: 1, Flex: 1, HighStep: 1,
+    Bow: 1, Lasso: 1, Salute: 1, Griddy: 1
   };
 
   /* THE GAIT LADDER — which clips bracket which, and in what order.
@@ -787,6 +791,19 @@
     api.gait = function (kind, speed) {
       gaitReq = { kind: (kind === 'backward' ? 'backward' : 'forward'), speed: speed || 0 };
     };
+    /* WHICH CLIP IS ON SCREEN, by name, read back off the mixer.
+
+       The headless sweep used to answer this by wrapping play() on every rig it
+       could find in the scene — which meant it answered nothing at all, for two
+       reasons: nothing in the scene graph carried a back-reference to the api,
+       and players are rebuilt on every formation change, so any wrap that had
+       attached would have gone with them. Reading the current action back out
+       survives a rebuild because there is nothing to keep. */
+    api.clipInfo = function () {
+      var c = api._oneShot || current;
+      var cl = c && (c.getClip ? c.getClip() : c._clip);
+      return { clip: cl ? cl.name : null, oneShot: !!api._oneShot };
+    };
     api.gaitInfo = function () {
       if (!pair) return null;
       return { a: pair[0].name, b: pair[1].name, blend: pair[2], phase: phase,
@@ -1101,7 +1118,7 @@
     url: MODEL_URL,
     clipNames: ['Idle', 'Run', 'Walk', 'Backpedal', 'Jog', 'Sprint', 'Throw', 'Catch',
       'Dive', 'FlagGrab', 'FlagPulled', 'Celebrate', 'Spike', 'Dance', 'Flex',
-      'HighStep', 'Juke'],
+      'HighStep', 'Bow', 'Lasso', 'Salute', 'Griddy', 'Point', 'Juke'],
     materialNames: ['jersey', 'trim', 'skin', 'head', 'hair', 'shorts', 'socks', 'shoes', 'belt', 'flag'],
     hairStyles: HAIR_STYLES.slice(),
     facialHairStyles: FACIAL_HAIR.slice(),

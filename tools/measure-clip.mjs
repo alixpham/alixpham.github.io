@@ -322,6 +322,29 @@ console.log(`peak hand speed   ${peak.speed.toFixed(2)} m/s at t=${peak.t.toFixe
 console.log(`lowest foot point ${sink.toFixed(3)} m at t=${sinkT.toFixed(3)}` +
   (sink < -0.02 ? '   <-- THROUGH THE GROUND' : ''));
 
+/* THE OTHER GROUND ERROR, AND THE ONE NOTHING WAS LOOKING FOR.
+
+   Everything above asks whether a foot went THROUGH the turf. A pose can fail
+   the opposite way and no check saw it: groundedHips hangs the pelvis off
+   whichever sole is lowest, so if the two legs cannot both reach the ground in
+   the pose as authored, the other foot simply hovers — and the solver reports
+   a perfect zero the whole time, because it is measuring the foot that IS down.
+
+   That is not a hypothetical. It is what a symmetric fore/aft stagger does: two
+   legs at the same knee flexion with the ankles 0.3m apart in z do not have
+   their soles at the same height, because the back shank is raked and the front
+   one is not. Flex and Spike were both authored that way and both stood with
+   the front foot four centimetres in the air for their whole duration.
+
+   So: over the WHOLE clip, does each foot ever touch? A gait passes trivially
+   (every foot lands once a cycle) and so does any dance that shifts its weight;
+   what fails is a pose that never had both feet on the ground to begin with. */
+for (const side of ['L', 'R']) {
+  const low = rows.reduce((a, r) => Math.min(a, r.m.footY[side]), Infinity);
+  console.log(`foot ${side} closest approach ${low.toFixed(3)} m` +
+    (low > 0.02 ? '   <-- NEVER LANDS' : ''));
+}
+
 /* SKATE CHECK. A foot within a centimetre of the turf is bearing weight, and a
    foot bearing weight must not travel — that is the difference between a man
    standing on a field and a man sliding across one. A GAIT clip is the honest
