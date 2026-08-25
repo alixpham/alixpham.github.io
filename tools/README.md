@@ -382,6 +382,49 @@ of seconds; it waits for the celebration the renderer is running to end.
 
 ---
 
+## `pullstats.mjs` — why a flag pull takes as long as it does
+
+```sh
+npm run pulls                                  # 8 games, pro, CPU vs CPU
+node tools/pullstats.mjs --difficulty rookie --user
+```
+
+`simstats.mjs` says how a game ENDS UP; this says why. Same headless engine,
+instrumented on the one mechanic the box score keeps blaming, and reporting the
+numbers a player actually feels: time from a defender first getting a hand on
+the carrier to the flag coming off, how many separate engagements that took,
+and where the meter GOES — filled, drained by losing contact, or wiped by a
+juke. `--user` drops demo mode and splits every pull by which side made it,
+which is the only way to see whether a difficulty is easy in both directions or
+only while you have the ball. It was not: on Rookie your own defence measured
+2.65s to a pull against the CPU's 1.37s, because `pullTime` was read off the
+preset for both sides. See v3.3.0 in `DEPLOY.md`.
+
+A pull that reads well sits near a 0.6-1.0s median with 75-90% of contacts
+ending in a pull; the targets are printed beside each number.
+
+---
+
+## `smoke.mjs` — every screen, both orientations, zero errors
+
+```sh
+npm run smoke
+```
+
+The check CLAUDE.md has always asked for before claiming a change is done, which
+until v3.3.0 had no tool and was re-improvised in a scratch file each session.
+Loads the menu, World, Team Builder and Road to Glory plus a live Watch Demo
+game at 1280x720 and 430x932, and reports console errors, page errors and
+screenshots (into `.smoke/`, gitignored).
+
+It also answers what a clean console cannot. engine.js swallows `externalRender`
+throws and hands over to the 2D canvas after five, so a dead 3D scene looks like
+a working game in a different art style — the `game` row wraps `externalRender`
+to catch what it threw and asserts `FLAGSTER.activeShell.field3d` is still
+non-null. Exit code is non-zero if anything fired.
+
+---
+
 ## `rig-def.mjs` / `rig-fk.mjs` — the rig, and kinematics over it
 
 `rig-def.mjs` holds the bone table, the three sole offsets and the leg

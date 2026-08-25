@@ -269,6 +269,73 @@ function gripped(e) {
     'points=' + scored + ' accepted=' + (pen ? pen.accepted : 'none'));
 }
 
+{ /* Difficulty is a statement about the CPU, not about the mechanic. pullTime
+     and jukeCd used to be read straight off the preset for BOTH sides, so on
+     Rookie your own defenders needed the same slow 1.05 the CPU's did — the
+     setting that makes the game easy while you carry the ball made it hard the
+     moment you didn't, and your defence measured 2.65s to a pull against the
+     CPU's 1.37s. */
+  const e = new F.Engine(canvas, { onEvent() {} });
+  const h = D.NATIONS[0], a = D.NATIONS[4];
+  e.newGame({
+    home: h, away: a,
+    homeJersey: D.jerseysFor(h.id)[0], awayJersey: D.jerseysFor(a.id)[1],
+    userSide: 'home', demo: false, difficulty: 'rookie'
+  });
+  const mine = e.knob('pullTime', 'home'), theirs = e.knob('pullTime', 'away');
+  check('Rookie pulls faster for you than for the CPU', mine < theirs,
+    'yours=' + mine + ' cpu=' + theirs);
+  check('Rookie gives the CPU carrier the long juke cooldown',
+    e.knob('jukeCd', 'away') < e.knob('jukeCd', 'home'),
+    'cpu=' + e.knob('jukeCd', 'away') + ' yours=' + e.knob('jukeCd', 'home'));
+
+  e.difficulty = { key: 'allpro', name: 'All-Pro', defSpeed: 1, pullTime: 0.5, catchBonus: 0, intScale: 1, jukeCd: 2.0 };
+  check('All-Pro pulls faster for the CPU than for you',
+    e.knob('pullTime', 'away') < e.knob('pullTime', 'home'),
+    'cpu=' + e.knob('pullTime', 'away') + ' yours=' + e.knob('pullTime', 'home'));
+
+  e.demo = true;
+  check('a demo game reads one column for both sides',
+    e.knob('pullTime', 'home') === e.knob('pullTime', 'away'),
+    'home=' + e.knob('pullTime', 'home') + ' away=' + e.knob('pullTime', 'away'));
+}
+
+{ /* A juke ends the engagement; it does not rewind it. The first juke of a play
+     used to zero the meter outright, and since a carrier in trouble always has
+     one available every engagement got erased once for free — 41% of everything
+     the defence ever filled. */
+  const { e, s } = kickoff('man');
+  e.snap();
+  const d = gripped(e);
+  s.carrier.grabT = 0.5;
+  e.juke();
+  check('a juke knocks the meter back rather than to zero',
+    s.carrier.grabT > 0.05 && s.carrier.grabT < 0.5,
+    'grabT=' + s.carrier.grabT.toFixed(3) + ' (was 0.5)');
+  check('a juke still ends the engagement', s.grabbedBy === null && d.stun > 0,
+    'grabbedBy=' + s.grabbedBy + ' stun=' + d.stun.toFixed(2));
+}
+
+{ /* Losing contact drains the meter, it does not reset it: a defender who loses
+     his grip for a moment and regains it is closer to the flag than one
+     starting fresh. */
+  const { e, s } = kickoff('man');
+  e.snap();
+  const c = s.carrier;
+  const d = s.players.find(p => p.team !== c.team && !p.flagPulled);
+  d.x = c.x + 40; d.y = c.y + 40;            // nobody anywhere near
+  s.players.forEach(p => { if (p.team !== c.team) { p.x = c.x + 40; p.y = c.y + 40; } });
+  const need = e.knob('pullTime', d.team);
+  c.grabT = need;                             // a full meter, one frame from the pull
+  e._dt = 1 / 60;
+  const def = s.players.filter(p => p.team !== c.team);
+  for (let f = 0; f < 18; f++) e._checkFlagPull(def);   // 0.3s of daylight
+  /* At the old flat 2.2/s a full meter was gone in under half a second, so
+     0.3s of separation left 8% of it. Proportional to the difficulty now. */
+  check('0.3s of separation does not erase a full meter',
+    c.grabT > need * 0.5, 'retained ' + (100 * c.grabT / need).toFixed(0) + '%, want >50%');
+}
+
 /* ------------------------------- report ---------------------------------- */
 let bad = 0;
 for (const r of results) {

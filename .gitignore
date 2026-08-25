@@ -41,3 +41,4 @@ _t3d_test.js
 # CMU mocap source files (tools/mocap/fetch.mjs re-downloads them on demand;
 # the retargeted clips in tools/motion/ are what the build actually reads)
 tools/mocap/cache/
+.smoke/
