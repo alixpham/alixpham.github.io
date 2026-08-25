@@ -329,6 +329,7 @@
     s.snapT = 0;
     s.playClock = 0;
     s.handoffDone = false;
+    s.passThrown = false;                 // A9 — one forward pass per down
     s.trickStage = 0;
     s.stats[this.offenseTeam()].plays++;
     // trick / run handoff timing
@@ -349,9 +350,37 @@
     var off = s.players.filter(function (p) { return p.team === this.offenseTeam(); }, this);
     var target = off.filter(function (p) { return p.slot === slot; })[0];
     if (!target || target === carrier) return;
-    // Center may catch; QB throws. Passing after crossing LOS not allowed (flag rule).
+    /* A9 — ONE FORWARD PASS PER DOWN.
+
+       There was no state anywhere recording that a forward pass had happened,
+       so nothing could prevent a second one. The only guard was positional —
+       you cannot throw from past the line — which happens to cover a receiver
+       who catches the ball DOWNFIELD and hid the hole completely. Catch it
+       behind the line, though, as a screen or a swing or a checkdown routinely
+       does, and the ball could simply be thrown forward again.
+
+       And the CPU did this constantly: 7.9% of CPU-vs-CPU plays contained more
+       than one forward pass, up to THREE in a single down, four of them scoring
+       (tools/simstats.mjs, 8 games, pro). The route in is that `_dropback`
+       keeps running for `s.passer` every frame while `handoffDone` is false —
+       which on a pass play it always is — and `_aiThrow` opens with
+       `var qb = s.carrier`, the man holding the ball NOW rather than the
+       passer. So the moment a completion was gathered behind the line, the
+       quarterback's own pocket logic threw it again through the receiver.
+
+       Guarding the rule here rather than in `_aiThrow` fixes both the CPU and
+       the human at the seam every forward pass has to pass through. */
+    if (s.passThrown) { this._flash('Only one forward pass per down!'); return; }
+
+    /* A forward pass must be thrown from BEHIND the line of scrimmage. The
+       message used to read "No forward pass past the line!", whose subject is
+       ambiguous — the natural reading is that the PASS may not travel past the
+       line, i.e. that you cannot throw downfield at all, which is the opposite
+       of the rule and of the point of the game. It is the PASSER who has to be
+       behind it, so the message says so, matching the A3 wording used when the
+       passer crosses. */
     var losX = s.losX;
-    if (carrier.x > losX + 1.0 && !s.autoHandoff) { this._flash('No forward pass past the line!'); return; }
+    if (carrier.x > losX + 1.0 && !s.autoHandoff) { this._flash('Passer past the line — no forward pass!'); return; }
 
     /* WIND UP, then release. The ball used to become airborne on the same
        frame the button was pressed, while the throw animation it is supposed
@@ -415,6 +444,10 @@
     // or the target's flag coming off. Any of those and the pass never happens.
     if (s.phase !== 'live' || s.carrier !== carrier || carrier.flagPulled) return;
     if (!target || target.flagPulled) return;
+    /* A9 — recorded at RELEASE, not at the wind-up: a wind-up the play moves
+       out from under (a sack, the target's flag) never becomes a pass, and the
+       four lines above are exactly the cases where it doesn't. */
+    s.passThrown = true;
 
     /* C1 — BALLISTICS. Every pass used to leave at a fixed 22yd/s in a straight
        line with a cosmetic sin() bump, so a 5-yard flat and a 40-yard bomb were

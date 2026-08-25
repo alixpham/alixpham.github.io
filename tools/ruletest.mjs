@@ -61,8 +61,8 @@ const F = win.FLAGSTER, D = F.data;
 const drain = () => { let n = 0; while (timers.length && n++ < 64) { try { timers.shift()(); } catch (e) {} } };
 
 /* A game parked at a live snap, with the events it emitted. */
-function kickoff(defCall = 'man', tweak) {
-  Math.random = mulberry32(3);
+function kickoff(defCall = 'man', tweak, seed = 3) {
+  Math.random = mulberry32(seed);
   timers.length = 0;
   const ev = [];
   const e = new F.Engine(canvas, { onEvent: x => ev.push(x) });
@@ -334,6 +334,82 @@ function gripped(e) {
      0.3s of separation left 8% of it. Proportional to the difficulty now. */
   check('0.3s of separation does not erase a full meter',
     c.grabT > need * 0.5, 'retained ' + (100 * c.grabT / need).toFixed(0) + '%, want >50%');
+}
+
+{ /* A9 — ONE FORWARD PASS PER DOWN. No state anywhere recorded that a forward
+     pass had happened, so nothing could prevent a second. The only guard was
+     positional (you cannot throw from past the line), which happens to cover a
+     receiver who catches it DOWNFIELD and hid the hole completely — catch it
+     behind the line, as a screen or checkdown routinely does, and the receiver
+     could throw forward again for a second completion and no penalty. */
+  let found = null;
+  for (let seed = 1; seed <= 40 && !found; seed++) {
+    const { e, s } = kickoff('zone', null, seed);
+    e.snap();
+    const qb = s.carrier;
+    e.throwTo('WR1');
+    let caught = null;
+    for (let f = 0; f < 500; f++) {
+      e._update(DT);
+      if (s.carrier && s.carrier !== qb) { caught = s.carrier; break; }
+      if (s.phase !== 'live') break;
+    }
+    if (!caught || caught.team !== qb.team) continue;    // incompletion or a pick
+    found = { e, s, caught };
+  }
+  if (!found) {
+    check('A9 setup found a completed pass to throw from', false, 'no seed completed one');
+  } else {
+    const { e, s, caught } = found;
+    caught.x = s.losX - 3;                               // a screen: caught BEHIND the line
+    s.pendingThrow = null; s.ball.inAir = false;
+    e.throwTo('WR2');
+    check('a second forward pass is not allowed', !s.pendingThrow,
+      'pendingThrow=' + !!s.pendingThrow + ' msg=' + JSON.stringify(s.message));
+
+    // ...but a LATERAL after a forward pass is legal, and always has been.
+    const mate = s.players.find(p => p.team === caught.team && p !== caught && !p.flagPulled);
+    mate.x = caught.x - 4; mate.y = caught.y;
+    s.pendingThrow = null; s.ball.inAir = false;
+    check('a lateral after a forward pass is still legal', e.pitch() === true,
+      'msg=' + JSON.stringify(s.message));
+  }
+}
+
+{ /* The passer has to be behind the line, and the message has to say which of
+     the two things is past it. "No forward pass past the line!" reads as though
+     the PASS may not travel past the line — the opposite of the rule. */
+  const { e, s } = kickoff('man');
+  e.snap();
+  const qb = s.carrier;
+  qb.x = s.losX + 5;                                     // passer downfield
+  s.autoHandoff = false;
+  e.throwTo('WR1');
+  check('a forward pass from past the line is refused', !s.pendingThrow,
+    'pendingThrow=' + !!s.pendingThrow);
+  check('...and the message names the PASSER, not the pass',
+    /passer/i.test(s.message || '') && !/^No forward pass past the line/.test(s.message || ''),
+    'msg=' + JSON.stringify(s.message));
+}
+
+{ /* A handoff is not a pass, so the trick plays keep their one legal throw:
+     RB Option Pass hands off and the RB then throws forward. A9 must not eat
+     it — _doHandoff transfers possession directly and never reaches
+     _releaseThrow, which is what keeps passThrown false. */
+  const { e, s } = kickoff('man', st => {
+    st.offPlay = D.PLAYS.find(p => p.trick === 'rbpass');
+  });
+  e.snap();
+  for (let f = 0; f < 120 && !s.handoffDone; f++) e._update(DT);
+  check('a handoff does not count as the down\'s forward pass',
+    s.handoffDone === true && s.passThrown === false,
+    'handoffDone=' + s.handoffDone + ' passThrown=' + s.passThrown);
+  const rb = s.carrier;
+  if (rb) rb.x = s.losX - 2;                             // behind the line, as the play intends
+  s.pendingThrow = null;
+  e.throwTo('WR1');
+  check('the RB Option Pass can still throw its one forward pass', !!s.pendingThrow,
+    'carrier=' + (rb && rb.slot) + ' msg=' + JSON.stringify(s.message));
 }
 
 /* ------------------------------- report ---------------------------------- */
