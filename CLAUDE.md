@@ -29,6 +29,8 @@ tools/mocap/                  CMU .asf/.amc -> this rig (fetch, asf, retarget)
 tools/motion/*.json           retargeted clips, committed; the .amc never is
 tools/measure-clip.mjs        reads a baked clip back out as joint angles
 tools/simstats.mjs            headless CPU-vs-CPU box score
+tools/pullstats.mjs           the flag pull, timed; --user splits it by side
+tools/smoke.mjs               every screen x both orientations, 0 errors, field3d alive
 VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
                         through this environment's proxy, so these are the
                         authoritative record)
@@ -168,20 +170,26 @@ merges, restart the branch instead — `git checkout -B <branch> origin/master`
 - **A clean console does not mean the 3D renderer is running.** engine.js
   swallows `externalRender` throws and silently hands over to the 2D canvas
   after five of them, so a broken scene looks like a working game with a
-  different art style. When verifying, check `shell.field3d` is still non-null
-  and wrap `engine.externalRender` to catch what it threw.
+  different art style. `npm run smoke` checks this for you — it wraps
+  `externalRender` and asserts `activeShell.field3d` is still non-null.
 - `npm run lint` (syntax across every source file), `npm test` (rules
-  regression), `node tools/simstats.mjs` (box score), `npm run celebs`
-  (every celebration, forced and read back off the renderer),
+  regression), `node tools/simstats.mjs` (box score), `npm run pulls` (why the
+  box score looks like that — the flag pull, timed and split by side),
+  `npm run celebs` (every celebration, forced and read back off the renderer),
   `node tools/posesheet.mjs <Clip>` (a clip big enough to judge the pose —
   measure-clip says whether it is correct, this says whether it is any good). Playwright is a
   devDependency purely so the browser harnesses survive a new container — the
   **site itself still ships no npm dependencies and no build step**.
-- **Verify before claiming done:** drive the real thing in headless Chromium
-  (`$FLAGSTER_CHROME`, exported by the session hook; the image pins a build
-  number so do not hardcode the path — args
-  `--use-gl=swiftshader --enable-unsafe-swwebgl --ignore-gpu-blocklist`),
-  screenshot it, and confirm 0 console/page errors across World, Team Builder,
-  Road to Glory and the menu, in both landscape and portrait.
+- **Verify before claiming done:** `npm run smoke` drives the real thing in
+  headless Chromium and confirms 0 console/page errors across the menu, World,
+  Team Builder, Road to Glory and a live game, in both landscape and portrait,
+  with screenshots in `.smoke/`. (It resolves `$FLAGSTER_CHROME`, exported by
+  the session hook; the image pins a build number, so never hardcode the path.)
+- **A difficulty knob is a statement about the CPU, not about the mechanic.**
+  Read it as `team !== userSide` — `engine.knob(name, side)` does this, and
+  every one of them must go through it. `pullTime` and `jukeCd` did not, and
+  applied to both sides they inverted for half the game: Rookie, the setting
+  that makes it easy while you carry the ball, made your own defence slower
+  than the CPU's the moment you didn't.
 - Pages deploys usually land in ~40-90s; confirm the live `VERSION` before
   reporting a change as live.

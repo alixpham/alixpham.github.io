@@ -34,6 +34,20 @@
   var NO_RUN_ZONE = 5;                   // no running plays inside 5 of a goal line or midfield
   var GRAVITY = 10.73;                   // yd/s^2 (9.81 m/s^2)
   var AI_JUKE_PER_SEC = 2.2;             // AI escape attempts per second, frame-rate free
+  /* A grip you already have is harder to lose than one you are getting: once a
+     defender has a hand on the belt he keeps it a little further out than he
+     needed to reach it. Without this the engagement flickers off on any frame
+     the carrier is a centimetre past the range and the whole meter starts
+     draining, which is why a chase spent a third of its time inside two yards
+     and not grabbing. */
+  var GRAB_HOLD_BONUS = 0.35;            // extra yards of reach while already holding
+  /* Seconds of clean separation to drain a FULL meter, whatever the difficulty.
+     This used to be a flat 2.2 units/s against a fill rate near 0.79, so half a
+     second of daylight erased a second and a half of work — 13% of everything
+     the defence ever filled went straight back out this way. Proportional now,
+     so shaking someone off means genuinely getting away rather than wobbling
+     out of range for a few frames. */
+  var GRAB_DRAIN_S = 0.7;
   var AI_SCRAMBLE_AT = 3.4;              // seconds holding the ball before a QB tucks and runs
   var AI_MIN_SEP = 2.2;                  // yards of separation a CPU QB wants before throwing
   var AI_FORCE_THROW_AT = 3.0;           // ...unless it's been this long, then take what's there
@@ -42,10 +56,21 @@
      defenders matched your speed and the flag came off the instant they
      touched you. Rookie is now the default. */
   var DIFFICULTY = {
-    rookie: { name: 'Rookie', defSpeed: 0.84, pullTime: 1.05, catchBonus: 0.20, intScale: 0.45, jukeCd: 1.1 },
-    pro:    { name: 'Pro',    defSpeed: 0.93, pullTime: 0.72, catchBonus: 0.10, intScale: 0.75, jukeCd: 1.5 },
-    allpro: { name: 'All-Pro',defSpeed: 1.00, pullTime: 0.50, catchBonus: 0.00, intScale: 1.00, jukeCd: 2.0 }
+    rookie: { key: 'rookie', name: 'Rookie', defSpeed: 0.84, pullTime: 1.05, catchBonus: 0.20, intScale: 0.45, jukeCd: 1.1 },
+    pro:    { key: 'pro',    name: 'Pro',    defSpeed: 0.93, pullTime: 0.72, catchBonus: 0.10, intScale: 0.75, jukeCd: 1.5 },
+    allpro: { key: 'allpro', name: 'All-Pro',defSpeed: 1.00, pullTime: 0.50, catchBonus: 0.00, intScale: 1.00, jukeCd: 2.0 }
   };
+  /* Difficulty says how hard the CPU is, which is why defSpeed and catchBonus
+     have always been read as `team !== userSide`. pullTime and jukeCd were not,
+     and applied to both sides they invert for half the game. On Rookie a CPU
+     defender needing 1.33s to get your flag off is exactly what makes Rookie
+     easy while you have the ball — and YOUR defenders needing that same 1.33s
+     is what made it hard the moment you didn't. The juke cooldown ran the same
+     way round: Rookie hands the shortest one to whoever is carrying, and on
+     defence that is the CPU. Read from the side it applies to, so the user's
+     own players get the mirrored preset and Rookie is easy in both directions.
+     Demo games have no user side; both teams read the CPU column. */
+  var MIRROR = { rookie: 'allpro', pro: 'pro', allpro: 'rookie' };
   function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
   function lerp(a, b, t) { return a + (b - a) * t; }
 
@@ -107,6 +132,13 @@
   Engine.prototype.defenseTeam = function () { return this.state.possession === 'home' ? 'away' : 'home'; };
   Engine.prototype.nationId = function (side) { return this.state[side].id; };
   Engine.prototype.userOnOffense = function () { return this.state.possession === this.userSide; };
+  /* A difficulty knob, read from the perspective of the side it acts on. See
+     MIRROR above: the CPU gets the preset, the user's own players get its
+     mirror, so "Rookie" means easy whichever way the ball is going. */
+  Engine.prototype.knob = function (name, side) {
+    if (this.demo || !this.userSide || side !== this.userSide) return this.difficulty[name];
+    return (DIFFICULTY[MIRROR[this.difficulty.key]] || this.difficulty)[name];
+  };
 
   /* ------------------------- FORMATION / SNAP ---------------------------- */
   // Build 5 offensive + 5 defensive players for the current down.
@@ -1476,20 +1508,28 @@
       // the meter carried on filling through it.
       if (d.flagPulled || d.stun > 0) continue;
       var range = 1.15 + d.data.pull / 400;
+      if (d === s.grabbedBy) range += GRAB_HOLD_BONUS;   // already holding on
       var dd = dist(d, c);
       if (dd < range && dd < best) { best = dd; grabber = d; }
     }
 
-    // nobody in reach -> the engagement decays quickly (you shook them off)
+    /* How long the grab takes belongs to the DEFENDER doing the grabbing, so it
+       has to be resolved once one is picked. With nobody in reach there is no
+       side to read it from and the drain uses the defending team's. */
+    var need = this.knob('pullTime', grabber ? grabber.team : this.defenseTeam());
+
+    /* Nobody in reach -> the engagement drains. It does NOT reset: a defender
+       who loses his grip for a moment and gets it back is closer to the flag
+       than one starting fresh, and treating those two the same is what made a
+       pull take two and a half engagements instead of one. */
     if (!grabber) {
-      c.grabT = Math.max(0, (c.grabT || 0) - dt * 2.2);
+      c.grabT = Math.max(0, (c.grabT || 0) - dt * need / GRAB_DRAIN_S);
       if (s.grabbedBy) { s.grabbedBy.grabbing = false; s.grabbedBy = null; }
-      s.grabProgress = 0;
+      s.grabProgress = clamp((c.grabT || 0) / need, 0, 1);
       return;
     }
 
     s.grabbedBy = grabber; grabber.grabbing = true;
-    var need = this.difficulty.pullTime;
 
     // Fill rate: the defender's pull vs the carrier's agility. A very shifty
     // carrier can hold a defender off almost indefinitely.
@@ -1568,7 +1608,18 @@
      never be pulled — measured at 18 jukes and no tackle across 20 seconds of
      being held. Repeat jukes in the same play now break progressively less of
      the meter and buy progressively less stun, so the move stays strong the
-     first time and stops being a lock. */
+     first time and stops being a lock.
+
+     Diminishing returns fixed the LOCK and not the LENGTH. The first juke of a
+     play still rewound the meter to zero, and since a carrier in trouble
+     always has one available, every engagement got erased once for free: 41%
+     of everything the defence ever filled went out this way, and a pull needed
+     2.4 separate engagements instead of one. A juke's reward is that it ENDS
+     the engagement — the separation and the 0.55s of stun, both already
+     modelled — so rewinding the meter on top of that is charging the defender
+     twice for the same cut. It knocks the meter back now; it does not rewind
+     it. */
+  var JUKE_BREAK = 0.55;                 // share of the meter the FIRST juke breaks
   Engine.prototype.juke = function () {
     var s = this.state;
     var c = s && s.carrier;
@@ -1589,9 +1640,9 @@
       broke[who] = true;
 
       c.jukeCount = n;
-      c.jukeCd = this.difficulty.jukeCd;
-      c.grabT = Math.max(0, (c.grabT || 0) * (1 - eff));
-      s.grabProgress = clamp(c.grabT / this.difficulty.pullTime, 0, 1);
+      c.jukeCd = this.knob('jukeCd', c.team);
+      c.grabT = Math.max(0, (c.grabT || 0) * (1 - JUKE_BREAK * eff));
+      s.grabProgress = clamp(c.grabT / this.knob('pullTime', held.team), 0, 1);
       held.grabbing = false;
       held.stun = 0.55 * eff;              // long enough to actually get away
       s.grabbedBy = null;
@@ -2528,12 +2579,22 @@
     s.userControlled = this._nearestDefenderToBall();
     this.clearSlash();                   // the route belonged to the old defender
   };
+  /* Manual pull attempt for the user-controlled defender.
+
+     A press out of range used to do NOTHING — no cue, no sound, no message —
+     which from behind the controller is indistinguishable from a press that
+     did not register, so the read is "I keep pulling and nothing happens".
+     A miss says so now, and says which way it missed: out of reach, or the
+     wrong man selected because SWITCH follows the ball rather than your thumb.
+     The cue is rate-limited because the key repeats while held. */
   Engine.prototype.pullAction = function () {
-    // manual pull attempt for user-controlled defender
     var s = this.state;
     if (this.userOnOffense() || !s.carrier || !s.userControlled) return;
     var d = s.userControlled, c = s.carrier;
-    if (dist(d, c) < 1.6) this._flagPull(d, c);
+    if (dist(d, c) < 1.6) { this._flagPull(d, c); return; }
+    if (this._now() < (this._pullMissAt || 0) + 700) return;
+    this._pullMissAt = this._now();
+    this._flash(d.stun > 0 ? 'Shaken off!' : 'Out of reach!');
   };
 
   Engine.prototype._jerseyColor = function (team) {
