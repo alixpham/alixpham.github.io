@@ -17,6 +17,7 @@ and a prioritised plan to close the gap. Written against **v2.11.0**
 | 5 — Presentation (E1–E3) | v2.16.0 | Body variance by position and ratings, a real snap off the turf, ball spot and down marker. **E3 partial** — benches, coaches, officials, chain crew and a non-static crowd were left. |
 | 6 — Clock (A6–A8) | v2.17.0 | Two 20-minute halves, continuously running clock with last-two-minute stoppages, alternating-possession overtime, real laterals. **A7 was not actually shipped** — see below. |
 | A7 redone (penalties) | v2.31.0 | The illegal rush rebuilt on measured eligibility and a live ball (v2.30.0), and flag guarding finally *called* rather than merely written. |
+| A9 — one forward pass | v3.4.0 | Nothing recorded that a forward pass had happened, so the ball could be thrown forward again after a catch *behind* the line. 7.9% of CPU plays did it, up to three passes in one down. |
 
 ### Where the numbers ended up
 
@@ -295,6 +296,47 @@ is the lesson — `tools/simstats.mjs` could not have caught either of these.
 Pitches and laterals behind the line are legal and are a staple of the sport.
 Only the pre-baked `reverse` trick play approximates one, and it doesn't
 actually model a pitch.
+
+### A9. Two forward passes on one down — *fixed in v3.4.0*
+
+Only one forward pass is legal per down. Nothing in the engine recorded that a
+pass had been thrown, so nothing could refuse a second: the only guard in
+`throwTo` was positional — you may not throw from past the line of scrimmage.
+
+That positional guard happens to cover the common case, which is why this
+survived. A receiver who catches the ball *downfield* is past the line and is
+refused. But a screen, a swing or a checkdown is caught **behind** the line,
+and from there the receiver could simply throw it forward again: measured as
+two `catch` events, a fully completed second pass and no penalty.
+
+It reads like a human-only exploit and it was not. **7.9% of CPU-vs-CPU plays
+contained more than one forward pass — up to three in a single down, four of
+them scoring** (8 games, pro). `_dropback` runs for `s.passer` every frame while
+`handoffDone` is false, which on a pass play it always is, and `_aiThrow` opens
+with `var qb = s.carrier` — the man holding the ball *now*, not the passer. So
+the instant a completion was gathered behind the line, the quarterback's own
+pocket logic threw it again through the receiver.
+
+The box score never showed it, and could not have. Over five seeds either side
+of the fix, completions run 46.5–49.9% before against 47.9–51.3% after, yards
+per run 8.14–10.1 against 7.92–8.80, touchdowns 14.5–16.5% against 14.3–16.5% —
+overlapping ranges, no signal. Each individual throw is perfectly ordinary; it
+is the *count per down* that is illegal, and nothing was counting. The one
+measurement that sees it is a direct one: plays containing more than one
+forward pass, **7.9% → 0%**. `tools/ruletest.mjs` asserts it directly, which is
+the same lesson as A7.
+
+A handoff is not a pass (`_doHandoff` moves possession without ever reaching
+`_releaseThrow`), so the RB Option Pass and Flea Flicker keep their one legal
+throw; laterals stay unlimited. The flag is set at *release*, not at the
+wind-up, because a wind-up the play moves out from under never becomes a pass.
+
+The refusal message for the positional rule was misleading too. "No forward
+pass past the line!" has an ambiguous subject — the natural reading is that the
+*pass* may not travel past the line, i.e. that you cannot throw downfield at
+all, which is the opposite of the rule and of the point of the game. It is the
+*passer* who must be behind it, and the message now says so, matching the A3
+wording used when the passer crosses.
 
 ---
 
