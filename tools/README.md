@@ -382,6 +382,27 @@ of seconds; it waits for the celebration the renderer is running to end.
 
 ---
 
+## `fbx-inspect.mjs` — what is actually inside a purchased FBX
+
+```sh
+node tools/fbx-inspect.mjs asset.fbx --bones
+node tools/fbx-inspect.mjs --compare ManA.fbx ManC.fbx    # same armature?
+```
+
+Reads a binary FBX (Kaydara 7x00) without Blender, without Autodesk's SDK and
+without adding a dependency: skeleton (every LimbNode, its parent, its rest
+offset), animation stacks and their lengths, mesh vertex counts, materials and
+textures. `node:zlib` is the only import, because FBX property arrays are
+usually deflated.
+
+It exists because an asset pipeline rests on claims about files nobody has
+opened. The Studio Ochi pack ships six rigged characters and the whole plan for
+one shared animation library turns on whether they share one armature —
+`--compare` answers that in bone names and rest offsets rather than in trust.
+(They do: 57 of 58 bones identical, the 58th being where the armature stands.)
+
+---
+
 ## `pullstats.mjs` — why a flag pull takes as long as it does
 
 ```sh
