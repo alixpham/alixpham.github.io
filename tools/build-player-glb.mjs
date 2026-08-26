@@ -2431,36 +2431,65 @@ clip('Dive', 1.20, [
 }
 
 /* ------------------------------------------------------------ FlagPulled */
-/* Reaction of the ball carrier: jerked to a stop, hands up, body slumps. */
-/* The pelvis height here was hand-keyed and drove the feet 8.6cm through the
-   turf halfway through — which nobody ever saw, because until now `flagPulled`
-   was never set and this clip never played. Legs are in the same solved form
-   as Throw and FlagGrab: angles in degrees, ground worked out from them. */
+/* Reaction of the ball carrier: pulled up short, hands up, body slumps.
+
+   THIS WAS THE LAST CLIP IN THE FILE STILL HAND-TYPING EULER TRIPLES AT THE
+   SHOULDER, which is the one thing the rig notes say never to do, and it went
+   exactly the way they say it goes. `UpperArm_R` keyed [-1.30, 0, -0.55] reads
+   as "swing it up and tuck it in"; what it actually solves to is 75 degrees of
+   elevation with 58 degrees of horizontal ADDUCTION — 58 across the midline —
+   on a nearly straight elbow, which throws both hands up and across at 1.66m
+   on a 1.85m man. From in front that reads as an arm across the face; measured,
+   it clears the skull, and the thing that is genuinely broken is one joint
+   down. Spine -0.22, Chest -0.14 and Head -0.28 stack into a 19.8 degree
+   BACKWARD arch at the same instant: the man bends over backwards.
+
+   Authored in anatomical angles now and solved by armQ(), the same as FlagGrab
+   directly above. The reaction is: elevation to 74 so the hands come up, but
+   horizontal held near 20 so they come up BESIDE him rather than across, and
+   the elbow closed to 92 so the hand finishes near his own shoulder instead of
+   flung out at head height. The trunk checks FORWARD off the deceleration and
+   never goes negative.
+
+   The feet hold one z apiece and take the stop in the knees. They used to be
+   keyed as hip angles that went on opening through the jerk — the legs
+   scissoring wider while the man was supposedly being brought to a halt — and
+   measure-clip reported the planted foot skating at 2.52 m/s with a sole 13mm
+   under the turf. A man stopping dead plants and bends; that is the [z, knee]
+   form, and it is solved flat. */
 {
-  const T = [0, 0.18, 0.45, 1.10];
-  //              hip  knee ankle
-  const legL = [[ 20,  17,  2], [ 34,  12,  6], [ 14,  32, -2], [ 12,  26,  0]];
-  const legR = [[-17,  32, -4], [-26,  40, -8], [ -6,  23,  2], [ -3,  20,  4]];
-clip('FlagPulled', 1.10, [
-  groundedHips(T, legL, legR),
-  rot('Hips', [0, 0.18, 0.45, 1.10], [[0, 0, 0], [-0.10, 0.10, 0], [0.16, 0.22, 0], [0.10, 0.16, 0]]),
-  rot('Spine', [0, 0.18, 0.45, 1.10], [[0.10, 0, 0], [-0.22, -0.12, 0], [0.34, -0.20, 0], [0.26, -0.14, 0]]),
-  rot('Chest', [0, 0.18, 0.45, 1.10], [[0.04, 0, 0], [-0.14, 0, 0], [0.18, 0, 0], [0.14, 0, 0]]),
-  rot('Head', [0, 0.18, 0.45, 1.10], [[-0.05, 0, 0], [-0.28, 0, 0], [0.30, 0, 0], [0.22, 0, 0]]),
-  rot('UpperArm_L', [0, 0.18, 0.45, 1.10], [[0.10, 0, 0.18], [-1.30, 0, 0.55], [-0.55, 0, 0.45], [-0.20, 0, 0.35]]),
-  rot('LowerArm_L', [0, 0.18, 0.45, 1.10], [[-1, 0, 0], [-0.55, 0, 0], [-1.1, 0, 0], [-1.25, 0, 0]]),
-  rot('UpperArm_R', [0, 0.18, 0.45, 1.10], [[0.10, 0, -0.18], [-1.30, 0, -0.55], [-0.55, 0, -0.45], [-0.20, 0, -0.35]]),
-  rot('LowerArm_R', [0, 0.18, 0.45, 1.10], [[-1, 0, 0], [-0.55, 0, 0], [-1.1, 0, 0], [-1.25, 0, 0]]),
-  rot('UpperLeg_L', T, legL.map(l => [hip(l[0]), 0, 0.05])),
-  rot('LowerLeg_L', T, legL.map(l => [knee(l[1]), 0, 0])),
-  rot('Foot_L', T, legL.map(l => [ankle(l[2]), 0, 0])),
-  rot('UpperLeg_R', T, legR.map(l => [hip(l[0]), 0, -0.05])),
-  rot('LowerLeg_R', T, legR.map(l => [knee(l[1]), 0, 0])),
-  rot('Foot_R', T, legR.map(l => [ankle(l[2]), 0, 0])),
-  // the flag rips away and flies
-  rot('Flag_L', [0, 0.18, 0.45, 1.10], [[0, 0, 0.05], [-0.9, 0.4, 0.5], [-1.6, 0.9, 0.9], [-1.9, 1.2, 1.1]]),
-  rot('Flag_R', [0, 1.10], [[0, 0, -0.05], [0.25, 0, -0.10]])
-]);
+  const G = [
+    // t      pelvis trunk lean tilt | left foot [z, knee] | right foot | arms [elev, horiz, ER, elbow]
+    { t: 0.00, pel:  0, trk:  0, lean:  8, tilt: 0, L: [0.14, 24], R: [-0.14, 28], arm: [22, 16, 8, 60] },
+    { t: 0.18, pel: -3, trk: -4, lean: 16, tilt: 0, L: [0.14, 42], R: [-0.14, 46], arm: [74, 24, 6, 92] },
+    { t: 0.45, pel:  2, trk:  4, lean: 12, tilt: 0, L: [0.14, 30], R: [-0.14, 34], arm: [44, 20, 6, 74] },
+    { t: 1.10, pel:  0, trk:  0, lean:  6, tilt: 0, L: [0.14, 24], R: [-0.14, 26], arm: [20, 14, 6, 52] }
+  ];
+  const T = G.map(k => k.t);
+  const legL = G.map(k => legOf(k.L));
+  const legR = G.map(k => legOf(k.R));
+  clip('FlagPulled', 1.10, [
+    groundedHips(T, legL, legR),
+    rot('Hips', T, G.map(k => [0, k.pel * D, 0])),
+    rot('Spine', T, G.map(k => [k.lean * 0.55 * D, (k.trk - k.pel) * 0.5 * D, -k.tilt * 0.55 * D])),
+    rot('Chest', T, G.map(k => [k.lean * 0.45 * D, (k.trk - k.pel) * 0.5 * D, -k.tilt * 0.45 * D])),
+    // A glance down at the hip the flag has just come off, not a head thrown back.
+    rot('Head', T, G.map(k => [(-0.04 - k.lean * 0.006), -k.trk * 0.5 * D, 0])),
+    // Both hands come up: it is a reaction, not a reach, so the two arms match.
+    rotq('UpperArm_R', T, G.map(k => armQ('R', k.arm[0], k.arm[1], k.arm[2]))),
+    rot('LowerArm_R', T, G.map(k => [elbow(k.arm[3]), 0, -0.05])),
+    rotq('UpperArm_L', T, G.map(k => armQ('L', k.arm[0], k.arm[1], k.arm[2]))),
+    rot('LowerArm_L', T, G.map(k => [elbow(k.arm[3]), 0, 0.05])),
+    rot('UpperLeg_L', T, legL.map(l => [hip(l[0]), 0, 0.03])),
+    rot('LowerLeg_L', T, legL.map(l => [knee(l[1]), 0, 0])),
+    rot('Foot_L', T, legL.map(l => [ankle(l[2]), 0, 0])),
+    rot('UpperLeg_R', T, legR.map(l => [hip(l[0]), 0, -0.03])),
+    rot('LowerLeg_R', T, legR.map(l => [knee(l[1]), 0, 0])),
+    rot('Foot_R', T, legR.map(l => [ankle(l[2]), 0, 0])),
+    // the flag rips away and flies
+    rot('Flag_L', T, [[0, 0, 0.05], [-0.9, 0.4, 0.5], [-1.6, 0.9, 0.9], [-1.9, 1.2, 1.1]]),
+    rot('Flag_R', T, [[0, 0, -0.05], [0.08, 0, -0.08], [0.18, 0, -0.10], [0.25, 0, -0.10]])
+  ]);
 }
 
 /* ------------------------------------------------------------- Celebrate */
@@ -2734,7 +2763,28 @@ posedClip('Bow', 1.90, [
 
    Nine keys, because a circle sampled at 45 degrees is a circle and a circle
    sampled at 90 is a diamond — slerp takes the short way round between two
-   keys, which is a chord, not an arc. */
+   keys, which is a chord, not an arc.
+
+   THE CONE HAS TO TILT OUTBOARD, and at a fixed elevation it does not. Sweeping
+   `horiz` with `elev` held constant traces a cone about the VERTICAL THROUGH THE
+   SHOULDER, and the shoulder is only 0.200m to the side of the skull centre
+   while the humerus is 0.335m long: at horiz 180 — the inboard half of the turn
+   — an elevation of 132 put the elbow at x=+0.049 against a skull centre at
+   x=0, i.e. 0.051m from the middle of a sphere of radius 0.105. The elbow spent
+   part of every turn INSIDE HIS OWN HEAD, 61mm deep, and it shipped because
+   nothing measured it; a player watching the landing screen found it.
+
+   Raising the arm does not rescue it. Clearing the top of the skull needs the
+   elbow above 1.89m and the humerus tops out at 1.835m straight up, so there is
+   no elevation at which a full turn passes over the head. What a real twirl
+   does instead is tilt the whole circle away from the body: the arm is out to
+   the side on the near half and near-vertical as it comes across. That is
+   elevation modulated by horiz rather than held — 118 at the outboard point,
+   178 as it passes the head — which keeps the big readable arc on the outside
+   where it is seen. Closest approach goes from 61mm INSIDE the skull to 63mm
+   clear of its surface. The tight frame is between two keys rather than at
+   one, which is why the amplitude is chosen by measuring rather than by
+   solving the key poses: `node tools/measure-clip.mjs Lasso`. */
 {
   const HZ = [90, 45, 0, -45, -90, -135, -180, -225, -270];   // one full turn
   const N = HZ.length - 1, DUR = 0.90;
@@ -2744,7 +2794,9 @@ posedClip('Bow', 1.90, [
       t: +(DUR * ph).toFixed(4),
       pel: 7 * w, trk: -9 * w, lean: 2, tilt: -4 * w,
       L: [0.13, 24 + 6 * b], R: [-0.13, 24 + 6 * b],
-      arm: [132, hz, 62, 22],
+      // elevation leads horiz by half a turn: out to the side at horiz 0,
+      // near-vertical at horiz 180, which is the tilt that misses the head.
+      arm: [148 - 30 * Math.cos(hz * D), hz, 62, 22],
       off: [24, -12, 12, 98],                       // spare hand at the belt
       look: [-0.20, 0.26 * w]
     };

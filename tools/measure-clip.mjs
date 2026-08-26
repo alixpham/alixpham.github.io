@@ -35,7 +35,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SOLE, HEEL_Z, MTP_Z, TOE_DROP, TOE_LEN } from './rig-def.mjs';
+import { SOLE, HEEL_Z, MTP_Z, TOE_DROP, TOE_LEN, SKULL, SKULL_R } from './rig-def.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const GLB = path.resolve(HERE, '..', 'flagster', 'lib', 'flagplayer.glb');
@@ -269,8 +269,27 @@ function measure(W) {
     // Where each foot IS, for the skate check: a planted foot must not travel.
     footY: { L: soleL[1], R: soleR[1] },
     footP: { L: matPos(W.Foot_L), R: matPos(W.Foot_R) },
-    soleP: { L: soleL, R: soleR }
+    soleP: { L: soleL, R: soleR },
+    // Skull centre, for the limb-through-the-head check below.
+    skull: xform(W.Head, SKULL)
   };
+}
+
+// A local point through a 4x4 (column-major, as glTF stores them).
+function xform(m, p) {
+  return [
+    m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12],
+    m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13],
+    m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14]
+  ];
+}
+
+// Closest distance from point c to the segment a-b.
+function segDist(c, a, b) {
+  const ab = V.sub(b, a), ac = V.sub(c, a);
+  const L2 = V.dot(ab, ab) || 1e-9;
+  const u = Math.max(0, Math.min(1, V.dot(ac, ab) / L2));
+  return V.len(V.sub(c, [a[0] + ab[0] * u, a[1] + ab[1] * u, a[2] + ab[2] * u]));
 }
 
 /* ------------------------------------------------------------------- main */
@@ -319,8 +338,37 @@ for (const r of rows) {
   if (low < sink) { sink = low; sinkT = r.t; }
 }
 const peak = rows.reduce((a, b) => (b.speed > a.speed ? b : a));
+
+/* AN ARM THROUGH THE OWN HEAD, which nothing was looking for.
+
+   Everything else here asks about the ground. FlagPulled shipped with the
+   forearm driven straight through the skull — 75 degrees of shoulder elevation
+   with 58 of horizontal ADDUCTION on a nearly straight elbow — and every check
+   in this file passed it, because both feet were fine. It was found by a
+   player watching the menu.
+
+   The skull is a sphere (rig-def: SKULL, SKULL_R). Measure the closest approach
+   of the upper arm and forearm SEGMENTS to its centre, not just the hand: a
+   forearm can pass through a head with both of its ends outside it. Clearance
+   is that distance minus the skull radius, so it goes negative exactly when a
+   limb is inside the head. A little under zero is a limb brushing the surface,
+   which a head-scratch or a helmet-adjust legitimately does; well under is the
+   arm inside the skull. */
+let clip4 = { d: Infinity, t: 0, side: '' };
+for (const r of rows) {
+  for (const side of ['L', 'R']) {
+    const a = r.m[side];
+    const d = Math.min(segDist(r.m.skull, a.shoulder, a.elbowP),
+                       segDist(r.m.skull, a.elbowP, a.wrist)) - SKULL_R;
+    if (d < clip4.d) clip4 = { d, t: r.t, side };
+  }
+}
+
 console.log('');
 console.log(`peak hand speed   ${peak.speed.toFixed(2)} m/s at t=${peak.t.toFixed(3)}`);
+console.log(`arm vs own skull  ${clip4.d >= 0 ? '+' : ''}${clip4.d.toFixed(3)} m clearance` +
+  ` (${clip4.side} arm, t=${clip4.t.toFixed(3)})` +
+  (clip4.d < -0.03 ? '   <-- ARM THROUGH THE HEAD' : ''));
 console.log(`lowest foot point ${sink.toFixed(3)} m at t=${sinkT.toFixed(3)}` +
   (sink < -0.02 ? '   <-- THROUGH THE GROUND' : ''));
 

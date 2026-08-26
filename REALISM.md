@@ -17,6 +17,7 @@ and a prioritised plan to close the gap. Written against **v2.11.0**
 | 5 — Presentation (E1–E3) | v2.16.0 | Body variance by position and ratings, a real snap off the turf, ball spot and down marker. **E3 partial** — benches, coaches, officials, chain crew and a non-static crowd were left. |
 | 6 — Clock (A6–A8) | v2.17.0 | Two 20-minute halves, continuously running clock with last-two-minute stoppages, alternating-possession overtime, real laterals. **A7 was not actually shipped** — see below. |
 | A7 redone (penalties) | v2.31.0 | The illegal rush rebuilt on measured eligibility and a live ball (v2.30.0), and flag guarding finally *called* rather than merely written. |
+| E5 — an arm inside a head | v3.6.0 | Lasso drove the elbow 61mm inside the skull on every turn, and nothing measured it. `measure-clip` reports arm-vs-skull clearance now; all 22 clips are clear. Plus FlagPulled's 19.8° backward arch, and the menu's defender playing the ball-carrier's clip. |
 | A10 — chains after a turnover | v3.5.0 | Both turnover paths set `crossedMid = false` unconditionally, so a team handed the ball past midfield chased a line to gain behind it — and got a first down on the next snap however it went. 19.5% of takeovers; 23 free first downs in 8 games. |
 | A9 — one forward pass | v3.4.0 | Nothing recorded that a forward pass had happened, so the ball could be thrown forward again after a catch *behind* the line. 7.9% of CPU plays did it, up to three passes in one down. |
 
@@ -365,6 +366,43 @@ There is no line to gain left when you start past midfield: the only thing left
 to reach is the goal line, which is precisely what `crossedMid` means. Both
 paths now go through one `_takeOver`, so they cannot drift apart again — having
 the same three lines written twice is how one of them came to be wrong.
+
+### E5. An arm inside a head, and nothing was looking — *fixed in v3.6.0*
+
+Reported by a player watching the landing screen, which is the second time that
+has been the instrument.
+
+**Lasso** sweeps `horiz` a full turn with `elev` held at 132, which traces a cone
+about the *vertical through the shoulder*. The shoulder is 0.200m to the side of
+the skull centre and the humerus is 0.335m long, so on the inboard half of every
+turn the elbow arrived at x=+0.049 against a skull centre at x=0 — **61mm inside
+a sphere of radius 105mm**. Raising the arm cannot rescue it: clearing the top of
+the skull needs the elbow above 1.89m and a vertical humerus reaches 1.835m, so
+there is no elevation at which a full turn passes over the head. What a real
+twirl does is tilt the circle away from the body, which is elevation modulated by
+`horiz` rather than held — 118 outboard, 178 as it comes across. Closest approach
+−61mm → **+63mm**.
+
+**FlagPulled** was the last clip in the file still hand-typing euler triples at
+the shoulder, the one thing the rig notes forbid. `[-1.30, 0, -0.55]` solves to 75°
+of elevation with 58° of horizontal adduction on a near-straight elbow; measured,
+that clears the skull, but one joint down Spine −0.22, Chest −0.14 and Head −0.28
+stack into a **19.8° backward arch**. It also skated a planted foot at 2.52 m/s
+with a sole 13mm under the turf — both already reported by `measure-clip`, both
+unread. Re-authored through `armQ()` in the same anatomical form as FlagGrab:
+lean never negative, skate 0.07 m/s, no foot through the ground.
+
+And the landing screen's green defender was playing `flagPull`, which the alias
+table maps to **FlagPulled** — the reaction of the man who just *lost* his flag.
+The driver beside it has always faced an imagined carrier and thrown a loose flag
+into the air at the rip. The one figure whose job is making the play was
+performing the reaction to having it made on him; it plays `FlagGrab` now.
+
+The instrument was the gap. Every check in `measure-clip` asked about the ground,
+so a limb inside the body passed silently. It reports arm-vs-skull clearance now
+— closest approach of the upper-arm and forearm *segments* to the skull sphere,
+because a forearm can pass through a head with both ends outside it — and the
+skull is defined once in `rig-def.mjs` alongside the soles. All 22 clips clear.
 
 ### E4. The HUD named every spot on the field "OPP" — *fixed in v3.5.0*
 

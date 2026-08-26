@@ -469,6 +469,52 @@ function gripped(e) {
   }
 }
 
+{ /* A REFUSAL IS FEEDBACK FOR A PRESS, NOT SOMETHING THE ENGINE SAYS TO ITSELF.
+
+     `_aiThrow` reads `s.carrier` — whoever HAS the ball, which after a
+     completion is the receiver — and `_dropback` calls it every frame for
+     `s.passer` while handoffDone is false. So the engine asked to throw with a
+     man who could not, once a frame, and throwTo answered by flashing a rules
+     message at the player: the catch announcement survived ONE frame and was
+     buried for the other 52. */
+  let seen = null;
+  for (let seed = 1; seed <= 40 && !seen; seed++) {
+    const { e, s } = kickoff('zone', null, seed);
+    e.snap();
+    const qb = s.carrier;
+    let caught = null;
+    const msgs = [];
+    for (let f = 0; f < 900 && s.phase === 'live'; f++) {
+      e._update(DT);
+      if (!caught && s.carrier && s.carrier !== qb) caught = s.carrier;
+      if (caught) msgs.push(s.message);
+    }
+    if (!caught || caught.team !== qb.team) continue;
+    seen = { caught, msgs };
+  }
+  if (!seen) {
+    check('flash-spam setup found a completion', false, 'no seed completed a pass');
+  } else {
+    const rules = seen.msgs.filter(m => /forward pass/i.test(m || '')).length;
+    check('a completion is not buried under a rules message',
+      rules === 0, rules + ' of ' + seen.msgs.length + ' frames showed one');
+    check('the catch is announced by name',
+      /caught by/i.test(seen.msgs[0] || ''), 'first message=' + JSON.stringify(seen.msgs[0]));
+  }
+}
+
+{ /* ...but a human who really does press for a second forward pass is told so,
+     in those words. */
+  const { e, s } = kickoff('man');
+  e.snap();
+  s.passThrown = true;                       // a pass has already gone this down
+  s.carrier.x = s.losX - 3;                  // behind the line, so only A9 can refuse
+  e.throwTo('WR1');
+  check('a second forward pass says exactly that',
+    !s.pendingThrow && /second forward pass not allowed/i.test(s.message || ''),
+    'msg=' + JSON.stringify(s.message));
+}
+
 /* ------------------------------- report ---------------------------------- */
 let bad = 0;
 for (const r of results) {
