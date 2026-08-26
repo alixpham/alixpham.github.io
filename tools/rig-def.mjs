@@ -69,6 +69,15 @@ export const SOLE_POINTS = side => [
   { bone: 'Toe_' + side,  p: [0, -TOE_DROP, TOE_LEN] }
 ];
 
+/* THE SKULL, as a sphere, in the Head bone's own frame. The head mesh is a
+   blob at [0, 1.735, 0.008] world with radius 0.105 (build-player-glb.mjs), and
+   the Head joint sits at y=1.630, so the centre is 0.105 up the bone from it.
+   Here rather than in the measurer because the rig is defined once: a second
+   copy is the same drift that put a hand-copied ground speed out of step with
+   its stride table twice. */
+export const SKULL = [0, 0.105, 0.008];            // centre, local to Head
+export const SKULL_R = 0.105;                      // and its radius
+
 export const HEIGHT_M = 1.850;                     // documented author height
 export const THIGH = 0.460, SHIN = 0.410;
 export const HIP_Y = 1.000 - 0.040;                // UpperLeg height at rest

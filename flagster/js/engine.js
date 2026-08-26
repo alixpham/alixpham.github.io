@@ -371,7 +371,7 @@
 
        Guarding the rule here rather than in `_aiThrow` fixes both the CPU and
        the human at the seam every forward pass has to pass through. */
-    if (s.passThrown) { this._flash('Only one forward pass per down!'); return; }
+    if (s.passThrown) { this._flash('Second forward pass not allowed!'); return; }
 
     /* A forward pass must be thrown from BEHIND the line of scrimmage. The
        message used to read "No forward pass past the line!", whose subject is
@@ -1185,6 +1185,23 @@
     var s = this.state;
     var qb = s.carrier;
     if (!qb) return false;
+    /* THE ENGINE ASKED FOR A THROW IT COULD NOT MAKE, ONCE A FRAME, AND THE
+       REFUSAL WAS SHOWN TO THE PLAYER.
+
+       `qb` here is whoever HAS the ball, which after a completion is the
+       receiver — the same confusion A9 was about. `_dropback` goes on calling
+       this every frame for `s.passer` while `handoffDone` is false, which on a
+       pass play it always is, so the engine kept asking to throw with a man who
+       was not allowed to. `throwTo` answered the only way it can: by flashing a
+       rules message. Measured, the catch announcement survived ONE frame and
+       was then buried under "Only one forward pass per down!" for 52 of the
+       next 54 — and before A9 it was the past-the-line message doing it, so the
+       spam is older than the rule that made it obvious.
+
+       A refusal is feedback for a deliberate press. Don't ask unless the throw
+       could legally happen, and then the message in throwTo only ever answers
+       a human. */
+    if (s.passThrown || qb !== s.passer) return false;
     var off = s.players.filter(function (p) { return p.team === this.offenseTeam() && p !== qb; }, this);
     var def = s.players.filter(function (p) { return p.team === this.defenseTeam(); }, this);
 

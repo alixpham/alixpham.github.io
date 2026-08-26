@@ -6,7 +6,7 @@
    switching every few seconds, driven entirely through the Player3D API:
      CARTER (blue)  — run / juke / highstep, weaving toward the camera
      RIVERA (red)   — celebrate / throw / dive (owns the ball prop)
-     MÜLLER (green) — flagpull / run / highstep (owns the loose-flag prop)
+     MÜLLER (green) — flaggrab / run / highstep (owns the loose-flag prop)
    Self-cleans (and disposes the Player3D instances + their mixers) when its
    canvas leaves the DOM, so it never leaks when you navigate away from the menu.
    ============================================================================ */
@@ -175,7 +175,7 @@
         setupRotation(makeP3D(COL.red, 'RIVERA', 7, 0.0, 1.8),
           ['lasso', 'throw', 'celebrate', 'dive'], { x: 0.0, z: 1.8 }, 1.5),
         setupRotation(makeP3D(COL.green, 'MÜLLER', 55, 5.0, 1.8),
-          ['flagpull', 'run', 'highstep', 'flagpull'], { x: 5.0, z: 1.8 }, 3.0)
+          ['flaggrab', 'run', 'highstep', 'flaggrab'], { x: 5.0, z: 1.8 }, 3.0)
       ];   // each takes a {P, carrier} from makeP3D
     }
     var PM = global.FLAGSTER && global.FLAGSTER.PlayerModel;
@@ -279,7 +279,7 @@
   // How long (seconds) each kind of move plays before rotating to the next.
   var MOVE_DUR = {
     run: 5.0, juke: 4.5, highstep: 4.5,
-    throw: 5.5, dive: 4.2, celebrate: 5.0, flagpull: 5.0,
+    throw: 5.5, dive: 4.2, celebrate: 5.0, flaggrab: 5.0,
     griddy: 4.6, lasso: 5.0
   };
 
@@ -294,7 +294,7 @@
   };
   function moveBaseYaw(name) {
     switch (name) {
-      case 'flagpull': return YAW.CAMERA - 0.5;   // turned out to rip a passing flag
+      case 'flaggrab': return YAW.CAMERA - 0.5;   // turned out to rip a passing flag
       case 'throw':    return YAW.CAMERA - 0.25;  // squared up on the target
       default:         return YAW.CAMERA;         // everyone plays toward the viewer
     }
@@ -373,8 +373,16 @@
       case 'lasso':
         P.play(hasClip(P, name) ? name : 'celebrate', 0.25);
         break;
-      case 'flagpull':
-        P.oneShot('flagPull', 'idle', 0.2);
+      case 'flaggrab':
+        /* THE DEFENDER'S CLIP, NOT THE CARRIER'S. This asked for 'flagPull',
+           which the alias table maps to FlagPulled — the reaction of the man
+           who just LOST his flag. The driver below has always been the other
+           half of that play: it faces an imagined carrier and throws a loose
+           flag into the air at the rip. So the one figure on the landing
+           screen whose whole job is making the play was performing the
+           reaction to having it made on him. FlagGrab is the reach and the
+           rip, and its beats are the ones the driver already assumes. */
+        P.oneShot('flagGrab', 'idle', 0.2);
         break;
     }
   }
@@ -412,7 +420,7 @@
     celebrate: driveCelebrate,
     griddy: driveCelebrate,
     lasso: driveCelebrate,
-    flagpull: driveFlagPull
+    flaggrab: driveFlagPull
   };
 
   // Sprint downfield with a gentle weave; bank the facing into the weave.
@@ -488,9 +496,9 @@
   // Flag-pull — face the imagined carrier; pop the loose flag at the rip moment.
   function driveFlagPull(st, t, dt, ctx) {
     var P = st.P, b = st.base, looseFlag = ctx.looseFlag;
-    P.face(moveBaseYaw('flagpull'), dt);
+    P.face(moveBaseYaw('flaggrab'), dt);
     st.carrier.position.set(b.x, 0, b.z);
-    // 'flagPull' clip is 1.0s: reach ~0.4, rip ~0.6.
+    // 'FlagGrab' is 0.90s: reach ~0.28, rip ~0.55.
     if (t < 0.55) { looseFlag.visible = false; st.flags.pulled = false; }
     else {
       if (!st.flags.pulled) {
