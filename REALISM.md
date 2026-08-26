@@ -17,6 +17,7 @@ and a prioritised plan to close the gap. Written against **v2.11.0**
 | 5 — Presentation (E1–E3) | v2.16.0 | Body variance by position and ratings, a real snap off the turf, ball spot and down marker. **E3 partial** — benches, coaches, officials, chain crew and a non-static crowd were left. |
 | 6 — Clock (A6–A8) | v2.17.0 | Two 20-minute halves, continuously running clock with last-two-minute stoppages, alternating-possession overtime, real laterals. **A7 was not actually shipped** — see below. |
 | A7 redone (penalties) | v2.31.0 | The illegal rush rebuilt on measured eligibility and a live ball (v2.30.0), and flag guarding finally *called* rather than merely written. |
+| D4 — nobody chased the runner | v3.7.0 | The defence asked "is there a runner?" as `carrier !== passer` while the carrier AI asked it as `!(passer && !handoffDone)`. They disagree on Flea Flicker, and there the whole defence stayed in coverage — 22% of every live-runner frame in the game had not one man in pursuit. Yards per run 8.75 → **4.33**. Plus `tools/pursuitstats.mjs`. |
 | E5 — an arm inside a head | v3.6.0 | Lasso drove the elbow 61mm inside the skull on every turn, and nothing measured it. `measure-clip` reports arm-vs-skull clearance now; all 22 clips are clear. Plus FlagPulled's 19.8° backward arch, and the menu's defender playing the ball-carrier's clip. |
 | A10 — chains after a turnover | v3.5.0 | Both turnover paths set `crossedMid = false` unconditionally, so a team handed the ball past midfield chased a line to gain behind it — and got a first down on the next snap however it went. 19.5% of takeovers; 23 free first downs in 8 games. |
 | A9 — one forward pass | v3.4.0 | Nothing recorded that a forward pass had happened, so the ball could be thrown forward again after a catch *behind* the line. 7.9% of CPU plays did it, up to three passes in one down. |
@@ -366,6 +367,73 @@ There is no line to gain left when you start past midfield: the only thing left
 to reach is the goal line, which is precisely what `crossedMid` means. Both
 paths now go through one `_takeOver`, so they cannot drift apart again — having
 the same three lines written twice is how one of them came to be wrong.
+
+### D4. Nobody chased the runner — *fixed in v3.7.0*
+
+Reported by a player: *"defending players often just back up in front of a ball
+carrying attacker."* They do, and it is one question asked in two places with
+two different answers.
+
+"Is the man with the ball a runner, or a passer still working the pocket?"
+`_aiQBOrCarrier` asks it correctly — a passer is in the pocket only until the
+handoff resolves, `p === s.passer && !s.handoffDone`. `_aiDefender` asked the
+shorter, plausible, wrong version: `s.carrier !== s.passer`.
+
+Those two agree on every play but one. `_doHandoff` on a play whose designed
+carrier is *already* the quarterback — **Flea Flicker**, the only one left since
+QB Keeper was deleted for being illegal — hands the ball to nobody and simply
+sets `handoffDone`. The carrier IS the passer, and he is running. The carrier AI
+knew that and sent him downfield; the defence, asking its own version, concluded
+there was no runner at all and left all five men in coverage for the whole play.
+
+What that looks like from behind the ball is exactly the report. A zone defender
+holds a landmark that slides off `losX` and lerps at most 0.7 of the way toward
+the nearest receiver, so he tracks the runner without ever arriving; a man
+defender mirrors his receiver 0.6 yards goal-side, which downfield of a runner
+is a man walking backwards in front of him. Traced: a defender **0.9 yards** in
+front of the ball, moving downfield at 3.5 yd/s, for four seconds and twenty
+yards, never once turning to make the play.
+
+`tools/pursuitstats.mjs` is the instrument, and it exists because the box score
+could not see this. It classifies every defender-frame within 15 yards of a live
+runner by where he is and which way he is going — goal-side, backpedalling,
+closing — and reports which branch of `_aiDefender` he was in.
+
+| with a live runner on the field | before | after |
+| --- | --- | --- |
+| frames with nobody in pursuit | 21.7% | 0% |
+| goal-side defenders backpedalling | 35.7% | 22.7% |
+| defenders closing the range | 68.4% | 77.2% |
+| — of those in coverage, backpedalling | 64.7% | *(no such frames)* |
+
+The residual 22.7% is real football: a defender taking a pursuit angle across
+the field is goal-side and gaining ground downfield while the gap shrinks at
+2.97 yd/s. Restricted to defenders actually *in the running lane* — more than
+1.5 yards goal-side, within 3 yards laterally — backpedalling is 3.0%.
+
+The question is asked once now, in `Engine.prototype._isRunner`, and the three
+places that need it read it — including the rush branch, which had the same
+wrong test and so chased a Flea Flicker runner's current position instead of
+solving the intercept B3 exists to solve.
+
+The box score moved further than the fix was aimed at, because those runs were
+unopposed and therefore enormous:
+
+| 8 games, pro, seed 1 | before | after | target |
+| --- | --- | --- | --- |
+| Yards per run | 8.75 | **4.33** | ~4–5 |
+| Yards per pass play | 6.09 | **7.04** | ~7–9 |
+| Completion % | 47.8% | 51.6% | ~55–65% |
+| Interception rate | 3.0% | 3.5% | ~3–5% |
+| Pull rate given contact | 71.3% | **75.7%** | ~75–90% |
+| Time to pull, p90 | 3.48s | **2.68s** | ~1.5s |
+
+**Still open, and adjacent:** Flea Flicker never flicks. `_doHandoff` short-cuts
+`op.carrier === 'QB'` to a bare `handoffDone = true`, which both skips the pass
+the play is named for and — because A3's past-the-line check is written
+`c === passer && !s.handoffDone` — lets the original passer legally advance the
+ball. That is a designed quarterback run, which is the exact thing QB Keeper was
+deleted for being. The defence chases him now; the rule still does not.
 
 ### E5. An arm inside a head, and nothing was looking — *fixed in v3.6.0*
 
