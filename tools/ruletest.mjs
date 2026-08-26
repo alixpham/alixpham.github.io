@@ -412,6 +412,63 @@ function gripped(e) {
     'carrier=' + (rb && rb.slot) + ' msg=' + JSON.stringify(s.message));
 }
 
+{ /* A10 — TAKING OVER PAST MIDFIELD IS A FRESH SET TO SCORE.
+
+     Both turnover paths set crossedMid = false unconditionally, so a team
+     handed the ball in the opponent's half chased a line to gain that was
+     BEHIND it. _advanceDown tests `spotX >= MIDFIELD`, which they already
+     satisfy, so the next snap awarded a first down however it went. */
+  const MID_YTG = F.Engine.FIELD.GOAL_R - F.Engine.FIELD.MID;   // 25
+
+  // (i) turnover on downs from deep in your own half
+  {
+    const { e, s } = kickoff('man');
+    s.yardsToGoal = 42; s.crossedMid = false; s.down = 4;       // own 8
+    e._turnoverOnDowns(); drain(); drain(); drain();
+    check('taking over past midfield sets the chains to the goal line',
+      s.yardsToGoal < MID_YTG && s.crossedMid === true,
+      'ytg=' + s.yardsToGoal + ' crossedMid=' + s.crossedMid);
+
+    // and the very next play must NOT hand out a first down for nothing
+    const spotX = F.Engine.FIELD.GOAL_R - s.yardsToGoal;
+    e._endPlay(spotX - 1, false); drain(); drain(); drain();
+    check('a one-yard loss past midfield is not a first down',
+      s.down === 2, 'down=' + s.down + ' msg=' + JSON.stringify(s.message));
+  }
+
+  // (ii) the interception path takes the same route
+  {
+    const { e, s } = kickoff('man');
+    s.yardsToGoal = 42; s.crossedMid = false;
+    e._turnover(null, 'interception'); drain(); drain(); drain();
+    check('an interception past midfield sets the chains too',
+      s.yardsToGoal < MID_YTG && s.crossedMid === true,
+      'ytg=' + s.yardsToGoal + ' crossedMid=' + s.crossedMid);
+  }
+
+  // (iii) the ordinary case is untouched: take over in your OWN half and the
+  //       line to gain is still midfield, with four downs to reach it.
+  {
+    const { e, s } = kickoff('man');
+    s.yardsToGoal = 12; s.crossedMid = true; s.down = 3;        // opponent 12
+    e._turnoverOnDowns(); drain(); drain(); drain();
+    check('taking over in your own half still has to reach midfield',
+      s.yardsToGoal > MID_YTG && s.crossedMid === false,
+      'ytg=' + s.yardsToGoal + ' crossedMid=' + s.crossedMid);
+  }
+
+  // (iv) exactly ON midfield counts as crossed, matching _endPlay's
+  //      `spotX >= MIDFIELD`.
+  {
+    const { e, s } = kickoff('man');
+    s.yardsToGoal = MID_YTG; s.crossedMid = false; s.down = 4;
+    e._turnoverOnDowns(); drain(); drain(); drain();
+    check('taking over exactly on midfield counts as crossed',
+      s.yardsToGoal === MID_YTG && s.crossedMid === true,
+      'ytg=' + s.yardsToGoal + ' crossedMid=' + s.crossedMid);
+  }
+}
+
 /* ------------------------------- report ---------------------------------- */
 let bad = 0;
 for (const r of results) {

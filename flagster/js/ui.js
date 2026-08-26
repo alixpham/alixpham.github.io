@@ -350,13 +350,20 @@
 
   var ORD = ['1ST', '2ND', '3RD', '4TH'];
 
-  /* Field position in broadcast shorthand: "OWN 34" / "OPP 27" / "50".
-     `yardsToGoal` counts down to the offense's target end zone, so anything
-     past 50 is still in their own half. */
+  /* Field position in broadcast shorthand: "OWN 12" / "MIDFIELD" / "OPP 27".
+
+     This was the NFL's 100-yard convention applied to a 50-yard field. There
+     are 50 yards between the goal lines here, so `yardsToGoal` never exceeds
+     50 and the OWN branch could not fire: every spot on the field printed as
+     "OPP", including your own 5 (which read "OPP 45") and midfield ("OPP 25").
+     The engine has always named spots correctly for its own announcements —
+     `Engine.prototype._spotName` — so the HUD and the flash message sitting on
+     top of it disagreed about where the ball was. Same convention as
+     `_spotName` now: over 25 is your own half, under 25 is theirs. */
   function ballOnText(s) {
     var ytg = Math.round(s.yardsToGoal);
-    if (ytg === 50) return '50';
-    return (ytg > 50) ? ('OWN ' + (100 - ytg)) : ('OPP ' + ytg);
+    if (ytg === 25) return 'MIDFIELD';
+    return (ytg > 25) ? ('OWN ' + (50 - ytg)) : ('OPP ' + ytg);
   }
 
   // Yards needed for a new set of downs: to midfield, or to the goal line.
