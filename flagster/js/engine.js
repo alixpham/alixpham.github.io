@@ -16,6 +16,7 @@
   var FIELD_LEN = 70, FIELD_WID = 30, EZ = 10;      // end zone depth
   var GOAL_L = EZ, GOAL_R = FIELD_LEN - EZ;         // x=10 (own), x=60 (target)
   var MIDFIELD = (GOAL_L + GOAL_R) / 2;             // x=35
+  var MID_YTG = GOAL_R - MIDFIELD;                  // 25 — yardsToGoal on midfield
 
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
 
@@ -2222,13 +2223,46 @@
       return;
     }
     setTimeout(function () {
-      s.possession = this.defenseTeam();
-      s.yardsToGoal = clamp(50 - s.yardsToGoal, 8, 45);
-      s.down = 1; s.crossedMid = false;
+      this._takeOver(this.defenseTeam());
       this.runPlayClock(s.snapT || 0, false);
       this._announceTakeover(s.possession);
       this._nextSnap();
     }.bind(this), TAKEAWAY_HOLD);
+  };
+
+  /* A10 — TAKING OVER PAST MIDFIELD IS A FRESH SET TO SCORE, NOT A CHASE
+     AFTER A LINE YOU ARE ALREADY PAST.
+
+     Both turnover paths set `crossedMid = false` unconditionally, which is a
+     statement that the chains are still at midfield and this offence has to go
+     and reach them. But the takeover spot is `50 - yardsToGoal`, so whenever
+     the team giving the ball up was in its OWN half — which is most of the
+     ways a drive dies — the new offence starts PAST midfield and that line
+     sits behind the ball.
+
+     Everything downstream then reads off a line nobody has to reach.
+     `_advanceDown` tests `reachedMid = spotX >= MIDFIELD`, which a team
+     starting past it satisfies on any snap at all, so the very next play
+     awarded "First down — past midfield!" however it went: a one-yard LOSS
+     bought a fresh set of downs. The HUD showed "1ST & 0" and the renderer
+     drew the yellow line-to-gain behind the offence.
+
+     Measured over 8 games: 19.5% of possession changes take over past
+     midfield, 24 of those 25 left the chains unset, and 23 free first downs
+     came out of it — roughly one turnover in five handing over an extra set.
+
+     There is no line to gain left when you start past midfield. The only thing
+     left to reach is the goal line, which is precisely what crossedMid means,
+     and the repo's rule (four downs to cross, three to score) then gives the
+     three-down set that a team already in scoring territory should have. */
+  Engine.prototype._takeOver = function (side) {
+    var s = this.state;
+    s.possession = side;
+    s.yardsToGoal = clamp(50 - s.yardsToGoal, 8, 45);
+    s.down = 1;
+    /* `<=` rather than `<`, to agree with _endPlay's `spotX >= MIDFIELD`:
+       arriving exactly ON midfield counts as having crossed it. */
+    s.crossedMid = s.yardsToGoal <= MID_YTG;
   };
 
   Engine.prototype._turnoverOnDowns = function () {
@@ -2242,9 +2276,7 @@
       return;
     }
     setTimeout(function () {
-      s.possession = this.defenseTeam();
-      s.yardsToGoal = clamp(50 - s.yardsToGoal, 8, 45);
-      s.down = 1; s.crossedMid = false;
+      this._takeOver(this.defenseTeam());
       this._announceTakeover(s.possession);
       this._nextSnap();
     }.bind(this), 1200);

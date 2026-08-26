@@ -17,6 +17,7 @@ and a prioritised plan to close the gap. Written against **v2.11.0**
 | 5 — Presentation (E1–E3) | v2.16.0 | Body variance by position and ratings, a real snap off the turf, ball spot and down marker. **E3 partial** — benches, coaches, officials, chain crew and a non-static crowd were left. |
 | 6 — Clock (A6–A8) | v2.17.0 | Two 20-minute halves, continuously running clock with last-two-minute stoppages, alternating-possession overtime, real laterals. **A7 was not actually shipped** — see below. |
 | A7 redone (penalties) | v2.31.0 | The illegal rush rebuilt on measured eligibility and a live ball (v2.30.0), and flag guarding finally *called* rather than merely written. |
+| A10 — chains after a turnover | v3.5.0 | Both turnover paths set `crossedMid = false` unconditionally, so a team handed the ball past midfield chased a line to gain behind it — and got a first down on the next snap however it went. 19.5% of takeovers; 23 free first downs in 8 games. |
 | A9 — one forward pass | v3.4.0 | Nothing recorded that a forward pass had happened, so the ball could be thrown forward again after a catch *behind* the line. 7.9% of CPU plays did it, up to three passes in one down. |
 
 ### Where the numbers ended up
@@ -337,6 +338,46 @@ pass past the line!" has an ambiguous subject — the natural reading is that th
 all, which is the opposite of the rule and of the point of the game. It is the
 *passer* who must be behind it, and the message now says so, matching the A3
 wording used when the passer crosses.
+
+### A10. The chains after a turnover past midfield — *fixed in v3.5.0*
+
+Four downs to cross midfield, three to score once you have (A6). Both turnover
+paths — the interception and the turnover on downs — set `crossedMid = false`
+unconditionally, which asserts that the chains are still at midfield and this
+offence has to go and reach them.
+
+But the takeover spot is `50 - yardsToGoal`, so whenever the team giving the
+ball up was in its own half, the new offence starts **past** midfield and that
+line sits *behind* the ball. Everything downstream then reads off a line nobody
+has to reach: `_advanceDown` tests `reachedMid = spotX >= MIDFIELD`, which a
+team starting past it satisfies on any snap at all, so the very next play
+awarded "First down — past midfield!" however it went. **A one-yard loss bought
+a fresh set of downs.** The HUD showed "1ST & 0" and the renderer drew the
+yellow line-to-gain behind the offence.
+
+Measured over 8 games: **19.5% of possession changes take over past midfield**,
+24 of those 25 left the chains unset, and **23 free first downs** came out of it
+— roughly one turnover in five handing over an extra set. Removing them costs
+about one play per game (61.9 → 60.8 plays/game over five seeds); touchdown rate
+moves within noise.
+
+There is no line to gain left when you start past midfield: the only thing left
+to reach is the goal line, which is precisely what `crossedMid` means. Both
+paths now go through one `_takeOver`, so they cannot drift apart again — having
+the same three lines written twice is how one of them came to be wrong.
+
+### E4. The HUD named every spot on the field "OPP" — *fixed in v3.5.0*
+
+`ballOnText` in `ui.js` was the NFL's 100-yard convention applied to a 50-yard
+field: `ytg > 50 ? OWN : OPP`. There are only 50 yards between the goal lines
+here, so `yardsToGoal` never exceeds 50, the OWN branch could not fire, and
+every spot printed as "OPP" — your own 5 read **"OPP 45"** and midfield read
+**"OPP 25"**.
+
+The engine has always named spots correctly for its own announcements
+(`_spotName`: over 25 is your own half, under 25 is theirs), so the BALL ON
+panel and the flash message sitting on top of it disagreed about where the ball
+was, and the panel was the wrong one. Found while checking A10.
 
 ---
 
