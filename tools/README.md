@@ -639,6 +639,42 @@ one shared animation library turns on whether they share one armature —
 
 ---
 
+## `passstats.mjs` — did you ever SEE the pass?
+
+```sh
+npm run passes
+node tools/passstats.mjs --games 8 --difficulty pro --seed 1
+```
+
+The box score says how many passes were completed. It cannot say whether you
+watched one, and that is the complaint this exists for: *"on low / short
+passes, we don't always see the ball move."*
+
+Every pass is timed from release to arrival and reported by distance bucket:
+hang time, the same number in frames at 60fps, the arc above the higher of its
+two ends, and the launch angle.
+
+It settled the diagnosis by ruling out the obvious answer. **No pass in the
+game is on screen for fewer than eleven frames**, and none is under six — it is
+not too quick. What the buckets show instead is that a 3–6 yard pass rises
+**0.00 yards** and launches **2.4 degrees DOWNWARD**, because it leaves at the
+ear and is caught at the chest. The camera sits behind the passer, so a ball
+with no vertical component travels almost entirely along the view axis, where
+perspective foreshortens it to nothing: projected through the real camera at
+720p a 3-yard pass moves **17 pixels**, and the ball is **11 pixels** across.
+It moves one and a half times its own width.
+
+It also priced the tempting fix. A hang-time floor big enough to give a short
+pass visible arc (0.40s) costs **six points of completion**, because every
+defender breaks on `ball.to` the moment the ball is airborne; a floor small
+enough to be nearly free (0.30s, about one point) leaves the arc at zero. The
+physics was right and was left alone; the fix is the flight trail in
+`field3d.js`.
+
+---
+
+---
+
 ## `pullstats.mjs` — why a flag pull takes as long as it does
 
 ```sh

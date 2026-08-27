@@ -228,6 +228,108 @@
     ballShadow.visible = false;
     scene.add(ballShadow);
 
+    /* THE FLIGHT TRAIL — because a short pass moves about one ball-width.
+
+       Reported from play: "on low / short passes, we don't always see the ball
+       move." It is not the flight TIME. Measured over eight games, the
+       shortest pass in the game is on screen for eleven frames at 60fps and
+       none is under six (tools/passstats.mjs). It is the geometry: the camera
+       sits behind the passer looking downfield, so a short pass travels almost
+       entirely along the view axis, where perspective foreshortens it to
+       nothing. Projected through the real camera at 720p, a 3-yard pass moves
+       SEVENTEEN PIXELS from release to catch — and the ball is ELEVEN PIXELS
+       across at that range. It moves one and a half times its own width, and
+       the eye reads that as a jump rather than a throw.
+
+       The physics is not wrong and was not changed. Lofting short passes to
+       buy screen travel was tried and measured: a hang-time floor big enough
+       to produce visible arc (0.40s) costs SIX POINTS OF COMPLETION, because
+       every defender breaks on `ball.to` the moment the ball is airborne. Even
+       a floor small enough to be nearly free (0.30s, about one point) still
+       left the arc at zero. The trade is bad in both directions.
+
+       A trail is the one thing that helps here rather than a decoration: it
+       turns two barely-separated positions into a continuous streak, which the
+       eye reads as motion at any length. It is one mesh, rebuilt from a ring
+       buffer of the last few world positions, tapering to nothing and drawn
+       only while the ball is actually in the air. */
+    /* THE STREAK IS A DURATION, NOT A SAMPLE COUNT. Keeping the last N
+       positions makes its length depend on the frame rate — 14 samples is
+       0.7s of history at 20fps and 0.12s at 120 — so the same throw would
+       leave a streak across half the field on a slow machine and a stub on a
+       fast one. Samples carry their age and are dropped by it; the count is
+       only a bound on the buffer. */
+    var TRAIL_SECS = 0.16;               // seconds of history
+    var TRAIL_N = 24;                    // hard cap on samples
+    var TRAIL_W = 0.075;                 // yards, half-width at the head
+    var trailPts = [];                   // flat [x, y, z, age, ...], newest first
+    var trailGeo = new THREE.BufferGeometry();
+    var trailPos = new Float32Array(TRAIL_N * 2 * 3);
+    trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+    var trailIdx = [];
+    for (var ti = 0; ti < TRAIL_N - 1; ti++) {
+      var a0 = ti * 2, b0 = a0 + 1, a1 = a0 + 2, b1 = a0 + 3;
+      trailIdx.push(a0, b0, a1, b0, b1, a1);
+    }
+    trailGeo.setIndex(trailIdx);
+    var trail = new THREE.Mesh(trailGeo, new THREE.MeshBasicMaterial({
+      color: 0xffe9c8, transparent: true, opacity: 0.5,
+      depthWrite: false, side: THREE.DoubleSide
+    }));
+    trail.frustumCulled = false;
+    trail.renderOrder = 3;
+    trail.visible = false;
+    scene.add(trail);
+
+    /* WHERE THE BALL ACTUALLY LEFT. The engine solves the flight from a
+       constant RELEASE_Z, measured once off the game's own rig; a different
+       character's throwing hand is somewhere else. The Studio Ochi athlete's
+       is 11.5cm lower after the height normalisation, which is about half a
+       ball-width of pop at the moment of release — and there is a horizontal
+       pop too, because the trajectory starts at the passer's CENTRE while the
+       ball was in his hand.
+
+       The plan for this was to bake the release height into the model as clip
+       extras and feed it to the engine. Reading the socket at runtime is
+       strictly better: it is the hand's real position in the real pose on the
+       real frame, it needs no constant to keep in step with anything, and it
+       works for a character nobody has imported yet. The trajectory is the
+       engine's and is not touched — only the first few frames of where the
+       ball is DRAWN, blended out before it matters. */
+    var RELEASE_BLEND = 0.09;            // seconds
+    var releaseFrom = new THREE.Vector3();
+    var haveRelease = false;
+
+    var _tA = new THREE.Vector3(), _tB = new THREE.Vector3(), _tSide = new THREE.Vector3();
+    function clearTrail() { trailPts.length = 0; trail.visible = false; }
+    /* Rebuild the ribbon: each sample gets two vertices either side of the
+       path, offset perpendicular to BOTH the direction of travel and the line
+       to the camera, so the strip always faces the lens however the ball is
+       flying. Width tapers to nothing at the tail, by age. */
+    function updateTrail(x, y, z, dt) {
+      for (var a = 3; a < trailPts.length; a += 4) trailPts[a] += dt;
+      while (trailPts.length >= 4 && trailPts[trailPts.length - 1] > TRAIL_SECS) trailPts.length -= 4;
+      trailPts.unshift(x, y, z, 0);
+      if (trailPts.length > TRAIL_N * 4) trailPts.length = TRAIL_N * 4;
+      var n = trailPts.length / 4;
+      if (n < 3) { trail.visible = false; return; }
+      var P = function (i, k) { return trailPts[i * 4 + k]; };
+      for (var i = 0; i < n; i++) {
+        _tA.set(P(i, 0), P(i, 1), P(i, 2));
+        var j = i === 0 ? 1 : i, p0 = j - 1, p1 = (j + 1 < n ? j + 1 : j);
+        _tB.set(P(p0, 0) - P(p1, 0), P(p0, 1) - P(p1, 1), P(p0, 2) - P(p1, 2));
+        if (_tB.lengthSq() < 1e-9) _tB.set(1, 0, 0);
+        _tSide.copy(camera.position).sub(_tA).cross(_tB);
+        if (_tSide.lengthSq() < 1e-9) _tSide.set(0, 1, 0);
+        _tSide.normalize().multiplyScalar(TRAIL_W * Math.max(0, 1 - P(i, 3) / TRAIL_SECS));
+        trailPos[i * 6] = _tA.x + _tSide.x; trailPos[i * 6 + 1] = _tA.y + _tSide.y; trailPos[i * 6 + 2] = _tA.z + _tSide.z;
+        trailPos[i * 6 + 3] = _tA.x - _tSide.x; trailPos[i * 6 + 4] = _tA.y - _tSide.y; trailPos[i * 6 + 5] = _tA.z - _tSide.z;
+      }
+      trailGeo.attributes.position.needsUpdate = true;
+      trailGeo.setDrawRange(0, (n - 1) * 6);
+      trail.visible = true;
+    }
+
     /* The ball is one shared mesh, re-parented to whoever has it. Anything
        under a player inherits the 0.87 the renderer scales them by, so the
        ball is scaled back up to keep the regulation size it is drawn at. */
@@ -2011,6 +2113,8 @@
       if (state.ball) {
         ball.visible = true;
         ballShadow.visible = false;      // only the in-air branch turns it on
+        if (!state.ball.inAir) clearTrail();
+        if (!state.ball.inAir && !state.pendingThrow) haveRelease = false;
         if (state.ball.inAir) {
           hostBall(null);
           /* The engine now solves the flight between the height of the hand it
@@ -2020,6 +2124,13 @@
              out of the quarterback's hand the moment it was released. */
           var bz = state.ball.z || 0;
           ball.position.set(wx(state.ball.x), bz, wz(state.ball.y));
+          /* Ease off the hand it was actually in, rather than teleporting to
+             the solver's start point. Smoothstep so there is no corner where
+             the blend hands over. */
+          if (haveRelease && (state.ball.t || 0) < RELEASE_BLEND) {
+            var rk = clamp((state.ball.t || 0) / RELEASE_BLEND, 0, 1);
+            ball.position.lerp(releaseFrom, 1 - rk * rk * (3 - 2 * rk));
+          }
           /* Spin about the axis of FLIGHT, at a rate per SECOND. It used to be
              `rotation.z += 0.5; rotation.x += 0.2` every frame — frame-rate
              dependent, and a tumble rather than a spiral. A thrown ball points
@@ -2041,6 +2152,10 @@
           var k = clamp(bz / 6, 0, 1);
           ballShadow.scale.setScalar(1 + k * 1.6);
           ballShadow.material.opacity = 0.34 * (1 - 0.6 * k);
+          /* No "new flight" test is needed: the buffer is emptied on every
+             frame the ball is NOT airborne, a few lines up, and there is always
+             at least one of those between a catch and the next release. */
+          updateTrail(wx(state.ball.x), bz, wz(state.ball.y), dt);
         } else if (state.pendingThrow && carryNode(state.pendingThrow.thrower, READY.host)) {
           /* Winding up: the ball rides the throwing hand, so it comes forward
              with the arm and leaves from where the hand actually is. Same hand
@@ -2050,6 +2165,10 @@
           hostBall(carryNode(state.pendingThrow.thrower, READY.host));
           ball.position.set(READY.ball.pos[0], READY.ball.pos[1], READY.ball.pos[2]);
           ball.rotation.set(READY.ball.rot[0], READY.ball.rot[1], READY.ball.rot[2]);
+          /* Remember where the hand has it, for the frame it leaves. */
+          ball.updateMatrixWorld(true);
+          ball.getWorldPosition(releaseFrom);
+          haveRelease = true;
         } else if (state.snapFly && state.carrier) {
           // Mid-snap: the ball is on its way from the turf to the hands.
           hostBall(null);

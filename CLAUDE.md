@@ -190,6 +190,19 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   the same parts as that fallback; it only showed when a character that looks
   like someone else failed to appear. `field3d` clears `playersRef` on
   `PlayerModel.whenReady` now.
+- **A ball that is hard to see is not always a ball that is too fast.** "We
+  don't see the ball move" on short passes measured out as: no pass in the game
+  is on screen for under eleven frames at 60fps, but a 3-yard one moves
+  SEVENTEEN PIXELS at 720p while being ELEVEN PIXELS across — the camera is
+  behind the passer, so a flat pass travels along the view axis where
+  perspective eats it. Lofting short passes to buy screen travel was measured
+  and rejected: enough arc to see costs six points of completion, because every
+  defender breaks on `ball.to` the moment the ball is airborne. The physics was
+  right; the fix is a flight trail, and `npm run passes` is the probe.
+- **A trail whose length is a SAMPLE COUNT is frame-rate dependent** — 14
+  samples is 0.7s of history at 20fps and 0.12s at 120. Samples carry their age
+  and are dropped by it, the same lesson as the ball's spin being a rate per
+  second rather than per frame.
 - The camera sits behind whoever HAS THE BALL, and the offence always attacks
   +x, so it never turns round; `engine.viewSign()` is the seam that says which
   way is downfield and now always returns 1.
