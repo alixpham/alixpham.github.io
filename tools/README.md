@@ -382,6 +382,63 @@ of seconds; it waits for the celebration the renderer is running to end.
 
 ---
 
+## `fbx-read.mjs` — the binary FBX record tree
+
+Not a tool; the shared parser that `fbx-inspect.mjs` and `fbx-to-glb.mjs` both
+import. One copy, for the same reason the rig lives once in `rig-def.mjs`.
+
+Handles the 7x00 record tree, u32/u64 offsets, zlib-deflated property arrays,
+`Properties70` lookups, and the scene index — objects by id plus the
+Model→Model parent links. That last one is fiddlier than it looks: a bone has
+several OO connections (its parent, its skin clusters, its animation nodes), so
+last-one-wins resolves 15 of 58 parents and leaves `spine.001` an orphan.
+
+---
+
+## `fbx-to-glb.mjs` — a purchased FBX, converted without Blender
+
+```sh
+node tools/fbx-to-glb.mjs ManA.fbx -o player.glb --texture atlas.png
+node tools/fbx-to-glb.mjs ManA.fbx -o player.glb --no-anim --stats
+```
+
+Mesh, normals, UVs, skeleton, skin weights, inverse binds, embedded texture and
+the bundled clips, straight to glTF 2.0 binary. There is no Blender in this
+environment — the same reason `build-player-glb.mjs` writes glTF by hand — and
+the pipeline has to be reproducible in the repo rather than on one machine.
+
+Four things it gets right that are easy to get wrong, each of which broke the
+output first and was found with `glb-view.mjs`:
+
+| | |
+|---|---|
+| **Vertex identity** | FBX indexes positions per control point and normals/UVs per polygon vertex. The de-duplicated tuple is `(cp, normal, uv)`, and the skin has to follow that remap or the weights land on the wrong people. |
+| **Polygons** | `PolygonVertexIndex` flags a polygon's last index by storing its bitwise NOT. Fan-triangulated. |
+| **The rest pose is a POSE** | Blender writes each bone's `Lcl` at the frame the file was saved on; the real bind survives only in each cluster's `TransformLink`. Composing the node chain for `spine` gave a global of `[-1.48, 38.37, -7.50]` against a `TransformLink` of `[0, 85.75, -0.72]` — a pelvis 38cm up on a 1.74m man. The rest hierarchy is rebuilt from the bind globals. |
+| **The inverse bind's other operand** | `inverse(TransformLink)` has to meet the transform that puts a *raw vertex* into the same world — the mesh MODEL's matrix, with Blender's −90° X and its scale of 100. The cluster's own `Transform` comes out at scale 1 here, which produced inverse binds at 0.01 and a character one hundredth of life size. |
+
+Units and axes are checked rather than assumed: it refuses a file that is not
+`UnitScaleFactor` 1 and Y-up, instead of silently emitting someone lying on
+their side at 100×.
+
+---
+
+## `glb-view.mjs` — does the converted asset actually load?
+
+```sh
+node tools/glb-view.mjs player.glb .views "American Football Run Fast"
+```
+
+Loads any GLB through the vendored Three.js and the real `GLTFLoader` in
+headless Chromium, writes four views, and prints bone count, skinned-mesh count,
+world bounds and every clip with its duration.
+
+`posesheet.mjs` is the equivalent for a clip on the game's own rig; this takes
+any GLB, which is what an import pipeline needs. Every bug listed in the table
+above was found here — the numbers said so before the picture did.
+
+---
+
 ## `fbx-inspect.mjs` — what is actually inside a purchased FBX
 
 ```sh
