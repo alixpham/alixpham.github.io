@@ -88,13 +88,19 @@ async function setupThree() {
   try {
     if (window.THREE && window.FLAGSTER && window.FLAGSTER.PlayerModel) {
       /* WHICH CHARACTER, decided once and before the fetch — after preload the
-         asset is already in flight. `?character=` wins so a build can be
-         checked without touching anyone's saved preference; otherwise it is
-         whatever the menu's toggle last stored. An unknown name is ignored by
-         setCharacter, and a model that fails to load falls back on its own. */
+         asset is already in flight.
+
+         `?character=` and nothing else. The menu used to carry a toggle that
+         wrote the choice to localStorage; it is hidden for now, and the stored
+         preference is deliberately NOT read any more. Leaving it honoured
+         would strand anyone who had switched to the classic player on it with
+         no visible way back, which is a worse failure than losing a setting
+         nobody was asked to make.
+
+         An unknown name is ignored by setCharacter, and a model that fails to
+         load falls back to the classic player on its own. */
       let want = null;
       try { want = new URLSearchParams(location.search).get('character'); } catch (e) { /* file:// */ }
-      if (!want && window.FLAGSTER.storage) want = window.FLAGSTER.storage.get('character', null);
       if (want) window.FLAGSTER.PlayerModel.setCharacter(want);
       window.FLAGSTER.PlayerModel.preload(window.THREE);
     }
