@@ -301,16 +301,26 @@
     var haveRelease = false;
 
     var _tA = new THREE.Vector3(), _tB = new THREE.Vector3(), _tSide = new THREE.Vector3();
-    function clearTrail() { trailPts.length = 0; trail.visible = false; }
+    /* The head sample is always "now"; a new one is COMMITTED behind it every
+       MIN_GAP. Dropping by age alone bounded the streak's DURATION but not its
+       sample count, so the 24-sample cap still bit above about 150fps and
+       shortened the trail on a fast display — the same frame-rate dependence
+       one level down. Committing on a clock fixes both: the span is TRAIL_SECS
+       and the count is TRAIL_N whatever the renderer is doing. */
+    var MIN_GAP = TRAIL_SECS / (TRAIL_N - 1);
+    var trailGap = 0;
+    function clearTrail() { trailPts.length = 0; trailGap = 0; trail.visible = false; }
     /* Rebuild the ribbon: each sample gets two vertices either side of the
        path, offset perpendicular to BOTH the direction of travel and the line
        to the camera, so the strip always faces the lens however the ball is
        flying. Width tapers to nothing at the tail, by age. */
     function updateTrail(x, y, z, dt) {
-      for (var a = 3; a < trailPts.length; a += 4) trailPts[a] += dt;
-      while (trailPts.length >= 4 && trailPts[trailPts.length - 1] > TRAIL_SECS) trailPts.length -= 4;
-      trailPts.unshift(x, y, z, 0);
-      if (trailPts.length > TRAIL_N * 4) trailPts.length = TRAIL_N * 4;
+      // Everything except the head, which is rewritten to "now" below.
+      for (var a = 7; a < trailPts.length; a += 4) trailPts[a] += dt;
+      trailGap += dt;
+      if (!trailPts.length || trailGap >= MIN_GAP) { trailPts.unshift(x, y, z, 0); trailGap = 0; }
+      else { trailPts[0] = x; trailPts[1] = y; trailPts[2] = z; trailPts[3] = 0; }
+      while (trailPts.length >= 12 && trailPts[trailPts.length - 1] > TRAIL_SECS) trailPts.length -= 4;
       var n = trailPts.length / 4;
       if (n < 3) { trail.visible = false; return; }
       var P = function (i, k) { return trailPts[i * 4 + k]; };
