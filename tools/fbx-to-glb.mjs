@@ -658,30 +658,38 @@ if (MOTION && fs.existsSync(MOTION)) {
   const files = fs.readdirSync(MOTION).filter(f => f.endsWith('.json')).sort();
   for (const f of files) {
     const m = JSON.parse(fs.readFileSync(path.join(MOTION, f), 'utf8'));
-    const n = m.steps, dur = m.duration || 1;
+    /* A CYCLIC CLIP NEEDS ITS CLOSING KEY. The samples cover the cycle at
+       dur*i/n for i < n, so the last one sits at dur*(n-1)/n and three.js — 
+       which takes a clip's duration from its final keyframe — would loop
+       1/n of a stride early, every stride. Repeating sample 0 at t = dur costs
+       one key and makes the cadence the authored one: Run came out at 0.60s
+       against the 0.62s its own extras declare. */
+    const n0 = m.steps, dur = m.duration || 1;
+    const n = m.cyclic ? n0 + 1 : n0;
+    const at = i => (i % n0);
     const times = new Float32Array(n);
-    for (let i = 0; i < n; i++) times[i] = (dur * i) / (m.cyclic ? n : Math.max(1, n - 1));
+    for (let i = 0; i < n; i++) times[i] = (dur * i) / (m.cyclic ? n0 : Math.max(1, n0 - 1));
     const tAcc = accessor(times, 'SCALAR', CT.f32, null, { minmax: true });
     const channels = [], samplers = [];
     for (const bone in m.tracks) {
       const target = models.find(mm => mm.name === bone);
       if (!target || !nodeIndex.has(target.id)) continue;
       const q = m.tracks[bone];
-      if (!q || q.length !== n) continue;
+      if (!q || q.length !== n0) continue;
       const R = new Float32Array(n * 4);
-      q.forEach((v, i) => { R[i * 4] = v[0]; R[i * 4 + 1] = v[1]; R[i * 4 + 2] = v[2]; R[i * 4 + 3] = v[3]; });
+      for (let i = 0; i < n; i++) { const v = q[at(i)]; R[i * 4] = v[0]; R[i * 4 + 1] = v[1]; R[i * 4 + 2] = v[2]; R[i * 4 + 3] = v[3]; }
       samplers.push({ input: tAcc, output: accessor(R, 'VEC4', CT.f32, null), interpolation: 'LINEAR' });
       channels.push({ sampler: samplers.length - 1, target: { node: nodeIndex.get(target.id), path: 'rotation' } });
     }
     /* The pelvis height, in the rig's own units — the JSON carries metres and
        the bone sits under the armature's x100, so it goes back up by the same
        factor the wrapper takes off. */
-    if (m.root && m.root.length === n) {
+    if (m.root && m.root.length === n0) {
       const hips = models.find(mm => mm.name === 'spine');
       if (hips && nodeIndex.has(hips.id)) {
         const rest = localOf.get(hips.id);
         const T = new Float32Array(n * 3);
-        m.root.forEach((v, i) => { T[i * 3] = rest.t[0]; T[i * 3 + 1] = rest.t[1]; T[i * 3 + 2] = v[1]; });
+        for (let i = 0; i < n; i++) { T[i * 3] = rest.t[0]; T[i * 3 + 1] = rest.t[1]; T[i * 3 + 2] = m.root[at(i)][1]; }
         samplers.push({ input: tAcc, output: accessor(T, 'VEC3', CT.f32, null), interpolation: 'LINEAR' });
         channels.push({ sampler: samplers.length - 1, target: { node: nodeIndex.get(hips.id), path: 'translation' } });
       }

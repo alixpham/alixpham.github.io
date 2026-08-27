@@ -59,6 +59,7 @@
    ============================================================================ */
 import fs from 'node:fs';
 import zlib from 'node:zlib';
+import { readGLB, accessor } from './glb-read.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (k, d) => { const i = argv.indexOf('--' + k); return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : d; };
@@ -75,20 +76,7 @@ if (!SRC || (!REPORT && !OUT)) {
   process.exit(2);
 }
 
-/* ------------------------------------------------------------------- glTF io */
-function readGLB(file) {
-  const b = fs.readFileSync(file);
-  if (b.readUInt32LE(0) !== 0x46546C67) throw new Error('not a GLB');
-  let p = 12, json = null, bin = Buffer.alloc(0);
-  while (p + 8 <= b.length) {
-    const len = b.readUInt32LE(p), type = b.readUInt32LE(p + 4);
-    const body = b.subarray(p + 8, p + 8 + len);
-    if (type === 0x4E4F534A) json = JSON.parse(body.toString('utf8'));
-    else if (type === 0x004E4942) bin = body;
-    p += 8 + len;
-  }
-  return { json, bin };
-}
+/* ------------------------------------------------------------------ glTF io */
 function writeGLB(file, json, bin) {
   const pad = (b, v) => b.length % 4 ? Buffer.concat([b, Buffer.alloc(4 - b.length % 4, v)]) : b;
   const j = pad(Buffer.from(JSON.stringify(json), 'utf8'), 0x20);
@@ -137,26 +125,10 @@ function decodePNG(buf) {
 }
 const sRGBtoLinear = s => (s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4));
 
-/* --------------------------------------------------------------- accessor io */
-const CTYPE = { 5120: Int8Array, 5121: Uint8Array, 5122: Int16Array, 5123: Uint16Array, 5125: Uint32Array, 5126: Float32Array };
-const NCOMP = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4, MAT2: 4, MAT3: 9, MAT4: 16 };
-function readAccessor(J, bin, i) {
-  const a = J.accessors[i], bv = J.bufferViews[a.bufferView];
-  const T = CTYPE[a.componentType], n = NCOMP[a.type];
-  const off = (bv.byteOffset || 0) + (a.byteOffset || 0);
-  if (bv.byteStride && bv.byteStride !== T.BYTES_PER_ELEMENT * n) {
-    const out = new T(a.count * n);
-    for (let k = 0; k < a.count; k++) {
-      const src = new T(bin.buffer, bin.byteOffset + off + k * bv.byteStride, n);
-      out.set(src, k * n);
-    }
-    return out;
-  }
-  return new T(bin.buffer.slice(bin.byteOffset + off, bin.byteOffset + off + a.count * n * T.BYTES_PER_ELEMENT));
-}
 
 /* ==================================================================== repaint */
-const { json: J, bin } = readGLB(SRC);
+const G = readGLB(SRC);
+const J = G.json, bin = G.bin;
 
 /* Find the primitives worth splitting: textured, UV'd, indexed. */
 const targets = [];
@@ -201,9 +173,9 @@ for (const e of (opt('map', '') || '').split(',').filter(Boolean)) {
 const groupsByPrim = [];
 for (const t of targets) {
   const img = atlas.get(t.image);
-  const UV = readAccessor(J, bin, t.prim.attributes.TEXCOORD_0);
-  const POS = readAccessor(J, bin, t.prim.attributes.POSITION);
-  const IDX = readAccessor(J, bin, t.prim.indices);
+  const UV = accessor(G, t.prim.attributes.TEXCOORD_0);
+  const POS = accessor(G, t.prim.attributes.POSITION);
+  const IDX = accessor(G, t.prim.indices);
   /* Barycentric sample grid: the lower triangle of a 6x6 lattice, 21 points,
      nudged off the edges so a sample never sits exactly on a shared boundary. */
   const BARY = [];
@@ -223,8 +195,8 @@ for (const t of targets) {
   let domBone = null;
   if (BONE_RULES.length && t.prim.attributes.JOINTS_0 != null && J.skins?.length) {
     const skin = J.skins[(J.nodes || []).find(n => n.mesh != null && J.meshes[n.mesh] === t.mesh)?.skin ?? 0];
-    const JO = readAccessor(J, bin, t.prim.attributes.JOINTS_0);
-    const WE = readAccessor(J, bin, t.prim.attributes.WEIGHTS_0);
+    const JO = accessor(G, t.prim.attributes.JOINTS_0);
+    const WE = accessor(G, t.prim.attributes.WEIGHTS_0);
     const wScale = WE instanceof Float32Array ? 1 : 1 / (WE instanceof Uint8Array ? 255 : 65535);
     domBone = (a, b, c) => {
       const tally = new Map();
@@ -286,8 +258,8 @@ function boneWeights(t) {
   const prim = t.prim;
   if (prim.attributes.JOINTS_0 == null || !J.skins?.length) return null;
   const skin = J.skins[(J.nodes || []).find(n => n.mesh != null && J.meshes[n.mesh] === t.mesh)?.skin ?? 0];
-  const JO = readAccessor(J, bin, prim.attributes.JOINTS_0);
-  const WE = readAccessor(J, bin, prim.attributes.WEIGHTS_0);
+  const JO = accessor(G, prim.attributes.JOINTS_0);
+  const WE = accessor(G, prim.attributes.WEIGHTS_0);
   const wScale = WE instanceof Float32Array ? 1 : 1 / (WE instanceof Uint8Array ? 255 : 65535);
   const out = new Map();
   for (const [key, g] of t.groups) {

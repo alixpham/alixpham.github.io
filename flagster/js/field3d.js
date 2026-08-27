@@ -427,6 +427,38 @@
     }
 
     var _q = new THREE.Quaternion(), _e = new THREE.Euler();
+    /* ---- POSING A BONE ON A RIG THAT IS NOT THE ONE THIS WAS AUTHORED FOR --
+       Every euler triple below was written against the game's own player,
+       whose bones carry NO rest rotation: setting one is the same as saying
+       where the limb points. An imported character rests differently — the
+       Studio Ochi athlete stands in an A-pose, its upper arm 62 degrees off
+       where this rig's rests — so the same triple means something else on it,
+       and a ball-carrying arm came out held sideways.
+
+       `restAlign` is the constant that carries the model's rest direction onto
+       this rig's, measured per bone at build time by tools/glb-rerig.mjs, and
+       an ABSOLUTE pose is post-multiplied by it: q_model = q_game * A.
+
+       ONLY the absolute poses. The small RELATIVE nudges elsewhere in this file
+       — the fatigue round-shoulder, the turn lead, the gaze — are rotations
+       about a body axis rather than statements about where a limb points, and
+       both rigs rest with their bones' frames world-aligned, so those already
+       mean the same thing on both. Conjugating them would tilt the axis they
+       are meant to turn about, which on the head is exactly the failure the
+       gaze block below spent a version getting rid of.
+
+       On the game's own player there is no restAlign at all and this is a
+       no-op, which is why nothing changes there. */
+    function alignQ(P, bone) {
+      if (!P || !P.restAlign) return null;
+      var c = P._alignQ || (P._alignQ = {});
+      if (c[bone] === undefined) {
+        var a = P.restAlign[bone];
+        c[bone] = a ? new THREE.Quaternion(a[0], a[1], a[2], a[3]) : null;
+      }
+      return c[bone];
+    }
+
     // Scratch for the per-frame lean (see the LEAN block in syncPlayer).
     var _axis = new THREE.Vector3(), _qbank = new THREE.Quaternion(), _qpitch = new THREE.Quaternion();
     /* Blend one arm toward a posed rotation. Weight 0 leaves the clip alone and
@@ -444,9 +476,12 @@
       if (!P.nodes || w <= 0.001) return;
       var up = P.nodes['UpperArm_' + suffix], lo = P.nodes['LowerArm_' + suffix];
       if (!up || !lo) return;
+      var Au = alignQ(P, 'UpperArm_' + suffix), Al = alignQ(P, 'LowerArm_' + suffix);
       _q.setFromEuler(_e.set(upper[0] + (driveUp || 0), upper[1] * sign, upper[2] * sign));
+      if (Au) _q.multiply(Au);
       up.quaternion.slerp(_q, w);
       _q.setFromEuler(_e.set(lower[0] + (driveLo || 0), lower[1] * sign, lower[2] * sign));
+      if (Al) _q.multiply(Al);
       lo.quaternion.slerp(_q, w);
     }
     /* Apply a whole grip: the arm the ball is in, plus — for the two-handed
@@ -503,9 +538,12 @@
         var up = P.nodes['UpperArm_' + side], lo = P.nodes['LowerArm_' + side];
         if (!up || !lo) return;
         var r = REACH[side];
+        var Au = alignQ(P, 'UpperArm_' + side), Al = alignQ(P, 'LowerArm_' + side);
         _rq.set(r.up[0], r.up[1], r.up[2], r.up[3]);
+        if (Au) _rq.multiply(Au);
         up.quaternion.slerp(_rq, w);
         _q.setFromEuler(_e.set(r.lo[0], r.lo[1], r.lo[2]));
+        if (Al) _q.multiply(Al);
         lo.quaternion.slerp(_q, w);
       });
     }
@@ -936,6 +974,31 @@
 
     var pMeshes = [];          // parallel to state.players (entry objects)
     var playersRef = null;
+
+    /* REBUILD WHEN THE CHARACTER ARRIVES, NOT ONLY WHEN THE ROSTER DOES.
+
+       Players are built once, at the first snap, and `Player3D.build` uses the
+       skinned .glb only if it has finished loading by then — otherwise it
+       silently returns the procedural rig, and nothing ever asks again. A
+       kickoff that beats an 800 KB fetch therefore fields the fallback for the
+       whole game.
+
+       That went unnoticed for as long as it did because the two look nearly
+       identical: flagplayer.glb is BUILT from the same parts as the procedural
+       rig. It only became visible when a character that looks like someone
+       else — helmet, pads, cleats — failed to appear, and a headless smoke run
+       loses that race every time.
+
+       Clearing playersRef makes the next frame rebuild, which is the same path
+       a roster change already takes. whenReady fires immediately if the model
+       is already in, so the common case costs one redundant rebuild before
+       anyone has kicked off. */
+    (function () {
+      var PMr = global.FLAGSTER && global.FLAGSTER.PlayerModel;
+      if (PMr && PMr.whenReady) {
+        PMr.whenReady(function (err) { if (!err) playersRef = null; });
+      }
+    }());
 
     var camFx = MID;           // smoothed camera focus (field X)
     var camFz = null;          // smoothed camera lateral follow (world Z)

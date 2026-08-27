@@ -36,45 +36,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SOLE, HEEL_Z, MTP_Z, TOE_DROP, TOE_LEN, SKULL, SKULL_R } from './rig-def.mjs';
+import { readGLB, nodeIndex, loadClip as loadClipOf, sampleTrack, quatSlerp } from './glb-read.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const GLB = path.resolve(HERE, '..', 'flagster', 'lib', 'flagplayer.glb');
-
-/* ------------------------------------------------------------------ glb IO */
-function readGlb(file) {
-  const buf = fs.readFileSync(file);
-  if (buf.readUInt32LE(0) !== 0x46546c67) throw new Error('not a glb');
-  let off = 12, json = null, bin = null;
-  while (off < buf.length) {
-    const len = buf.readUInt32LE(off), type = buf.readUInt32LE(off + 4);
-    const body = buf.subarray(off + 8, off + 8 + len);
-    if (type === 0x4e4f534a) json = JSON.parse(body.toString('utf8'));
-    else if (type === 0x004e4942) bin = body;
-    off += 8 + len;
-  }
-  return { json, bin };
-}
-
-const COMP_SIZE = { 5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 5126: 4 };
-const NUM_COMP = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4, MAT4: 16 };
-
-function readAccessor(g, bin, i) {
-  const a = g.json.accessors[i];
-  const bv = g.json.bufferViews[a.bufferView];
-  const n = NUM_COMP[a.type], sz = COMP_SIZE[a.componentType];
-  const base = (bv.byteOffset || 0) + (a.byteOffset || 0);
-  const out = [];
-  for (let k = 0; k < a.count * n; k++) {
-    const at = base + k * sz;
-    out.push(a.componentType === 5126 ? bin.readFloatLE(at)
-      : a.componentType === 5125 ? bin.readUInt32LE(at)
-        : a.componentType === 5123 ? bin.readUInt16LE(at) : bin.readUInt8(at));
-  }
-  if (n === 1) return out;
-  const rows = [];
-  for (let k = 0; k < a.count; k++) rows.push(out.slice(k * n, k * n + n));
-  return rows;
-}
 
 /* --------------------------------------------------------------- math bits */
 const V = {
@@ -85,20 +50,6 @@ const V = {
   norm: a => { const L = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / L, a[1] / L, a[2] / L]; }
 };
 const DEG = 180 / Math.PI;
-
-function quatSlerp(a, b, t) {
-  let d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
-  let bb = b;
-  if (d < 0) { bb = b.map(v => -v); d = -d; }
-  if (d > 0.9995) {
-    const o = a.map((v, i) => v + (bb[i] - v) * t);
-    const L = Math.hypot(...o) || 1;
-    return o.map(v => v / L);
-  }
-  const th0 = Math.acos(d), th = th0 * t;
-  const s0 = Math.sin(th0), s1 = Math.sin(th0 - th) / s0, s2 = Math.sin(th) / s0;
-  return a.map((v, i) => v * s1 + bb[i] * s2);
-}
 
 /* 4x4, column-major like glTF/three. */
 function matFromTR(t, q) {
@@ -127,40 +78,11 @@ const matPos = m => [m[12], m[13], m[14]];
 const matAxis = (m, i) => V.norm([m[i * 4], m[i * 4 + 1], m[i * 4 + 2]]);
 
 /* ------------------------------------------------------------------- rig */
-const g = readGlb(GLB);
-const bin = g.bin;
-const nodes = g.json.nodes;
-const byName = {};
-nodes.forEach((n, i) => { if (n.name) byName[n.name] = i; });
-const parent = new Array(nodes.length).fill(-1);
-nodes.forEach((n, i) => (n.children || []).forEach(c => { parent[c] = i; }));
+const g = readGLB(GLB);
+const { nodes, parent, byName } = nodeIndex(g);
 
-function sample(times, values, t, slerp) {
-  if (t <= times[0]) return values[0];
-  const last = times.length - 1;
-  if (t >= times[last]) return values[last];
-  let i = 0;
-  while (i < last - 1 && times[i + 1] < t) i++;
-  const u = (t - times[i]) / (times[i + 1] - times[i]);
-  if (slerp) return quatSlerp(values[i], values[i + 1], u);
-  return values[i].map((v, k) => v + (values[i + 1][k] - v) * u);
-}
-
-function loadClip(name) {
-  const anim = (g.json.animations || []).find(a => a.name === name);
-  if (!anim) throw new Error('no clip named ' + name + ' (have: ' +
-    (g.json.animations || []).map(a => a.name).join(', ') + ')');
-  const tracks = [];
-  let dur = 0;
-  for (const ch of anim.channels) {
-    const s = anim.samplers[ch.sampler];
-    const times = readAccessor(g, bin, s.input);
-    const values = readAccessor(g, bin, s.output);
-    dur = Math.max(dur, times[times.length - 1]);
-    tracks.push({ node: ch.target.node, path: ch.target.path, times, values });
-  }
-  return { name, dur, tracks, extras: anim.extras || {} };
-}
+const sample = sampleTrack;
+const loadClip = name => loadClipOf(g, name);
 
 /* Full-body world transforms at time t. */
 function pose(clip, t) {

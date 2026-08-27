@@ -439,6 +439,120 @@ above was found here — the numbers said so before the picture did.
 
 ---
 
+## `build-ochi-player.mjs` — the bought character, made a drop-in
+
+```sh
+node tools/mocap/ochi-clips.mjs --fbx ManA.fbx        # the 22 clips, retargeted
+node tools/build-ochi-player.mjs --fbx ManA.fbx --texture atlas.png
+```
+
+Five stages, each its own tool with its own report, because each was a bug at
+some point: convert the FBX with the retargeted clips baked in, split the
+palette atlas into tintable regions, rebuild onto the game's rig conventions,
+put the feet back on the turf, measure the gait ladder. Output is
+`flagster/lib/ochiplayer.glb`, 836 KB, which is what the game loads.
+
+Order matters twice. The repaint runs BEFORE the rerig, because its bone rules
+are written in the source rig's own names. The grounding runs BEFORE the gait
+measurement, because a foot that never lands measures its speed off the handful
+of frames where it happens to touch.
+
+The Ochi source assets are licensed and not in the repository; see `HANDOFF.md`.
+
+---
+
+## `glb-rerig.mjs` — rebuild a character onto this game's rig conventions
+
+```sh
+node tools/glb-rerig.mjs ochi.glb player.glb --preset ochi
+node tools/glb-rerig.mjs ochi.glb --report
+```
+
+`rig-def.mjs` says it in one line — *no bone carries a rest rotation* — and the
+whole renderer leans on it. The chest number hangs off `Chest` at "plain metres
+relative to the chest joint"; the ball goes in `Socket_Hand_R` at a fixed
+offset; a carrying arm is posed by writing euler triples straight onto
+`UpperArm_*`. Every one of those is only meaningful because a Flagster bone's
+rest frame IS the world frame. A Rigify armature is the opposite: 58 bones,
+each carrying a real rest rotation and pointing down its own +Y.
+
+So this does not adapt the game to the character. It rebuilds the character:
+every rest rotation removed at the position it already occupied, the mesh baked
+into that world space, every animation rewritten, bones renamed to the
+vocabulary the game looks up, and the four sockets added. The conversion is
+exact rather than approximate — with `R` the source's rest world rotation,
+`W_new = W_old · conj(R)` is identity at rest and puts every joint back exactly
+where it was.
+
+**It proves itself.** After writing, it skins 240 vertices through both files at
+six phases of every clip and prints the worst disagreement: **0.0287 mm**, which
+is the six-decimal quantisation and nothing else. That check is not decoration —
+it is what caught the six bundled Ochi clips whose per-bone scale tracks this
+conversion cannot carry (they threw a vertex **14 metres**, and are now dropped
+by name with a reason).
+
+Sockets are measured, not copied: `rig-def` puts the hand socket 9 cm "down" the
+hand, which is only down because the game's rig rests with its arms at its
+sides. The palm is found from the mesh instead. And where a rest DIRECTION still
+differs — Ochi's upper arm rests 62° from this rig's — the correction is written
+to `extras.restAlign`, which `playermodel.js` hands to `field3d.js` to compose
+onto poses it authors itself.
+
+---
+
+## `glb-ground.mjs` — put a retargeted clip back on the turf
+
+```sh
+node tools/glb-ground.mjs ochi.glb out.glb --like flagster/lib/flagplayer.glb
+```
+
+A retarget carries angles, not contact. Every joint is copied faithfully and the
+pelvis is put at the character's own resting height, and that is not the same as
+standing on the ground: this athlete's shin is 9 mm longer and his foot is a
+different shape. Measured, the retargeted walk came back with **53% flight** —
+a walk, by definition, has none — and the jog with 8% stance, while the speeds
+looked plausible throughout, because a foot that only touches occasionally is
+still measured correctly on the frames it does touch.
+
+The fix is a height, not a re-solve. The reference clip already knows how far
+its lowest sole sits off the turf at every instant; this reproduces that profile
+with a per-frame pelvis offset. Nothing rotates. Clamping to zero instead would
+mean a sprint that never leaves the ground.
+
+---
+
+## `glb-gait.mjs` — how fast a baked gait covers the ground
+
+```sh
+node tools/glb-gait.mjs player.glb out.glb            # writes the extras in
+node tools/glb-gait.mjs flagster/lib/flagplayer.glb --check
+```
+
+`playermodel.js` will not put a clip on the locomotion ladder without a measured
+`groundSpeed`, and a player with no rungs never takes a step. The game's own
+four are measured by the builder through `rig-fk.mjs` using the three sole
+points `rig-def.mjs` declares; a bought character has no such table, so the sole
+is derived from the MESH — the vertices each foot owns, the lowest centimetres
+of them, split fore-and-aft into thirds, one centroid each.
+
+Three points, not all the low vertices: Ochi's boot has a score of separate
+cleat studs, and tracking whichever is lowest hops between them from frame to
+frame, which is motion the foot is not making. It read as a walk whose stance
+sweep varied by 63% and came out a quarter slow.
+
+`--check` runs it against the game's own player and prints its answer beside the
+one the builder baked. Different code, different geometry, **1.2% worst
+disagreement** across all four rungs, with stance and flight percentages
+matching too — worth more than either number alone, which is why the flag
+exists. It also found the one place a mesh sole cannot follow three declared
+points: the floor has to be a percentile of the per-frame minima, not the global
+minimum, because the game's own walk plants at 5 mm and then digs its toe 5 mm
+deeper at toe-off.
+
+---
+
+---
+
 ## `glb-repaint.mjs` — make a bought character team-tintable
 
 ```sh

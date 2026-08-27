@@ -51,6 +51,22 @@ export const BONES = [
   ['Flag_R',          'Socket_Flag_R',  [0, 0, 0]]
 ];
 
+/* WHICH CHILD CONTINUES A BONE. Chest has three children and only one of them
+   is the torso; a rule like "the longest offset" gets the pelvis wrong, which
+   is how a rest-direction comparison came back claiming the hips were 90
+   degrees out from themselves. Anything that needs to walk a LIMB rather than
+   the tree — measuring a bone's rest direction, retargeting onto it — asks
+   here. Tips (Head, Toe_*) continue into nothing and carry an explicit
+   direction instead. */
+export const CONTINUES = {
+  Hips: 'Spine', Spine: 'Chest', Chest: 'Neck', Neck: 'Head',
+  Shoulder_L: 'UpperArm_L', UpperArm_L: 'LowerArm_L', LowerArm_L: 'Hand_L', Hand_L: 'Socket_Hand_L',
+  Shoulder_R: 'UpperArm_R', UpperArm_R: 'LowerArm_R', LowerArm_R: 'Hand_R', Hand_R: 'Socket_Hand_R',
+  UpperLeg_L: 'LowerLeg_L', LowerLeg_L: 'Foot_L', Foot_L: 'Toe_L',
+  UpperLeg_R: 'LowerLeg_R', LowerLeg_R: 'Foot_R', Foot_R: 'Toe_R'
+};
+export const TIP_DIR = { Head: [0, 1, 0], Toe_L: [0, 0, 1], Toe_R: [0, 0, 1] };
+
 /* THE SOLE IS THREE POINTS ON TWO SEGMENTS. Heel and ball ride the Foot bone;
    the tip hangs off Toe and swings with it, so a foot can roll through toe-off
    with the forefoot flat instead of pivoting as one plank. Every ground solve

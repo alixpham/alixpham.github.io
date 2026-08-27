@@ -43,9 +43,10 @@ _t3d_test.js
 tools/mocap/cache/
 .smoke/
 
-# Studio Ochi source assets are licensed and stay out of the repo. What IS
-# committed is the retargeted motion in tools/motion-ochi/, which is derived
-# from the free CMU database, plus the tools that rebuild the GLB from both.
+# Studio Ochi SOURCE assets — the FBX and its atlas — are licensed and stay out
+# of the repo. What IS committed is the retargeted motion in tools/motion-ochi/,
+# the five tools that build from them, and the finished, repainted, rerigged
+# flagster/lib/ochiplayer.glb, which is the character the game ships and loads.
 *.fbx
 *.blend
 tools/ochi/

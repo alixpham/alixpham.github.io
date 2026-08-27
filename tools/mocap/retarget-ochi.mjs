@@ -53,10 +53,14 @@ import { readSkeleton, readMotion, forward, qMul, qConj, qRot, qSlerp, qNorm, mi
 import { skeletonText, motionText, subjectOf } from './fetch.mjs';
 import { parseFBX, indexScene, kid, prop70 } from '../fbx-read.mjs';
 import { readRig, readClips, poseAt } from '../fbx-pose.mjs';
+import { readGLB, nodeIndex, clipNames, loadClip, sampleTrack } from '../glb-read.mjs';
+import { CONTINUES as FLAGSTER_CONTINUES, TIP_DIR as FLAGSTER_TIP } from '../rig-def.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const OUTDIR = path.resolve(HERE, '..', 'motion-ochi');
-const STEPS = 48;                                  // samples written per clip
+/* Samples written per clip. 48 suits a one-second capture; a six-second idle
+   wants more, and --steps is how a caller says so. */
+let STEPS = 48;
 
 /* ---------------------------------------------------------- Ochi <- CMU ---
    The Rigify spine is seven bones and CMU's is seven joints, which line up
@@ -104,6 +108,31 @@ const MAP_CMU = {
   'thigh.L': 'lfemur', 'shin.L': 'ltibia', 'foot.L': 'lfoot', 'toe.L': 'ltoes',
   'thigh.R': 'rfemur', 'shin.R': 'rtibia', 'foot.R': 'rfoot', 'toe.R': 'rtoes'
 };
+/* THE GAME'S OWN RIG, as a source. Not motion capture at all: the 22 clips in
+   flagster/lib/flagplayer.glb are authored by hand in anatomical angles, and
+   they are the only place a Flagster-specific motion exists — a flag pull, a
+   juke, ten celebrations. CMU has none of those and never will.
+
+   It is also the easiest source this retargeter will ever see. rig-def.mjs
+   gives every bone an offset and NO rest rotation, so a bone's accumulated
+   world rotation in a posed frame IS its rotation away from rest, which is
+   exactly the `S` the math below wants — no bind to divide out, no armature
+   node sitting above the pelvis. Rigify's spine.003 and spine.004 have no
+   counterpart in a five-bone spine and ride their parent, the same way
+   spine.004 does under Mixamo. */
+const MAP_FLAGSTER = {
+  spine: 'Hips',
+  'spine.001': 'Spine', 'spine.002': 'Chest',
+  'spine.005': 'Neck', 'spine.006': 'Head',
+  'shoulder.L': 'Shoulder_L', 'upper_arm.L': 'UpperArm_L', 'forearm.L': 'LowerArm_L', 'hand.L': 'Hand_L',
+  'shoulder.R': 'Shoulder_R', 'upper_arm.R': 'UpperArm_R', 'forearm.R': 'LowerArm_R', 'hand.R': 'Hand_R',
+  'thigh.L': 'UpperLeg_L', 'shin.L': 'LowerLeg_L', 'foot.L': 'Foot_L', 'toe.L': 'Toe_L',
+  'thigh.R': 'UpperLeg_R', 'shin.R': 'LowerLeg_R', 'foot.R': 'Foot_R', 'toe.R': 'Toe_R'
+};
+/* Continuation and tip directions come from rig-def.mjs, which is where the
+   shape of this rig is defined; see the note there. */
+
+
 /* Pick the table that actually matches the source's bone names, and say so.
    A convention that half-matches is worse than one that does not: it retargets
    the bones it recognises and silently leaves the rest at rest. */
@@ -130,8 +159,8 @@ const CONTINUES = {
 /* -------------------------------------------------------------------- args */
 const argv = process.argv.slice(2);
 const trial = (argv[0] && !argv[0].startsWith('--')) ? argv[0] : null;
-if (!trial && !argv.includes('--src-fbx')) {
-  console.error('usage: retarget-ochi.mjs <trial|--src-fbx anim.fbx> --fbx <character.fbx> [--name Clip] [--src-clip n] [--from f] [--to t] [--cyclic] [--report]');
+if (!trial && !argv.includes('--src-fbx') && !argv.includes('--src-glb')) {
+  console.error('usage: retarget-ochi.mjs <trial|--src-fbx anim.fbx|--src-glb player.glb> --fbx <character.fbx> [--name Clip] [--src-clip n] [--from f] [--to t] [--cyclic] [--report]');
   process.exit(2);
 }
 /* `i >= 0`, not `i > 0`: a flag at position 0 is legal now that the trial is
@@ -143,6 +172,7 @@ const NAME = opt('name', trial);
 const CYCLIC = flag('cyclic');
 const REPORT = flag('report');
 const FPS = Number(opt('fps', 120));
+STEPS = Math.max(8, Number(opt('steps', STEPS)));
 if (!FBX) { console.error('need --fbx <character.fbx> to read the bind pose from'); process.exit(2); }
 
 /* -------------------------------------------- the target rig, at bind pose */
@@ -287,10 +317,87 @@ function axisAgreement() {
    THAT REST at time t, and a root position — so both are wrapped into `src`
    below and nothing downstream knows which arrived. */
 const SRC_FBX = opt('src-fbx', null);
+const SRC_GLB = opt('src-glb', null);
 const SRC_CLIP = opt('src-clip', null);
 let src, skel, raw;
 
-if (SRC_FBX) {
+if (SRC_GLB) {
+  /* THE GAME'S OWN PLAYER, READ BACK OUT AS MOTION.
+
+     Everything this needs falls straight out of a rig with no rest rotations:
+     rest position is the chain of translations, rest direction is the offset to
+     the continuing child, and the rotation relative to rest at time t is the
+     product of local rotations from the pelvis down. On a rig that DID carry
+     rest rotations none of those three sentences would be true, which is the
+     whole reason the Ochi side of this file is as long as it is. */
+  const gg = readGLB(SRC_GLB);
+  const { nodes, parent, byName } = nodeIndex(gg);
+  const want = SRC_CLIP || NAME;
+  const names = clipNames(gg);
+  const hit = names.find(n => n === want) || names.find(n => n.toLowerCase() === String(want).toLowerCase());
+  if (!hit) { console.error('no clip named ' + want + ' in ' + SRC_GLB + '; have: ' + names.join(', ')); process.exit(1); }
+  const clip = loadClip(gg, hit);
+
+  const restPos = new Map();
+  const posOfSrc = n => {
+    if (restPos.has(n)) return restPos.get(n);
+    const i = byName[n];
+    if (i == null) { restPos.set(n, null); return null; }
+    let p = [0, 0, 0];
+    for (let x = i; x >= 0; x = parent[x]) {
+      const t = nodes[x].translation || [0, 0, 0];
+      p = [p[0] + t[0], p[1] + t[1], p[2] + t[2]];
+    }
+    restPos.set(n, p);
+    return p;
+  };
+  const dirTo = (a, b) => {
+    const pa = posOfSrc(a), pb = posOfSrc(b);
+    if (!pa || !pb) return null;
+    const v = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+    const L = Math.hypot(...v);
+    return L > 1e-6 ? [v[0] / L, v[1] / L, v[2] / L] : null;
+  };
+  const dirOfSrc = n => dirTo(n, FLAGSTER_CONTINUES[n]) || FLAGSTER_TIP[n] || null;
+  const lenOfSrc = n => {
+    const c = FLAGSTER_CONTINUES[n];
+    const pa = posOfSrc(n), pb = c ? posOfSrc(c) : null;
+    return (pa && pb) ? Math.hypot(pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]) : 0;
+  };
+
+  /* Local rotation and Hips translation at t, then the chain down to world. */
+  const localAt = t => {
+    const L = nodes.map(n => ({ t: (n.translation || [0, 0, 0]).slice(), q: (n.rotation || [0, 0, 0, 1]).slice() }));
+    for (const tr of clip.tracks) {
+      const v = sampleTrack(tr.times, tr.values, t, tr.path === 'rotation');
+      if (tr.path === 'rotation') L[tr.node].q = v;
+      else if (tr.path === 'translation') L[tr.node].t = v;
+    }
+    return L;
+  };
+  const worldQ = t => {
+    const L = localAt(t);
+    const W = new Array(nodes.length).fill(null);
+    const solve = i => {
+      if (W[i]) return W[i];
+      W[i] = parent[i] >= 0 ? qNorm(qMul(solve(parent[i]), L[i].q)) : qNorm(L[i].q);
+      return W[i];
+    };
+    const out = {};
+    for (const n in byName) out[n] = solve(byName[n]);
+    return out;
+  };
+
+  src = {
+    kind: 'glb', label: `${path.basename(SRC_GLB)} :: ${hit}`,
+    convention: { name: 'flagster', matched: Object.keys(MAP_FLAGSTER).filter(k => byName[MAP_FLAGSTER[k]] != null).length, total: Object.keys(MAP_FLAGSTER).length },
+    duration: clip.dur, sourceName: 'Flagster (' + path.basename(SRC_GLB) + ')',
+    boneDir: dirOfSrc, boneLen: lenOfSrc, bonePos: posOfSrc,
+    at: worldQ,
+    rootAt: t => { const L = localAt(t); const i = byName.Hips; return i == null ? [0, 0, 0] : L[i].t; }
+  };
+  MAP = MAP_FLAGSTER;
+} else if (SRC_FBX) {
   const sfbx = parseFBX(fs.readFileSync(SRC_FBX));
   const sscene = indexScene(sfbx.root);
   /* The cluster bind, not the node locals: a downloaded rig's bind IS its
@@ -469,7 +576,7 @@ const bindHipY = posOf('spine')[1];
 
 /* World -> local, against our own bind hierarchy. */
 const boneNames = [...bindG.keys()];
-const out = { clip: NAME, trial, fps: FPS, cyclic: CYCLIC, steps: STEPS, duration: +(src.kind === 'cmu' ? span / FPS : span).toFixed(5), source: 'CMU Graphics Lab', tracks: {} };
+const out = { clip: NAME, trial, fps: FPS, cyclic: CYCLIC, steps: STEPS, duration: +(src.kind === 'cmu' ? span / FPS : span).toFixed(5), source: src.sourceName || 'CMU Graphics Lab', tracks: {} };
 for (const name of boneNames) out.tracks[name] = [];
 const rootTrack = [];
 
