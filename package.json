@@ -14,7 +14,8 @@
     "smoke": "node tools/smoke.mjs",
     "passes": "node tools/passstats.mjs",
     "qb": "node tools/qbstats.mjs",
-    "ball": "node tools/ballcheck.mjs"
+    "ball": "node tools/ballcheck.mjs",
+    "feet": "node tools/footcheck.mjs"
   },
   "devDependencies": {
     "playwright": "^1.61.1"

@@ -1113,7 +1113,31 @@
        1.0. The fallback rigs in player3d.js have no ladder to blend and keep
        the old behaviour behind the same call — see gaitShim() there. */
     var WALK_MAX = 2.4;              // "running" for the ball-carry arm drive
-    var PLAYER_LIFT = 0.10;    // rig dips slightly below its origin; sit feet on turf
+    /* THE RIG DIPS BELOW ITS OWN ORIGIN, so the holder is raised to put the
+       feet back on the turf. `tools/footcheck.mjs` (`npm run feet`) measures
+       where they actually end up, off the RENDERER, because the engine has no
+       vertical physics for a player at all: every centimetre of a player's
+       rise and fall is the animation plus this one number.
+
+       It was 0.10 and that was 3.5cm too much — the whole squad planted
+       between 2.5 and 4.8cm above the grass, hovering by about a finger's
+       width. Two earlier readings had said otherwise and both were wrong in
+       instructive ways. Polling from outside the render loop caught players
+       mid-flight and never in stance, and reported them 4cm UP for the
+       opposite reason. Taking each player's lowest point EVER counted the
+       frame he dived — a dive is meant to go thirty centimetres down — and
+       reported contact on zero. The honest metric is the tenth percentile of a
+       player's own per-frame low: stance, not the frame he left his feet and
+       not the frame he threw himself at the grass.
+
+       At 0.065 two runs put the squad's mean plant at +1.43cm and -0.60cm,
+       i.e. straddling the turf with about a centimetre of run-to-run noise on
+       the mean — each run is a different game with different players in
+       different clips. Chasing the residual would be fitting that noise.
+
+       The ~2.5cm spread WITHIN a run comes from the clip mix and the
+       per-player build, and no single constant can close it. */
+    var PLAYER_LIFT = 0.065;
 
     var pMeshes = [];          // parallel to state.players (entry objects)
     var playersRef = null;

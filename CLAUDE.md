@@ -236,6 +236,20 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   samples is 0.7s of history at 20fps and 0.12s at 120. Samples carry their age
   and are dropped by it, the same lesson as the ball's spin being a rate per
   second rather than per frame.
+- **A player has NO vertical physics.** The engine gives gravity to the ball
+  and to nothing else: every centimetre a player rises or falls is the clip
+  plus `PLAYER_LIFT`, one constant that raises the holder because the rig dips
+  below its own origin. `npm run feet` is how you find out where they really
+  are, and it has to sample from INSIDE the render (an outside poll against
+  swiftshader's two frames a second catches the airborne half of a stride and
+  reports a squad hovering) and score each player by the TENTH PERCENTILE of
+  his own lows rather than the minimum (the minimum is the frame he dived, and
+  a dive is meant to go 30cm down).
+- **`2.385 / 1.850` was a per-character constant pretending to be universal.**
+  `player3d.js` normalised the loaded model's height by dividing by the height
+  the GAME'S rig happens to be authored at, which silently overrode the
+  `authorHeight` normalisation `playermodel.js` does for exactly this reason,
+  and rendered a 1.744m character 6% short. Divide by the model's own height.
 - The camera sits behind whoever HAS THE BALL, and the offence always attacks
   +x, so it never turns round; `engine.viewSign()` is the seam that says which
   way is downfield and now always returns 1.

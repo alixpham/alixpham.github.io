@@ -516,10 +516,18 @@
   function build(THREE, opts) {
     opts = opts || {};
     /* Prefer the purpose-built RIGGED football player (real skinned mesh,
-       27-joint armature, per-region team tinting) once it has loaded. It
-       exposes the same API, so every call site is unchanged. We normalise its
-       height to the procedural rig's (2.385u) so the scales callers already
-       apply keep landing at ~6'2". Falls back silently if it isn't ready. */
+       team-tintable, its own armature) once it has loaded. It exposes the same
+       API, so every call site is unchanged. We normalise its height to the
+       procedural rig's (2.385u) so the scales callers already apply keep
+       landing at ~6'2". Falls back silently if it isn't ready.
+
+       THE DIVISOR IS THE MODEL'S OWN HEIGHT, not a constant. It used to be
+       2.385/1.850, where 1.850 is the height the GAME'S rig is authored at —
+       which is only the right number for that one character. The Studio Ochi
+       athlete is 1.744m, so the same divisor rendered him 5.7% short, and it
+       silently overrode the normalisation playermodel.js does for exactly this
+       reason: two characters are supposed to end up the same size on the field
+       whatever they were modelled at. */
     var PM = global.FLAGSTER && global.FLAGSTER.PlayerModel;
     if (PM && PM.isReady && PM.isReady()) {
       try {
@@ -531,7 +539,7 @@
           hairStyle: opts.hairStyle, facialHair: opts.facialHair,
           headband: opts.headband, headScale: opts.headScale,
           gender: opts.gender, face: opts.face,
-          scale: 2.385 / 1.850      // metres -> match the procedural rig's height
+          scale: 2.385 / ((PM.authorHeight && PM.authorHeight()) || 1.850)
         });
       } catch (e) { /* fall through to the procedural rig */ }
     }
