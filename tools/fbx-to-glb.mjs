@@ -112,7 +112,11 @@ function eulerToQuat(x, y, z, order = 'XYZ') {
   ];
   const by = { X: qx, Y: qy, Z: qz };
   let q = [0, 0, 0, 1];
-  for (const axis of order) q = mul(q, by[axis]);
+  /* Reverse of the name — see the note in fbx-pose.mjs. "XYZ" is the order the
+     rotations are APPLIED and quaternion multiplication applies right-to-left.
+     This was backwards here too; it survived because the Studio Ochi clips sit
+     nowhere near gimbal lock, where the error is small rather than absent. */
+  for (const axis of [...order].reverse()) q = mul(q, by[axis]);
   return q;
 }
 const ORDER = ['XYZ', 'XZY', 'YZX', 'ZXY', 'YXZ', 'ZYX', 'XYZ'];

@@ -55,7 +55,14 @@ export function eulerToQuat(x, y, z, order = 'XYZ') {
   const h = [x * D2R / 2, y * D2R / 2, z * D2R / 2];
   const q = { X: [Math.sin(h[0]), 0, 0, Math.cos(h[0])], Y: [0, Math.sin(h[1]), 0, Math.cos(h[1])], Z: [0, 0, Math.sin(h[2]), Math.cos(h[2])] };
   let o = [0, 0, 0, 1];
-  for (const a of order) o = qMul(o, q[a]);
+  /* Compose in REVERSE of the name. "XYZ" names the order the rotations are
+     APPLIED, and quaternion multiplication applies right-to-left, so
+     qZ * qY * qX is the one that turns about X first. Getting this backwards is
+     invisible until a bone approaches gimbal lock and then it is catastrophic:
+     Rokoko's treadmill run holds the pelvis at Y = 88 degrees, where X and Z
+     trade off wildly against each other, and the wrong order put the spine
+     upside down on 55 of 318 sampled frames. Right order: 0 of 318. */
+  for (const a of [...order].reverse()) o = qMul(o, q[a]);
   return o;
 }
 
@@ -207,6 +214,32 @@ export function readRig(scene, opts = {}) {
   return { bones, restSource, restWorld, byId, parentOf, childrenOf };
 }
 
+/* EULER CURVES HAVE TO BE UNWRAPPED BEFORE THEY CAN BE INTERPOLATED.
+
+   An FBX rotation channel is degrees, and a bone whose angle sits near the
+   +/-180 boundary crosses it constantly: consecutive keys read -177.5, then
+   +178, which is a 4.5 degree move written as a 355 degree one. Interpolating
+   that literally sweeps the long way round, and for the fraction of a frame in
+   between the bone is pointing anywhere at all.
+
+   Measured on Rokoko's treadmill run, whose Spine1 Z sits at -177.5: the spine
+   pointed DOWN on 56 of 318 sampled frames — 18% of the clip — and the retarget
+   window happened to start on one of them, so the heading correction was
+   computed from a corrupt frame and the whole clip came out inverted.
+
+   Adding or subtracting 360 so no step exceeds 180 makes the sequence
+   continuous without changing any pose it passes through. Rotations only. */
+function unwrapDegrees(vals) {
+  if (vals.length < 2) return vals;
+  const out = vals.slice();
+  for (let i = 1; i < out.length; i++) {
+    let d = out[i] - out[i - 1];
+    while (d > 180) { out[i] -= 360; d = out[i] - out[i - 1]; }
+    while (d < -180) { out[i] += 360; d = out[i] - out[i - 1]; }
+  }
+  return out;
+}
+
 /* Animation stacks, as sampled world rotations per bone. */
 export function readClips(scene, rig) {
   const { byId, childrenOf, parentsOf } = scene;
@@ -234,7 +267,8 @@ export function readClips(scene, rig) {
           if (!cur || cur.type !== 'AnimationCurve') continue;
           const axis = (cc.prop || 'd|X').slice(-1);
           const times = (kid(cur.node, 'KeyTime') || { props: [[]] }).props[0] || [];
-          const vals = (kid(cur.node, 'KeyValueFloat') || { props: [[]] }).props[0] || [];
+          let vals = (kid(cur.node, 'KeyValueFloat') || { props: [[]] }).props[0] || [];
+          if (kind === 'R') vals = unwrapDegrees(vals);
           slot[kind][axis] = { times: times.map(t => t / KTIME), vals };
         }
       }

@@ -92,16 +92,33 @@ character with the pelvis bob intact.
 | `mixamo` | `mixamorig:Hips`, `mixamorig:LeftUpLeg` … | 22/22; **validated end to end** |
 | `cmu` | `root`, `lfemur`, `ltibia` … | ASF; **validated end to end** |
 
-**Rokoko is not yet producing a correct pose.** Their free packs
-(`media.rokoko.com/WALK-RUN-CYCLES-MOCAP.zip` — a direct public link, no gate)
-match 23 of 23 bone names and still come out inverted. Three things about that
-rig are handled and none of them was the answer: the source facing is divided
-out; the pelvis takes its direction from the map rather than from its furthest
-child (which is a thigh, not the spine); and the animated `Sam[Root] >
-Root[Root]` ancestors above `Hips` are now part of the composed chain, because
-Rokoko puts the body's world transform up there. Something else in their
-transform convention is still wrong. Mixamo and CMU are unaffected — both were
-re-checked after each change.
+All three are validated end to end. Rokoko's free packs are the best of them
+for this game: `media.rokoko.com/WALK-RUN-CYCLES-MOCAP.zip` is a direct public
+link with no gate, 16 clips, and two **treadmill** runs — in place by
+construction, which is what the locomotion ladder wants and what CMU's 3m x 8m
+capture volume cannot provide.
+
+### The euler order, which is invisible until it is catastrophic
+
+FBX names a rotation order the way the rotations are APPLIED — `XYZ` means turn
+about X, then Y, then Z — and quaternion multiplication applies right to left,
+so the composition is `qZ * qY * qX`. Getting that backwards is a small error
+almost everywhere and a total one near gimbal lock.
+
+Rokoko's treadmill run holds the pelvis at **Y = 88 degrees**, one degree off
+the XYZ singularity, where X and Z trade off wildly against each other (−63,
+−73, then back to −1.7 within a tenth of a second) while the real orientation
+barely moves. Composed in the wrong order that decoded to a spine pointing
+DOWN on **55 of 318** sampled frames, and the retarget window happened to open
+on one of them — so the heading correction was taken from a corrupt frame and
+the entire clip came out inverted. Right order: **0 of 318**.
+
+`fbx-to-glb.mjs` had the same bug and it had gone unnoticed, because the Studio
+Ochi clips sit nowhere near lock: the error there was small rather than absent,
+and their run reads visibly better now it is gone.
+
+Euler channels are also unwrapped at load (no step over 180 degrees) so that
+interpolating between keys never sweeps the long way round.
 
 ### Which rest pose — and it depends what you want it for
 
