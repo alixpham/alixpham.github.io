@@ -61,16 +61,37 @@
      against the right number now, so it reads about 2.5 yards lower. */
   var AI_MIN_SEP = 1.50;                 // yards of separation ON ARRIVAL, clean pocket
   var AI_MIN_SEP_LATE = 0.60;            // ...with nothing left of the down
-  var AI_FORCE_THROW_AT = 3.0;           // nobody open this long and the ball comes out anyway
+  /* D7 — HE THREW FOUR VERTICALS BEFORE ANYBODY HAD RUN EIGHT YARDS.
+
+     `snapT > 1.6` was one number for the whole playbook, and the quarterback
+     took the first frame it allowed him on every single snap. Measured on the
+     deep calls, the deepest receiver on the field is 7.6 yards downfield at
+     1.6s, 12.6 at 2.6s and 16.2 at 3.6s — so Deep Shot and Four Verticals were
+     being thrown while the `go` routes were still at the depth of a hitch, and
+     what he found instead was the back in the flat. The play he called says
+     how long it takes to develop; the ball comes out when the concept is
+     ready, not when the timer is.
+
+     He can afford it. The rush lines up seven yards off the ball by rule and
+     the passer drops five more, so the nearest defender is 7.8 yards away at
+     1.6s and TEN by 3.6s — over 1,831 pass plays a rusher got inside two yards
+     on 0.1% of them. There is no pressure to hurry for, and the pass clock is
+     seven seconds. He was leaving four of them unused. */
+  var AI_DEVELOP = { 'pass-short': 1.5, 'pass-med': 2.2, 'pass-long': 3.0 };
+  var AI_HOLD_EXTRA = 1.4;               // ...and this long past that, then it comes out anyway
   /* WHAT A THROW HAS TO BE WORTH, in the same separation-equivalent units the
      read is scored in, and it falls as the down runs out.
 
      Without this the quarterback threw on the first frame he was allowed to,
-     every down: `snapT > 1.6` is barely into the drop, the routes are four
-     yards deep and the back in the flat is wide open because nobody covers
-     the place the play is not going. It measured as a 2.0s time to throw
-     against a real 2.5-3.5, and the ball went an average of six yards. Early
-     in a down a checkdown is a wasted down; late in one it is the play. */
+     every down: the routes are four yards deep and the back in the flat is
+     wide open because nobody covers the place the play is not going. It
+     measured as a 2.0s time to throw against a real 2.5-3.5, and the ball went
+     an average of six yards. Early in a down a checkdown is a wasted down;
+     late in one it is the play.
+
+     This is the bar, and D7 is the clock it falls against — the first frame he
+     is allowed to throw is now the moment the concept he called is ready,
+     rather than 1.6s for everything in the playbook. */
   var AI_TAKE_EARLY = 6.5;
   var AI_TAKE_LATE = 0;
   /* What the progression is WORTH, in yards of separation. It used to be worth
@@ -91,8 +112,21 @@
      and the throw is decided by what it is WORTH instead. */
   var AI_SEP_ENOUGH = 4.0;
   var AI_DEPTH_WORTH = 0.16;             // yards downfield, priced in separation
-  var AI_LANE_COST = 1.8;                // a defender sitting in the throwing lane
+  var AI_LANE_COST = 2.6;                // a defender sitting in the throwing lane
+  var AI_LANE_REACH = 1.2;               // yards either side of the ball he can still get a hand to
   var AI_GIVE_UP = 0.25;                 // below this on every read, throw it away
+  /* D8 — THE DOWN HE IS ON.
+
+     There are no chains in this sport: four downs to reach midfield, three to
+     score once you have. So there is always exactly one line that matters, and
+     the quarterback had never heard of it — he aimed 4.9 yards on the first
+     down of a series and 4.6 on the last one, when what he needed was 13.5.
+
+     Yards after the catch are worth counting on a first down and worth nothing
+     on a last one: you do not bet a series on five yards of run-after-catch,
+     so the allowance is discounted by exactly how much the down is worth. */
+  var AI_YAC = 5.0;                      // yards a completion is worth after it
+  var AI_CHAIN_WORTH = 2.0;              // ...and what moving them is worth, on the last down
 
   /* Difficulty presets. The game shipped at roughly "All-Pro" and was brutal:
      defenders matched your speed and the flag came off the instant they
@@ -815,6 +849,12 @@
 
   Engine.prototype._isUserCarrier = function () { return true; };
 
+  /* When the concept he called is ready to be thrown. See D7. */
+  Engine.prototype._readyAt = function () {
+    var p = this.state.offPlay;
+    return (p && AI_DEVELOP[p.type]) || 1.6;
+  };
+
   Engine.prototype._dropback = function (qb, dt) {
     var s = this.state;
     if (!this.demo && this.userOnOffense() && qb === s.carrier) { this._moveByInput(qb, dt); return; }
@@ -825,7 +865,7 @@
     var target = { x: s.losX - 5 + Math.sin(qb.shuf * 1.4) * 0.5,
                    y: qb.y + Math.cos(qb.shuf * 1.1) * 0.6 };
     this._seek(qb, target, dt, 0.7);
-    if (s.snapT > 1.6 && !s.ball.inAir && !s.pendingThrow) this._aiThrow();
+    if (s.snapT > this._readyAt() && !s.ball.inAir && !s.pendingThrow) this._aiThrow();
   };
 
   Engine.prototype._runRoute = function (p, dt) {
@@ -1296,11 +1336,27 @@
       var gap = Math.hypot(o.x - px, o.y - py) -
                 this.speedYds(o.data.speed) * this.staminaScale(o) * air;
       if (gap < sep) sep = gap;
-      // In the lane: nearer the passer than the ball's landing spot is — i.e.
-      // in FRONT of the receiver — and close enough to the line of the throw
-      // to step into it. That is the undercut _resolveCatch rewards.
-      if (Math.hypot(o.x - qb.x, o.y - qb.y) < d - 0.3 &&
-          Math.hypot(o.x - px, o.y - py) < d * 0.55 + 2) lane = 1;
+      /* A LANE IS A CORRIDOR, NOT A CONE. This asked whether a defender was
+         nearer the passer than the landing spot was and within `d * 0.55 + 2`
+         of that spot — a radius that grows with the length of the throw, so on
+         a 12-yard ball it swept 8.6 yards of grass and five defenders. It fired
+         on 93% of every read past five yards downfield and 100% past ten:
+         a flat -1.8 on essentially every downfield throw there is, which is
+         most of what kept the ball in the flat, and as a signal it carried no
+         information at all — it meant "this pass is long".
+
+         What it should mean is that somebody can get a hand to the ball on its
+         way. Project him onto the line of the throw: he is in the lane if his
+         cross-track distance is inside what he can cover before the ball
+         reaches his station — which is his own top speed times the time he has,
+         less the beat it takes to read the release, plus arm's length. Near the
+         passer that is nothing at all; deep it is a genuine window. */
+      var ux = (px - qb.x) / (d || 1), uy = (py - qb.y) / (d || 1);
+      var ax = o.x - qb.x, ay = o.y - qb.y;
+      var along = ax * ux + ay * uy, cross = Math.abs(ax * uy - ay * ux);
+      var step = this.speedYds(o.data.speed) * this.staminaScale(o) *
+                 Math.max(0, (along / (d || 1)) * t - AI_BREAK_LAG) + AI_LANE_REACH;
+      if (along > 0.5 && along < d - 0.5 && cross < step) lane = 1;
     }
     return { r: r, x: px, y: py, air: air, sep: sep, lane: lane, depth: px - s.losX };
   };
@@ -1367,7 +1423,8 @@
        who was three and a quarter the same amount of pressure, and everything
        past the step identical to a sack. It reads as one number now, 0 in a
        clean pocket on the first frame of the read and 1 with nothing left. */
-    var urgency = Math.max(clamp((s.snapT - 1.6) / (AI_FORCE_THROW_AT - 1.6), 0, 1),
+    var ready = this._readyAt();
+    var urgency = Math.max(clamp((s.snapT - ready) / AI_HOLD_EXTRA, 0, 1),
                            clamp((3.6 - heat) / 2.4, 0, 1));
 
     // Read order: the play names one, otherwise nearest-to-deepest.
@@ -1380,15 +1437,25 @@
     off.forEach(function (r) { if (!r.flagPulled && ranked.indexOf(r) < 0) ranked.push(r); });
     if (!ranked.length) return false;
 
+    /* THE ONE LINE THAT MATTERS, and how much this down needs it. See D8.
+       `stake` is 0 with three or four downs in hand, half with two, and the
+       whole thing on the last one. */
+    var need = (s.crossedMid ? GOAL_R : MIDFIELD) - s.losX;
+    var downsLeft = (s.crossedMid ? 3 : 4) - s.down + 1;
+    var stake = clamp((3 - downsLeft) / 2, 0, 1);
+
     var reads = ranked.map(function (r, i) {
       var v = this._readReceiver(qb, r, def);
       /* Openness is the currency and everything else is priced in it: where he
-         sits in the progression, how far downfield the throw is worth, and
-         what a defender in the lane costs. */
+         sits in the progression, how far downfield the throw is worth, what a
+         defender in the lane costs, and whether it moves the sticks on a down
+         that has to. */
+      var carry = clamp(v.depth, -4, 30) + AI_YAC * (1 - stake);
       v.score = Math.min(v.sep, AI_SEP_ENOUGH)
               + AI_PROGRESSION / (1 + i)
               + clamp(v.depth, -4, 18) * AI_DEPTH_WORTH
-              - (v.lane ? AI_LANE_COST : 0);
+              - (v.lane ? AI_LANE_COST : 0)
+              + (carry >= need ? AI_CHAIN_WORTH * stake : 0);
       return v;
     }, this);
     reads.sort(function (a, b) { return b.score - a.score; });

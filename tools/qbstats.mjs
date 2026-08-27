@@ -77,37 +77,33 @@ load('flagster/js/data.js');
 load('flagster/js/engine.js');
 const F = win.FLAGSTER, D = F.data;
 
-const THROW_SPEED = (p) => 18 + (Math.max(40, Math.min(99, p.data.throw)) - 40) / 59 * 12;
 const hyp = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
 
-/* Separation at the spot the ball is going to, not at the spot the receiver is
-   standing in. Every defender gets the flight time to close on that spot at
-   their own top speed; whoever gets nearest is the coverage. */
+/* THE READ IS THE ENGINE'S, NOT A SECOND COPY OF IT.
+
+   This used to re-implement `_readReceiver` here — the same lead solve, the
+   same closing model, its own lane test — so that the probe could say what the
+   quarterback saw. Two copies of one rule is the failure `rig-def.mjs` exists
+   to prevent one level up, and they had already drifted apart in two places:
+   this one handed the defence the whole flight rather than the flight less the
+   read on it, and it floored separation at zero, which makes a defender who
+   beats the ball to the spot indistinguishable from one who arrives level with
+   it. The column headed "what decides the play" was not the number that
+   decided the play.
+
+   So it asks the engine. The probe's job is to judge the decision, and it can
+   only do that against the decision that was actually made. */
 function arrivalRead(e, qb, r, def) {
-  const spd = THROW_SPEED(qb);
-  let t = hyp(qb.x, qb.y, r.x, r.y) / spd, px = r.x, py = r.y;
-  for (let i = 0; i < 3; i++) {
-    px = r.x + (r.vx || 0) * t; py = r.y + (r.vy || 0) * t;
-    t = hyp(qb.x, qb.y, px, py) / spd;
-  }
-  let sep = 99, lane = 0;
-  const dQR = hyp(qb.x, qb.y, px, py);
-  for (const d of def) {
-    if (d.flagPulled) continue;
-    const ds = e.speedYds(d.data.speed) * e.staminaScale(d);
-    const gap = Math.max(0, hyp(d.x, d.y, px, py) - ds * t);   // closed by arrival
-    if (gap < sep) sep = gap;
-    // In the lane: nearer the passer than the ball is, and near the line of it.
-    const dQD = hyp(qb.x, qb.y, d.x, d.y);
-    if (dQD < dQR - 0.3 && hyp(d.x, d.y, px, py) < dQR * 0.55 + 2) lane = 1;
-  }
-  return { sep, lane, t, px, py };
+  const v = e._readReceiver(qb, r, def);
+  return { sep: v.sep, lane: v.lane, t: v.air, px: v.x, py: v.y };
 }
 
 function playGame(gameIdx, rows) {
   let ev = {};
   const e = new F.Engine(canvas, { onEvent(x) { ev[x.type] = (ev[x.type] || 0) + 1; } });
-  let pending = null;
+  let pending = null, lastSpot = null;
+  const realEndPlay = e._endPlay.bind(e);
+  e._endPlay = function (spotX, noGain) { lastSpot = spotX; return realEndPlay(spotX, noGain); };
   const realThrow = e.throwTo.bind(e);
   e.throwTo = function (slot) {
     const s = this.state;
@@ -131,7 +127,13 @@ function playGame(gameIdx, rows) {
           slot, nowSep, arrSep: mine.sep, lane: mine.lane, air: mine.t, heat,
           bestSep: reads[0].sep,
           openRank: reads.findIndex(x => x.r === target) + 1, choices: reads.length,
-          depth: mine.px - s.losX, snapT: s.snapT
+          depth: mine.px - s.losX, snapT: s.snapT,
+          /* THE DOWN HE IS ON. No chains: four downs to reach midfield, three
+             to score once you have — so `need` is the distance to whichever
+             line is live, and `downsLeft` counts this one. */
+          downsLeft: (s.crossedMid ? 3 : 4) - s.down + 1,
+          need: (s.crossedMid ? 60 : 35) - s.losX,
+          startX: s.losX
         };
       }
     }
@@ -155,13 +157,17 @@ function playGame(gameIdx, rows) {
       if (s.phase === was) break;
       continue;
     }
-    ev = {}; pending = null;
+    ev = {}; pending = null; lastSpot = null;
     let f = 0;
     while (s.phase === 'live' && f < MAX_PLAY_FRAMES) { e._update(DT); f++; }
     if (pending) {
       pending.pick = !!ev.turnover;
       pending.caught = !!ev.catch;
       pending.away = !!ev.throwaway;
+      /* A touchdown reaches every line there is, and scoring does not go
+         through _endPlay, so it never sets a spot. */
+      pending.moved = !!ev.touchdown ||
+        (lastSpot != null && (lastSpot - pending.startX) >= pending.need);
       rows.push(pending);
     }
     if (s.phase === 'live') break;
@@ -199,7 +205,19 @@ const out = {
      open men on a collapsing pocket, were reads nobody reached. */
   targets: ['WR1', 'WR2', 'RB', 'C'].reduce((a, sl) => {
     a[sl] = pct(real.filter(r => r.slot === sl).length, real.length); return a;
-  }, {})
+  }, {}),
+  /* WHAT HE AIMED AT, BY WHAT THE DOWN NEEDED. The quarterback used to throw
+     the identical pass whatever down it was — 4.9 yards with four in hand and
+     4.6 on the last one, needing 13.5. A last down he cannot reach is a
+     turnover whether the ball is caught or not. */
+  byDown: [4, 3, 2, 1].map(dl => {
+    const set = real.filter(r => r.downsLeft === dl);
+    return {
+      downsLeft: dl, n: set.length,
+      need: avg(set.map(r => r.need)), aimed: avg(set.map(r => r.depth)),
+      moved: pct(set.filter(r => r.moved).length, set.length)
+    };
+  }).filter(x => x.n)
 };
 
 if (AS_JSON) { console.log(JSON.stringify(out, null, 2)); process.exit(0); }
@@ -222,5 +240,11 @@ console.log(row('  ...into the lane', out.pickInLane + '%', ''));
 console.log(row('Who got the ball',
   Object.entries(out.targets).map(([k, v]) => `${k} ${v}%`).join('  '), ''));
 console.log(row('Average depth', out.avgDepth + 'yd', ''));
-console.log(row('Average hang time', out.avgAir + 's', ''));
+console.log(row('Average closing window', out.avgAir + 's', 'flight, less the read on it'));
+console.log('');
+console.log(`  ${'downs left'.padEnd(12)} ${'n'.padStart(5)} ${'needed'.padStart(7)} ${'aimed'.padStart(6)} ${'moved the sticks'.padStart(17)}`);
+for (const d of out.byDown) {
+  console.log(`  ${String(d.downsLeft).padEnd(12)} ${String(d.n).padStart(5)} ${(d.need + 'yd').padStart(7)} ` +
+    `${(d.aimed + 'yd').padStart(6)} ${(d.moved + '%').padStart(17)}`);
+}
 console.log('');

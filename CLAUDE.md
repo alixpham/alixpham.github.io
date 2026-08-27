@@ -44,7 +44,10 @@ tools/mocap/ochi-clips.mjs    the game's own 22 clips -> the Ochi metarig
 tools/simstats.mjs            headless CPU-vs-CPU box score
 tools/qbstats.mjs             the QB's decision, frozen at the throw: how open
                               the man he chose is WHEN THE BALL GETS THERE, how
-                              open the best one was, and who got the ball
+                              open the best one was, who got the ball, and what
+                              he aimed at against what the down needed. Calls
+                              the engine's own _readReceiver — it used to keep
+                              a second copy, and the two had drifted
 tools/ballcheck.mjs           is the football in his hands? read off the scene
                               graph, which no headless probe can see
 tools/pullstats.mjs           the flag pull, timed; --user splits it by side
@@ -208,6 +211,39 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   man three yards clear and a man eight yards clear are the same catch, so
   ranking them apart makes the checkdown win forever, because nobody covers
   the place the play is not going. `npm run qb` is the probe.
+- **The quarterback throws when the PLAY is ready, not when a timer is.**
+  `snapT > 1.6` was one number for the whole playbook, and he took the first
+  frame it allowed him on every snap. On a deep call the deepest receiver is 7.6
+  yards downfield at 1.6s, 12.6 at 2.6s and 16.2 at 3.6s — so Four Verticals was
+  thrown while the `go` routes were still at the depth of a hitch, and the
+  centre took a THIRD of all passes. `AI_DEVELOP` is per play type. He can
+  afford the wait: the rush starts seven yards off the ball by rule and the
+  passer drops five more, so a rusher gets inside two yards on **0.1%** of pass
+  plays and the `heat` half of `urgency` has never once been non-zero. Four of
+  the seven seconds on the pass clock were going unused. `npm run qb`.
+- **A THROWING LANE IS A CORRIDOR, NOT A CONE.** The test was a radius of
+  `d * 0.55 + 2` around the landing spot — which grows with the length of the
+  throw — so it fired on 93% of reads past five yards and 100% past ten. It
+  meant "this pass is long", and as a flat penalty on every downfield throw it
+  was most of what kept the ball in the flat. Project the defender onto the LINE
+  of the throw and ask whether he can cross it before the ball reaches his
+  station.
+- **There are no chains: four downs to reach midfield, three to score once you
+  have.** So there is always exactly one line that matters, and the read has to
+  know which. YAC is worth counting on a first down and worth nothing on a last
+  one — you do not bet a series on five yards of run-after-catch — so the
+  allowance is discounted by what the down is worth.
+- **Measure the decision, then measure the OUTCOME, and believe the outcome.**
+  Rewriting the read as an explicit expected-value model (catch and interception
+  probabilities calibrated against arrival separation, priced in yards) is the
+  obvious "smarter quarterback" and it bought 0.06 points per drive across 32
+  games — inside the noise. It was thrown away. Two traps that produced it: a
+  single seed is not a measurement (seed 1 alone read 6.73 yards per pass play
+  where four seeds read 7.34, and half the "problems" in the seed-1 report were
+  noise), and *threw to the most open man* gets WORSE when he starts taking the
+  deeper man on purpose, because the checkdown is always the most open man.
+  Points per drive over eight seeds, with a standard error printed beside it, is
+  the number that decides.
 - **A read ORDER is not a progression.** Taking the first man over a bar means
   nobody after him is ever looked at: read four, the centre, caught 0.0% of the
   passes in this game's existence. Score every read and let the best one win,
