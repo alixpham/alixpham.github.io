@@ -439,6 +439,71 @@ above was found here — the numbers said so before the picture did.
 
 ---
 
+## `glb-repaint.mjs` — make a bought character team-tintable
+
+```sh
+node tools/glb-repaint.mjs ochi-manA.glb --report
+node tools/glb-repaint.mjs ochi-manA.glb kit.glb --map 'f1f2f2=jersey,ffffff=jersey'
+node tools/glb-repaint.mjs ochi-manA.glb dbg.glb --debug     # loud colours, then render
+```
+
+The game tints ten named material regions per player and multiplies each
+`material.color` over white artwork. A bought character arrives the other way
+round — one material, one texture, the shirt colour baked into the pixels — so
+there is nothing to tint. That, not the animations, was what blocked the Studio
+Ochi athletes.
+
+The Ochi atlas turns out to be a **palette**: eight 1000x1000 tiles of flat
+colour side by side, five of them a single colour to the pixel and three
+carrying one small decal apiece (a jersey number, in the three colourways the
+shirt needs). So the mesh is already partitioned into paint regions and the
+partition is recovered by asking each triangle which colour its UVs sit in.
+
+The split is lossless where it counts. Triangles are regrouped into one
+primitive per region, **all still pointing at the same position, normal, joint
+and weight accessors** — no vertex duplicated, no seam introduced, the skinning
+untouched. Only the index buffer is rewritten. The texture is then dead, and
+dropped, which is why the file gets smaller.
+
+Three things it gets right that a naive version does not:
+
+* **Ask the triangle, not the point.** A triangle is filed under the modal
+  colour over its whole UV footprint, sampled barycentrically. Sampling one
+  centroid instead files a triangle over the number under the number, and
+  invents a ninth region out of the single face that straddles a tile seam and
+  lands on the blended pixel between them.
+* **One palette entry can be two garments.** A colour is a paint bucket, not a
+  region: Ochi's navy is the trousers *and* the panel the chest number sits on.
+  `--map '262262@breast=trim'` splits an entry by the dominant bone of its
+  triangles, which is the one label that knows a chest from a thigh.
+* **Same name means one primitive.** The runtime shares a material across
+  meshes by name, so a shirt whose front and back panels are separate tiles has
+  to merge into one `jersey` or a tint lands on half of it.
+
+`--report` prints each group's triangle count, bounding box and **dominant
+bones** — the bones are what name a region; debug colours have to be read off a
+render and matched back by eye, which is how a facemask and a shoulder stripe
+end up sharing a verdict. It also prints the fraction of texel samples that
+disagreed with their triangle: that is exactly what flattening throws away.
+On Ochi it is 0.96% — the number, which cannot survive anyway, because a
+tintable shirt is a shirt with no pixels of its own. Tens of percent would mean
+the atlas is a picture and this is the wrong tool.
+
+The verified Ochi kit:
+
+| region | triangles | palette entries |
+|---|---|---|
+| `jersey` | 183 | `f1f2f2` body + `ffffff` back panel |
+| `trim` | 53 | `262262` on torso bones + `27aae1` on the sleeve |
+| `skin` | 406 | `f8b583` |
+| `helmet` | 294 | `262262`/`27aae1`/`ffce00` on `spine.005/006` |
+| `shorts` | 152 | `262262` on `thigh` |
+| `socks` | 44 | `ffce00` on `shin` |
+| `shoes` | 614 | the rest of the foot palette |
+| `gloves` | 24 | `3452ff` on `forearm`/`hand` |
+
+---
+
 ## `fbx-inspect.mjs` — what is actually inside a purchased FBX
 
 ```sh

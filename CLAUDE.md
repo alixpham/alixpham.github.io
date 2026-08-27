@@ -28,6 +28,8 @@ tools/rig-fk.mjs              general quaternion FK + the ground-speed measureme
 tools/mocap/                  CMU .asf/.amc -> this rig (fetch, asf, retarget)
 tools/motion/*.json           retargeted clips, committed; the .amc never is
 tools/measure-clip.mjs        reads a baked clip back out as joint angles
+tools/glb-repaint.mjs         splits a bought character's baked atlas into
+                              named, tintable material regions
 tools/simstats.mjs            headless CPU-vs-CPU box score
 tools/pullstats.mjs           the flag pull, timed; --user splits it by side
 tools/smoke.mjs               every screen x both orientations, 0 errors, field3d alive
@@ -128,6 +130,17 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   `Sprint` stays authored; and a retargeted clip is asymmetric and slightly
   non-contralateral because a person is, so `measure-clip` gives clips carrying
   `extras.mocap` the numbers without the verdict.
+- **A bought character is blocked by its TEXTURE, not its skeleton.** The
+  game tints ten named regions per player by multiplying `material.color`
+  over white artwork; Studio Ochi's athletes ship one material with the kit
+  baked into an eight-swatch palette atlas, so there is nothing to tint.
+  `tools/glb-repaint.mjs` regroups the triangles by which swatch they sample
+  into one primitive per region, sharing the SAME position, normal, joint and
+  weight accessors — only the index buffer is new, so nothing can tear. Two
+  traps: a colour is a paint bucket and not a body part (Ochi's navy is the
+  trousers AND the chest panel, which is why the split also takes a dominant-
+  bone rule), and one sample per triangle files the number under the number
+  and invents a region out of the one face that straddles a tile seam.
 - The camera sits behind whoever HAS THE BALL, and the offence always attacks
   +x, so it never turns round; `engine.viewSign()` is the seam that says which
   way is downfield and now always returns 1.
