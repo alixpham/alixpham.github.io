@@ -11,7 +11,8 @@
     "build:player": "node tools/build-player-glb.mjs",
     "pulls": "node tools/pullstats.mjs",
     "pursuit": "node tools/pursuitstats.mjs",
-    "smoke": "node tools/smoke.mjs"
+    "smoke": "node tools/smoke.mjs",
+    "passes": "node tools/passstats.mjs"
   },
   "devDependencies": {
     "playwright": "^1.61.1"
