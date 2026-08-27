@@ -561,6 +561,37 @@
       return c[bone];
     }
 
+    /* ---- AND THE BALL IS AN ABSOLUTE POSE TOO ------------------------------
+       `restAlign` above carries an authored ARM pose onto an imported rig. The
+       ball offsets are authored in exactly the same frame — CARRY's comment
+       says so out loud, "the bone runs 0.27 down its own -Y to the wrist" —
+       and nothing was carrying those.
+
+       That is only true of the game's own player. On the Studio Ochi athlete,
+       which is the character the game actually loads, the forearm rests in an
+       A-pose and runs mostly down its own -X: LowerArm_R -> Hand_R is
+       [-0.207, -0.126, 0.019], not [0, -0.245, 0]. So `[0, -0.27, -0.08]`
+       pointed 0.27 in a direction that forearm does not go, and the football
+       hung 0.33 yards — a foot — off the arm, out below the elbow, held by
+       nothing. Measured with tools/ballcheck.mjs: the READY grip, which hangs
+       off Socket_Hand_R and whose frame the two rigs DO share, sat 0.06yd from
+       the hand; the running carry sat 0.33.
+
+       A ball offset is a vector in the bone's frame and the ball's rotation is
+       a pose in it, so both take the same constant the arm does, the other way
+       round: an arm pose is q_game * A because A carries the model's rest
+       direction onto the game's, and a vector authored in the game's frame
+       comes back the other way, A^-1 * v. On the game's own rig there is no
+       restAlign and this is a no-op, which is why nothing moves there. */
+    var _ballAlign = new THREE.Quaternion();
+    function alignGrip(P, bone) {
+      var A = alignQ(P, bone);
+      if (!A) return;
+      _ballAlign.copy(A).invert();
+      ball.position.applyQuaternion(_ballAlign);
+      ball.quaternion.premultiply(_ballAlign);
+    }
+
     // Scratch for the per-frame lean (see the LEAN block in syncPlayer).
     var _axis = new THREE.Vector3(), _qbank = new THREE.Quaternion(), _qpitch = new THREE.Quaternion();
     /* Blend one arm toward a posed rotation. Weight 0 leaves the clip alone and
@@ -2202,6 +2233,7 @@
             var grip = gripFor(key), side = sideFor(key);
             ball.position.set(grip.ball.pos[0] * side, grip.ball.pos[1], grip.ball.pos[2]);
             ball.rotation.set(grip.ball.rot[0], grip.ball.rot[1] * side, grip.ball.rot[2]);
+            alignGrip(ce.P, hostFor(key));
           } else {
             /* Procedural fallback rig: no bones to hang it off, so approximate.
                Kept at rib height rather than the old 1.15, which put it level
@@ -2326,6 +2358,54 @@
                      a: g ? g.a : '-', b: g ? g.b : '-', blend: g ? g.blend : 0,
                      rate: g ? g.rate : 0, phase: g ? g.phase : 0, w: g ? g.weight : 0 });
         }
+        return out;
+      },
+      /* And once more for the ball itself. A held ball is the one thing in
+         this renderer that lives in SOMEONE ELSE'S local space, so "is it in
+         his hands" cannot be answered from the engine — the engine only knows
+         who has possession. Every number here is read off the scene graph:
+         what the ball is actually parented to, and how far it is in world
+         yards from the nearest hand of the man the engine says is carrying it.
+         tools/ballcheck.mjs asserts on it. */
+      ballHold: function (state) {
+        var c = state && state.carrier;
+        ball.updateWorldMatrix(true, false);
+        var bw = new THREE.Vector3().setFromMatrixPosition(ball.matrixWorld);
+        var out = {
+          carrier: c ? (playersRef || []).indexOf(c) : -1,
+          host: ballHost ? ballHost.name : null,
+          rigged: false, hand: -1, wrist: -1,
+          bx: bw.x, by: bw.y, bz: bw.z,
+          inAir: !!(state && state.ball && state.ball.inAir),
+          winding: !!(state && state.pendingThrow),
+          /* The two frames where a world-space ball is CORRECT: the snap, in
+             flight from the turf to the hands, and a dead ball sitting on the
+             spot. Without these a probe cannot tell a legitimately unparented
+             ball from one that fell out of somebody's hands. */
+          snapFly: !!(state && state.snapFly),
+          onGround: !!(state && state.ball && state.ball.onGround),
+          phase: state ? state.phase : null,
+          xfer: xfer.dur > 0
+        };
+        if (!c) return out;
+        var e = entryOf(c);
+        if (!e || !e.P || !e.P.nodes) return out;
+        out.rigged = true;
+        var _v = new THREE.Vector3();
+        ['Socket_Hand_L', 'Socket_Hand_R'].forEach(function (n) {
+          var node = carryNode(c, n);
+          if (!node) return;
+          node.updateWorldMatrix(true, false);
+          var d = _v.setFromMatrixPosition(node.matrixWorld).distanceTo(bw);
+          if (out.hand < 0 || d < out.hand) out.hand = d;
+        });
+        ['LowerArm_L', 'LowerArm_R'].forEach(function (n) {
+          var node = carryNode(c, n);
+          if (!node) return;
+          node.updateWorldMatrix(true, false);
+          var d = _v.setFromMatrixPosition(node.matrixWorld).distanceTo(bw);
+          if (out.wrist < 0 || d < out.wrist) out.wrist = d;
+        });
         return out;
       },
       render: render, resize: resize, stop: stop };
