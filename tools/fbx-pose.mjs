@@ -113,7 +113,27 @@ export function readRig(scene, opts = {}) {
   const restFrom = opts.restFrom || 'auto';
   const { byId, parentOf, childrenOf } = scene;
   const models = [...byId.values()].filter(o => o.type === 'Model');
-  const limbs = models.filter(m => m.sub === 'LimbNode');
+  /* THE SKELETON IS NOT ONLY THE LimbNodes.
+
+     Rokoko exports the chain `Sam[Root] > Root[Root] > Hips[LimbNode]`, and
+     BOTH Root nodes carry animation curves — the character's whole world
+     orientation lives up there. Keying the pose off LimbNodes alone drops it,
+     which came out as a treadmill run rendered upside down with its head on the
+     floor while every limb articulated correctly.
+
+     So the skeleton is every LimbNode plus every Model ANCESTOR of one. The
+     fingertip `*Tip` helpers are Roots too but they are leaves, not ancestors,
+     and stay out. */
+  const limbIds = new Set(models.filter(m => m.sub === 'LimbNode').map(m => m.id));
+  const inRig = new Set(limbIds);
+  for (const id of limbIds) {
+    for (let p = parentOf.get(id); p != null && byId.has(p); p = parentOf.get(p)) {
+      const o = byId.get(p);
+      if (!o || o.type !== 'Model' || o.sub === 'Mesh') break;
+      inRig.add(p);
+    }
+  }
+  const limbs = models.filter(m => inRig.has(m.id));
 
   /* The bind, if there is one. */
   const bindG = new Map();
@@ -156,10 +176,11 @@ export function readRig(scene, opts = {}) {
        WORLD, so composing bone locals alone would leave the pose armature-
        relative and the two would disagree by exactly that rotation. Seed the
        chain with it. */
-    const isRoot = !(p && p.sub === 'LimbNode');
+    const isRoot = !(p && inRig.has(p.id));
     bones.set(b.name, {
       id: b.id,
       parent: isRoot ? null : p.name,
+      sub: b.sub,
       parentId: p ? p.id : null,
       aboveQ: isRoot && p && restWorld.get(p.id) ? quatOfMatrix(restWorld.get(p.id)) : [0, 0, 0, 1],
       restWorldQ: quatOfMatrix(g),

@@ -84,6 +84,25 @@ Validated against `Samba Dancing.fbx` from three.js (MIT): mixamo detected,
 **22 of 22** bone names matched, and the dance comes out upright on the Ochi
 character with the pelvis bob intact.
 
+### Source conventions that ship
+
+| table | naming | note |
+|---|---|---|
+| `rokoko` | `Hips`, `Spine1..Spine4`, `LeftThigh/Shin/Toe` | maps 23/23 — `Spine4` lands on Rigify's `spine.004`, which Mixamo has no bone for |
+| `mixamo` | `mixamorig:Hips`, `mixamorig:LeftUpLeg` … | 22/22; **validated end to end** |
+| `cmu` | `root`, `lfemur`, `ltibia` … | ASF; **validated end to end** |
+
+**Rokoko is not yet producing a correct pose.** Their free packs
+(`media.rokoko.com/WALK-RUN-CYCLES-MOCAP.zip` — a direct public link, no gate)
+match 23 of 23 bone names and still come out inverted. Three things about that
+rig are handled and none of them was the answer: the source facing is divided
+out; the pelvis takes its direction from the map rather than from its furthest
+child (which is a thigh, not the spine); and the animated `Sam[Root] >
+Root[Root]` ancestors above `Hips` are now part of the composed chain, because
+Rokoko puts the body's world transform up there. Something else in their
+transform convention is still wrong. Mixamo and CMU are unaffected — both were
+re-checked after each change.
+
 ### Which rest pose — and it depends what you want it for
 
 A skinned FBX holds two, and they are **not** the same: the skin clusters'

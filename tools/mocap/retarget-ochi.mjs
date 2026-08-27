@@ -82,6 +82,19 @@ const MAP_MIXAMO = {
   'thigh.R': 'mixamorig:RightUpLeg', 'shin.R': 'mixamorig:RightLeg',
   'foot.R': 'mixamorig:RightFoot', 'toe.R': 'mixamorig:RightToeBase'
 };
+/* Rokoko's own scheme, from their free packs. It is the cleanest of the three
+   for this target: Spine1..Spine4 lands exactly on Rigify's spine.001..004,
+   where Mixamo stops at three and leaves spine.004 riding its parent. Note
+   Thigh/Shin/Toe rather than Mixamo's UpLeg/Leg/ToeBase, and no prefix. */
+const MAP_ROKOKO = {
+  spine: 'Hips',
+  'spine.001': 'Spine1', 'spine.002': 'Spine2', 'spine.003': 'Spine3', 'spine.004': 'Spine4',
+  'spine.005': 'Neck', 'spine.006': 'Head',
+  'shoulder.L': 'LeftShoulder', 'upper_arm.L': 'LeftArm', 'forearm.L': 'LeftForeArm', 'hand.L': 'LeftHand',
+  'shoulder.R': 'RightShoulder', 'upper_arm.R': 'RightArm', 'forearm.R': 'RightForeArm', 'hand.R': 'RightHand',
+  'thigh.L': 'LeftThigh', 'shin.L': 'LeftShin', 'foot.L': 'LeftFoot', 'toe.L': 'LeftToe',
+  'thigh.R': 'RightThigh', 'shin.R': 'RightShin', 'foot.R': 'RightFoot', 'toe.R': 'RightToe'
+};
 const MAP_CMU = {
   spine: 'root',
   'spine.001': 'lowerback', 'spine.002': 'upperback', 'spine.003': 'thorax',
@@ -97,7 +110,7 @@ const MAP_CMU = {
 function pickMap(names) {
   const has = new Set(names);
   const score = m => Object.values(m).filter(v => has.has(v)).length;
-  const cands = [['mixamo', MAP_MIXAMO], ['cmu', MAP_CMU]];
+  const cands = [['rokoko', MAP_ROKOKO], ['mixamo', MAP_MIXAMO], ['cmu', MAP_CMU]];
   cands.sort((a, b) => score(b[1]) - score(a[1]));
   const [name, map] = cands[0];
   return { name, map, matched: score(map), total: Object.keys(map).length };
@@ -313,6 +326,7 @@ if (SRC_FBX) {
     convention: picked, duration: clip.duration,
     boneDir: n => { const b = srig.bones.get(n); return b ? b.dir : null; },
     boneLen: n => { const b = srig.bones.get(n); return b ? b.len * SU : 0; },
+    bonePos: n => { const b = srig.bones.get(n); return b ? b.restPos : null; },
     at: t => poseAt(srig, clip, clip.t0 + t),
     rootAt: t => {
       const T = hipsCurves && hipsCurves.T;
@@ -343,8 +357,34 @@ if (SRC_FBX) {
    like. The pelvis takes their rotation directly onto our bind instead. */
 const DELTA = {}, REST = {};
 let mapped = 0, unmapped = [];
+/* THE SOURCE'S BONE DIRECTION HAS TO FOLLOW THE SAME CONTINUATION WE DO.
+
+   fbx-pose measures a bone's rest direction toward its furthest child, which is
+   right for a limb and wrong for the pelvis: the Hips' children are the spine
+   and both thighs, and a leg is longer than a lumbar segment, so "furthest"
+   picks a thigh and the pelvis ends up pointing at the floor. Paired against
+   our own pelvis pointing up the spine, minArc then produces a ~180 degree flip
+   and folds the torso over — a Rokoko treadmill run came out bent double with
+   its head by its feet.
+
+   We already know which child continues which bone on OUR side, and we have a
+   name map, so ask the source the same question: from MAP[bone] toward
+   MAP[continuation]. CMU is left alone — ASF declares each bone's direction
+   explicitly, so there is nothing to infer. */
+function srcDir(ours) {
+  if (src.kind === 'cmu' || !src.bonePos) return src.boneDir(MAP[ours]);
+  const c = CONTINUES[ours];
+  const a = src.bonePos(MAP[ours]), b = c && MAP[c] ? src.bonePos(MAP[c]) : null;
+  if (a && b) {
+    const v = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const n = Math.hypot(...v);
+    if (n > 1e-6) return [v[0] / n, v[1] / n, v[2] / n];
+  }
+  return src.boneDir(MAP[ours]);
+}
+
 for (const ours in MAP) {
-  const tdir = src.boneDir(MAP[ours]);
+  const tdir = srcDir(ours);
   const d = bindDir(ours);
   if (!tdir || !d) { unmapped.push(ours); continue; }
   const degenerate = !src.boneLen(MAP[ours]) || Math.hypot(...tdir) < 1e-6;
@@ -360,9 +400,20 @@ for (const ours in MAP) {
    world rotation of the whole character — it leaves every local except the
    pelvis untouched, and puts the pelvis back on its bind orientation at the
    start of the clip. */
-const HEADING = qConj(src.kind === 'cmu'
-  ? forward(skel, raw[Math.max(0, Number(opt('from', 0)))]).q.root
-  : (src.at(0)[MAP.spine ? 'spine' : 'spine'] ? [0, 0, 0, 1] : [0, 0, 0, 1]));
+/* Divide out the source's own facing, so the clip starts on our bind
+   orientation and the game decides which way the player points.
+
+   For CMU that is the root's rotation on the first sampled frame. For an FBX it
+   is the same idea one level along: the ROOT BONE's rotation relative to its own
+   rest, which is what src.at() returns. This was a placeholder returning
+   identity, and it showed: a Rokoko treadmill run came out 153 degrees off,
+   inverted and floating, because the runner does not face the way the bind
+   does and nothing was taking that out. */
+const HEADING = (() => {
+  if (src.kind === 'cmu') return qConj(forward(skel, raw[Math.max(0, Number(opt('from', 0)))]).q.root);
+  const S0 = src.at(Number(opt('from', 0)));
+  return qConj(S0[MAP.spine] || [0, 0, 0, 1]);
+})();
 
 /* Frame range. CMU counts captured frames; an FBX clip counts seconds, so the
    same --from/--to are read in the source's own units and both end up as a
