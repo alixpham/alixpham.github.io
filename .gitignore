@@ -42,3 +42,10 @@ _t3d_test.js
 # the retargeted clips in tools/motion/ are what the build actually reads)
 tools/mocap/cache/
 .smoke/
+
+# Studio Ochi source assets are licensed and stay out of the repo. What IS
+# committed is the retargeted motion in tools/motion-ochi/, which is derived
+# from the free CMU database, plus the tools that rebuild the GLB from both.
+*.fbx
+*.blend
+tools/ochi/

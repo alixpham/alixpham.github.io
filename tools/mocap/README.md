@@ -41,6 +41,59 @@ bytes. The cache is a convenience, not an input.
 it.** That is the entire swap mechanism, and it is the file system on purpose:
 what shipped is a matter of listing a directory.
 
+## Two targets: the game rig, and the Studio Ochi metarig
+
+`retarget.mjs` targets the game's own 27-bone rig. `retarget-ochi.mjs` targets
+the Studio Ochi character's 58-bone Blender Rigify metarig, so the purchased
+model can be driven by the same free capture database instead of a paid
+animation pack.
+
+```sh
+node tools/mocap/retarget-ochi.mjs 35_02 --fbx ManA.fbx --name Walk --cyclic
+node tools/mocap/retarget-ochi.mjs 35_21 --fbx ManA.fbx --name Run --cyclic
+node tools/fbx-to-glb.mjs ManA.fbx -o player.glb --texture atlas.png \
+    --motion tools/motion-ochi
+```
+
+Output lands in `tools/motion-ochi/` on the same terms as `tools/motion/`:
+committed, sampled, no network needed to rebuild.
+
+### Why it is a second file rather than a flag
+
+The game rig's rest LOCAL rotations are all identity, which lets `retarget.mjs`
+treat a bone's rest direction as its offset to the next child and compose
+straight onto that. Every bone of a Rigify metarig carries a real rest rotation,
+so the general form is needed:
+
+    W = S * DELTA * R
+
+where `S` is their world rotation relative to their rest (what `asf.mjs`'s
+`forward()` returns), `R` is our bone's bind world rotation, and
+`DELTA = minArc(d, theirDir)` lays our bind direction `d` along theirs. `W`
+applied to the bone's own axis gives `S * theirDir`, which is where their bone
+points. Local is `conj(W_parent) * W`.
+
+Three things had to be measured rather than assumed, each of which produced a
+plausible-looking wreck first:
+
+- **The root is a frame, not a bone.** CMU's `root` has `dir [0,0,0]` and length
+  0, so `minArc` against it is degenerate. It laid a perfectly good jog on its
+  back with the feet in the air while every limb articulated correctly — which
+  is exactly what a bad root and good bones look like. The pelvis takes their
+  rotation directly onto our bind.
+- **The armature above the root bone still applies.** `spine` has no bone
+  parent but is not a world root: it hangs off the Null carrying Blender's −90°
+  X. Writing its world rotation as a local applies that −90 twice.
+- **The bind pose is in centimetres.** `TransformLink` is in the file's world
+  units, so the leg came out at 87.9 and a leg-scale of ×101 before the ×0.01.
+
+`bindDir` measures a bone's direction toward the child that continues it, so no
+axis convention has to be declared; where a bone tips into an `_end` with no
+skin cluster it falls back to Rigify's +Y, and the report prints how far the two
+disagree where both are available (12.3° worst, at `shoulder.R`).
+
+---
+
 ## Adding a clip
 
 ```sh

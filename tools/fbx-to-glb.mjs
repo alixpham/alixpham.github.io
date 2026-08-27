@@ -53,10 +53,11 @@ const IN = argv.find(a => !a.startsWith('-') && /\.fbx$/i.test(a));
 const OUT = arg('-o', arg('--out', null));
 const TEX = arg('--texture', null);
 const NO_ANIM = has('--no-anim');
+const MOTION = arg('--motion', null);
 const STATS = has('--stats');
 
 if (!IN || !OUT) {
-  console.error('usage: node tools/fbx-to-glb.mjs in.fbx -o out.glb [--texture atlas.png] [--no-anim] [--stats]');
+  console.error('usage: node tools/fbx-to-glb.mjs in.fbx -o out.glb [--texture atlas.png] [--motion dir] [--no-anim] [--stats]');
   process.exit(2);
 }
 
@@ -272,6 +273,7 @@ function readGeometry(geo) {
 /* ------------------------------------------------------------------- build */
 const geoms = [];
 const skipped = [];
+const retargeted = [];
 for (const mm of meshModels) {
   // the Geometry connected to this Model
   const gid = (childrenOf.get(mm.id) || []).map(c => byId.get(c.id)).find(o => o && o.type === 'Geometry');
@@ -640,6 +642,54 @@ for (const a of anims) {
   }
 }
 
+/* RETARGETED CLIPS, baked in from tools/motion-ochi/*.json.
+
+   These are CMU motion capture carried onto this rig by
+   tools/mocap/retarget-ochi.mjs: quaternion tracks per bone plus a pelvis
+   height, already sampled, so nothing here needs the network or the .amc. A
+   clip whose name matches one of the FBX's own replaces it — the same swap
+   mechanism tools/motion/ has for the game's rig, and for the same reason: what
+   ships should be a matter of listing a directory. */
+if (MOTION && fs.existsSync(MOTION)) {
+  const files = fs.readdirSync(MOTION).filter(f => f.endsWith('.json')).sort();
+  for (const f of files) {
+    const m = JSON.parse(fs.readFileSync(path.join(MOTION, f), 'utf8'));
+    const n = m.steps, dur = m.duration || 1;
+    const times = new Float32Array(n);
+    for (let i = 0; i < n; i++) times[i] = (dur * i) / (m.cyclic ? n : Math.max(1, n - 1));
+    const tAcc = accessor(times, 'SCALAR', CT.f32, null, { minmax: true });
+    const channels = [], samplers = [];
+    for (const bone in m.tracks) {
+      const target = models.find(mm => mm.name === bone);
+      if (!target || !nodeIndex.has(target.id)) continue;
+      const q = m.tracks[bone];
+      if (!q || q.length !== n) continue;
+      const R = new Float32Array(n * 4);
+      q.forEach((v, i) => { R[i * 4] = v[0]; R[i * 4 + 1] = v[1]; R[i * 4 + 2] = v[2]; R[i * 4 + 3] = v[3]; });
+      samplers.push({ input: tAcc, output: accessor(R, 'VEC4', CT.f32, null), interpolation: 'LINEAR' });
+      channels.push({ sampler: samplers.length - 1, target: { node: nodeIndex.get(target.id), path: 'rotation' } });
+    }
+    /* The pelvis height, in the rig's own units — the JSON carries metres and
+       the bone sits under the armature's x100, so it goes back up by the same
+       factor the wrapper takes off. */
+    if (m.root && m.root.length === n) {
+      const hips = models.find(mm => mm.name === 'spine');
+      if (hips && nodeIndex.has(hips.id)) {
+        const rest = localOf.get(hips.id);
+        const T = new Float32Array(n * 3);
+        m.root.forEach((v, i) => { T[i * 3] = rest.t[0]; T[i * 3 + 1] = rest.t[1]; T[i * 3 + 2] = v[1]; });
+        samplers.push({ input: tAcc, output: accessor(T, 'VEC3', CT.f32, null), interpolation: 'LINEAR' });
+        channels.push({ sampler: samplers.length - 1, target: { node: nodeIndex.get(hips.id), path: 'translation' } });
+      }
+    }
+    if (!channels.length) continue;
+    const existing = gltf.animations.findIndex(a => a.name === m.clip);
+    const anim = { name: m.clip, channels, samplers };
+    if (existing >= 0) gltf.animations[existing] = anim; else gltf.animations.push(anim);
+    retargeted.push(m.clip + (existing >= 0 ? ' (replaced)' : ''));
+  }
+}
+
 /* The unit wrapper, and the scene under it. FBX's unit is the centimetre; the
    raw values are metres scaled by 100, so 1/100 hands back metres. */
 const UNIT = 0.01;
@@ -674,6 +724,7 @@ console.log(`  joints        ${jointOrder.length}`);
 console.log(`  meshes        ${gltf.meshes.length}, ${totalVerts} vertices, ${totalTris} triangles`);
 console.log(`  skin          ${gltf.skins.length ? 'yes' : 'NO'}, up to ${maxInfluences} influences per control point (top 4 kept)`);
 console.log(`  texture       ${gltf.images ? 'embedded' : 'none — pass --texture'}`);
+if (retargeted.length) console.log(`  retargeted    ${retargeted.join(', ')}`);
 console.log(`  animations    ${gltf.animations.length}${gltf.animations.length ? ': ' + gltf.animations.map(a => a.name).join(', ') : ''}`);
 if (bbox) {
   /* Report in the frame a viewer will see: the -90 X puts raw Z up, and the
