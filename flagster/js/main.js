@@ -5,29 +5,6 @@
   'use strict';
   var F = global.FLAGSTER, ui = F.ui, h = ui.h;
 
-  /* WHICH PLAYER MODEL. Two characters ship: the parametric one this repo
-     builds, and the Studio Ochi athlete converted onto the same rig. The model
-     is fetched once at boot and cached for the life of the page, so switching
-     is a stored preference plus a reload rather than a live swap — which is
-     also the honest thing to show, since every player on the field changes. */
-  function characterToggle() {
-    var PM = F.PlayerModel;
-    if (!global.THREE || !PM || !PM.setCharacter) return null;
-    var LABEL = { ochi: 'Ochi', flagplayer: 'Classic' };
-    var now = (F.storage && F.storage.get('character', 'ochi')) || 'ochi';
-    if (!LABEL[now]) now = 'ochi';
-    return h('button', {
-      class: 'btn ghost',
-      html: '🧍 Player: ' + LABEL[now],
-      title: 'Switch the character model (reloads)',
-      onClick: function () {
-        var next = now === 'ochi' ? 'flagplayer' : 'ochi';
-        if (F.storage) F.storage.set('character', next);
-        location.reload();
-      }
-    });
-  }
-
   function mainMenu() {
     var mobile = ui.isMobile();
     var tiles = [
@@ -72,7 +49,6 @@
       h('div', { class: 'menu-foot' }, [
         h('button', { class: 'btn ghost', html: '▶ Watch Demo', title: 'CPU vs CPU', onClick: function () { startDemo(); } }),
         h('button', { class: 'btn ghost', html: '🎮 Controls', onClick: ui.openControls }),
-        characterToggle(),
         h('span', { class: 'platform-badge', text: mobile ? '📱 Mobile build' : '💻 Desktop build' })
       ])
     ]));
