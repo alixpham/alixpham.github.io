@@ -98,19 +98,45 @@ link with no gate, 16 clips, and two **treadmill** runs — in place by
 construction, which is what the locomotion ladder wants and what CMU's 3m x 8m
 capture volume cannot provide.
 
-### A treadmill clip has no ground speed, and this project runs on ground speed
+### Speed from the stance sweep — a treadmill clip DOES have a ground speed
 
-Rokoko's best-looking runs are captured on a treadmill, and that is exactly what
-makes them unusable for the gait ladder. `groundSpeed` here is measured off the
-BAKED clip by how far the stance foot sweeps under the body — see CLAUDE.md, it
-is deliberately not a number anybody types. On a treadmill the belt does that
-sweeping instead, so the stance foot stays under the runner and the measurement
-collapses: a window with stance 22% and flight 56% at 164 steps/min — a run by
-every other measure — reported **1.4 m/s**, which is a brisk walk.
+An earlier version of this note said a treadmill capture has no ground speed
+because the performer does not move. That was wrong, and the correction matters.
 
-So treadmill captures are good for POSE and worthless for SPEED, and the ladder
-needs both. Prefer a clip that travels; `04-running-out-of-frame.fbx` and
-`07-runninginjured.fbx` in the same pack do.
+A treadmill is kinematically identical to running overground. In both cases the
+foot in contact travels BACKWARD RELATIVE TO THE BODY at exactly the ground or
+belt speed — overground the body advances over a planted foot, on a belt the
+foot rides back under a fixed body, and the relative motion is the same. So
+measure the stance foot against the PELVIS instead of against the world and the
+speed comes back either way, with no travel required at all.
+
+`clipspeed.mjs` does that, and it is validated twice over:
+
+- **CMU 35_21**, whose retargeted ground speed measures 3.41 m/s through full
+  kinematics, reads **3.25 / 3.29** for left and right here — within 5%, and
+  symmetric.
+- The **walk** clips in Rokoko's pack read **1.14–1.45 m/s at 120–150
+  steps/min**, which are textbook walking figures.
+
+```sh
+node tools/mocap/clipspeed.mjs some/dir --window 2
+```
+
+It slides a window and keeps the best, because a library clip is not one gait:
+sixteen seconds of "running" opens with the performer standing, walks in, runs,
+and stops. Averaging the whole thing reported that run at 0.12 m/s — and worse,
+the stance gate (the lowest quartile of ankle height) was then set by the
+standing frames, so the samples counted as contact were the ones where nothing
+moved. Every clip read near zero and nearly all flagged asymmetric, which is the
+signature of measuring the wrong frames rather than of a bad capture.
+
+**What it says about this pack.** The walks are good and usable. The three
+"running" clips come back at 1.30–1.43 m/s — the same speed as the walks — while
+reporting 210–270 steps/min. A stride of 0.3m at a sprinter's cadence is not a
+gait anybody has; it is what a capture looks like when the foot travel has been
+solved away. So the method recovers speed from a treadmill fine, and these
+particular running captures simply do not carry it. Left/right split is printed
+for the same reason: a real gait is symmetric.
 
 ### Feeding the game rig from an FBX
 
