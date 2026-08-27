@@ -1160,6 +1160,10 @@
   global.FLAGSTER.PlayerModel = {
     preload: preload,
     setCharacter: setCharacter,
+    /* How tall the LOADED model actually is, in metres. A caller that wants
+       every character to come out the same size on the field has to divide by
+       this rather than by a constant — see the note in player3d.js. */
+    authorHeight: function () { return MODEL.authorHeight; },
     character: function () { return CHARACTER; },
     characters: Object.keys(CHARACTERS),
     whenReady: whenReady,

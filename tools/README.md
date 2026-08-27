@@ -639,6 +639,40 @@ one shared animation library turns on whether they share one armature —
 
 ---
 
+## `footcheck.mjs` — do the players stand on the grass?
+
+```sh
+npm run feet
+node tools/footcheck.mjs --secs 170 --character flagplayer
+```
+
+"Make sure gravity works" is a question about where the feet are, and the only
+honest answer comes off the renderer: **the engine has no vertical physics for
+a player at all.** Every centimetre of a player's rise and fall is the
+animation plus one constant, `PLAYER_LIFT`, which raises the holder because the
+rig dips below its own origin.
+
+This wraps `field3d.render` and, on every frame it draws, skins each player's
+meshes through three.js's own `applyBoneTransform` and records the lowest
+vertex.
+
+Two ways to get this wrong, both of which were got wrong first:
+
+* **Polling from outside.** A first attempt sampled from Node every 180ms and
+  reported players hovering 4 cm off the turf. They were not — it had never
+  caught them in stance. Swiftshader draws about twice a second, so an outside
+  sampler sees a handful of frames and the airborne half of a stride is half of
+  them. Accumulating inside the frame costs nothing and cannot miss one.
+* **Taking the minimum.** The lowest a player EVER gets includes the frame he
+  dived, and a dive is *meant* to put him thirty centimetres down. One such
+  frame in four hundred drags the number to −4 cm and makes a sound lift look
+  broken. Each player is scored by the **tenth percentile** of his own
+  per-frame low instead: stance, not the one frame he left his feet.
+
+---
+
+---
+
 ## `passstats.mjs` — did you ever SEE the pass?
 
 ```sh
