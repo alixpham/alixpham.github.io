@@ -52,6 +52,7 @@ import { fileURLToPath } from 'node:url';
 import { readSkeleton, readMotion, forward, qMul, qConj, qRot, qSlerp, qNorm, minArc } from './asf.mjs';
 import { skeletonText, motionText, subjectOf } from './fetch.mjs';
 import { parseFBX, indexScene, kid, prop70 } from '../fbx-read.mjs';
+import { readRig, readClips, poseAt } from '../fbx-pose.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const OUTDIR = path.resolve(HERE, '..', 'motion-ochi');
@@ -61,7 +62,27 @@ const STEPS = 48;                                  // samples written per clip
    The Rigify spine is seven bones and CMU's is seven joints, which line up
    pelvis-to-head without inventing anything. Fingers, breasts, heels and the
    pelvis helpers have no counterpart and keep their bind pose. */
-const MAP = {
+/* SOURCE NAMING CONVENTIONS. Ochi bone <- their bone. CMU's ASF names below;
+   Mixamo's are the de-facto standard for downloaded FBX packs (MocapFlow
+   advertises "standard humanoid skeleton mapping", which in practice means
+   this), so both ship and the right one is picked by counting which matches.
+
+   Rigify's spine is seven bones and Mixamo's is Hips + Spine/1/2 + Neck + Head,
+   so spine.004 has no counterpart and rides its parent. */
+const MAP_MIXAMO = {
+  spine: 'mixamorig:Hips',
+  'spine.001': 'mixamorig:Spine', 'spine.002': 'mixamorig:Spine1', 'spine.003': 'mixamorig:Spine2',
+  'spine.005': 'mixamorig:Neck', 'spine.006': 'mixamorig:Head',
+  'shoulder.L': 'mixamorig:LeftShoulder', 'upper_arm.L': 'mixamorig:LeftArm',
+  'forearm.L': 'mixamorig:LeftForeArm', 'hand.L': 'mixamorig:LeftHand',
+  'shoulder.R': 'mixamorig:RightShoulder', 'upper_arm.R': 'mixamorig:RightArm',
+  'forearm.R': 'mixamorig:RightForeArm', 'hand.R': 'mixamorig:RightHand',
+  'thigh.L': 'mixamorig:LeftUpLeg', 'shin.L': 'mixamorig:LeftLeg',
+  'foot.L': 'mixamorig:LeftFoot', 'toe.L': 'mixamorig:LeftToeBase',
+  'thigh.R': 'mixamorig:RightUpLeg', 'shin.R': 'mixamorig:RightLeg',
+  'foot.R': 'mixamorig:RightFoot', 'toe.R': 'mixamorig:RightToeBase'
+};
+const MAP_CMU = {
   spine: 'root',
   'spine.001': 'lowerback', 'spine.002': 'upperback', 'spine.003': 'thorax',
   'spine.004': 'lowerneck', 'spine.005': 'upperneck', 'spine.006': 'head',
@@ -70,6 +91,18 @@ const MAP = {
   'thigh.L': 'lfemur', 'shin.L': 'ltibia', 'foot.L': 'lfoot', 'toe.L': 'ltoes',
   'thigh.R': 'rfemur', 'shin.R': 'rtibia', 'foot.R': 'rfoot', 'toe.R': 'rtoes'
 };
+/* Pick the table that actually matches the source's bone names, and say so.
+   A convention that half-matches is worse than one that does not: it retargets
+   the bones it recognises and silently leaves the rest at rest. */
+function pickMap(names) {
+  const has = new Set(names);
+  const score = m => Object.values(m).filter(v => has.has(v)).length;
+  const cands = [['mixamo', MAP_MIXAMO], ['cmu', MAP_CMU]];
+  cands.sort((a, b) => score(b[1]) - score(a[1]));
+  const [name, map] = cands[0];
+  return { name, map, matched: score(map), total: Object.keys(map).length };
+}
+let MAP = MAP_CMU;
 /* Which child continues each bone, for measuring its bind direction. */
 const CONTINUES = {
   spine: 'spine.001', 'spine.001': 'spine.002', 'spine.002': 'spine.003',
@@ -83,12 +116,14 @@ const CONTINUES = {
 
 /* -------------------------------------------------------------------- args */
 const argv = process.argv.slice(2);
-const trial = argv[0];
-if (!trial || trial.startsWith('--')) {
-  console.error('usage: retarget-ochi.mjs <trial e.g. 35_21> --fbx <character.fbx> [--name Clip] [--from f] [--to t] [--cyclic] [--report]');
+const trial = (argv[0] && !argv[0].startsWith('--')) ? argv[0] : null;
+if (!trial && !argv.includes('--src-fbx')) {
+  console.error('usage: retarget-ochi.mjs <trial|--src-fbx anim.fbx> --fbx <character.fbx> [--name Clip] [--src-clip n] [--from f] [--to t] [--cyclic] [--report]');
   process.exit(2);
 }
-const opt = (k, d) => { const i = argv.indexOf('--' + k); return i > 0 && argv[i + 1] ? argv[i + 1] : d; };
+/* `i >= 0`, not `i > 0`: a flag at position 0 is legal now that the trial is
+   optional, and `> 0` made --src-fbx invisible when it led the command line. */
+const opt = (k, d) => { const i = argv.indexOf('--' + k); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
 const flag = k => argv.includes('--' + k);
 const FBX = opt('fbx', null);
 const NAME = opt('name', trial);
@@ -231,9 +266,73 @@ function axisAgreement() {
   return { worst, at };
 }
 
-/* ------------------------------------------------------------ their motion */
-const skel = readSkeleton(await skeletonText(subjectOf(trial)));
-const raw = readMotion(await motionText(trial));
+/* ------------------------------------------------------------ their motion
+
+   Two sources, one interface. CMU gives .asf/.amc; a purchased or downloaded
+   pack (Mixamo, MocapFlow) gives an FBX. Either way what the retarget needs is
+   the same three things: a bone's REST DIRECTION, its rotation RELATIVE TO
+   THAT REST at time t, and a root position — so both are wrapped into `src`
+   below and nothing downstream knows which arrived. */
+const SRC_FBX = opt('src-fbx', null);
+const SRC_CLIP = opt('src-clip', null);
+let src, skel, raw;
+
+if (SRC_FBX) {
+  const sfbx = parseFBX(fs.readFileSync(SRC_FBX));
+  const sscene = indexScene(sfbx.root);
+  /* The cluster bind, not the node locals: a downloaded rig's bind IS its
+     T-pose, which is the anatomical reference the motion is meaningful
+     against. See the note in fbx-pose.mjs on why the two differ. */
+  const srig = readRig(sscene, { restFrom: 'clusters' });
+  const clips = readClips(sscene, srig);
+  if (!clips.length) { console.error('no animation stacks in ' + SRC_FBX); process.exit(1); }
+  const clip = SRC_CLIP ? clips.find(c => c.name.includes(SRC_CLIP)) : clips.reduce((a, b) => (b.duration > a.duration ? b : a));
+  if (!clip) { console.error('no clip matching ' + SRC_CLIP + '; have: ' + clips.map(c => c.name).join(', ')); process.exit(1); }
+  const picked = pickMap([...srig.bones.keys()]);
+  MAP = picked.map;
+  /* FBX's native unit is the centimetre and these exports leave it there
+     (UnitScaleFactor 1, Hips resting at y=99.7). Lengths only feed the leg-scale
+     ratio and the pelvis bob, both of which want metres — the retarget itself is
+     rotation-only and does not care. */
+  const SU = 0.01;
+  /* The hips' own translation curve is the vertical bob: the crouch of a stride,
+     the drop of a dodge. Without it the clip is rotation-only and the player
+     glides at a fixed height through motions that should sink. */
+  const hipsCurves = clip.curves.get(MAP.spine);
+  const sampleT = (c, t, dflt) => {
+    if (!c || !c.times.length) return dflt;
+    if (t <= c.times[0]) return c.vals[0];
+    if (t >= c.times[c.times.length - 1]) return c.vals[c.vals.length - 1];
+    let i = 0;
+    while (i < c.times.length - 1 && c.times[i + 1] <= t) i++;
+    const a = c.times[i], b = c.times[i + 1];
+    return c.vals[i] + (c.vals[i + 1] - c.vals[i]) * (b > a ? (t - a) / (b - a) : 0);
+  };
+  src = {
+    kind: 'fbx', label: `${path.basename(SRC_FBX)} :: ${clip.name}`,
+    convention: picked, duration: clip.duration,
+    boneDir: n => { const b = srig.bones.get(n); return b ? b.dir : null; },
+    boneLen: n => { const b = srig.bones.get(n); return b ? b.len * SU : 0; },
+    at: t => poseAt(srig, clip, clip.t0 + t),
+    rootAt: t => {
+      const T = hipsCurves && hipsCurves.T;
+      if (!T) return [0, 0, 0];
+      const tt = clip.t0 + t;
+      return [sampleT(T.X, tt, 0) * SU, sampleT(T.Y, tt, 0) * SU, sampleT(T.Z, tt, 0) * SU];
+    }
+  };
+} else {
+  skel = readSkeleton(await skeletonText(subjectOf(trial)));
+  raw = readMotion(await motionText(trial));
+  const picked = pickMap(Object.keys(skel.bones));
+  MAP = picked.map;
+  src = {
+    kind: 'cmu', label: 'CMU ' + trial, convention: picked,
+    boneDir: n => { const b = skel.bones[n]; return b ? b.dir : null; },
+    boneLen: n => { const b = skel.bones[n]; return b ? b.len : 0; },
+    at: null, rootAt: null
+  };
+}
 
 /* THE ROOT IS A FRAME, NOT A BONE. CMU's `root` carries dir [0,0,0] and length
    0 — it is the pelvis coordinate system, with nothing to point along — so
@@ -245,11 +344,11 @@ const raw = readMotion(await motionText(trial));
 const DELTA = {}, REST = {};
 let mapped = 0, unmapped = [];
 for (const ours in MAP) {
-  const theirs = skel.bones[MAP[ours]];
+  const tdir = src.boneDir(MAP[ours]);
   const d = bindDir(ours);
-  if (!theirs || !d) { unmapped.push(ours); continue; }
-  const degenerate = !theirs.len || Math.hypot(...theirs.dir) < 1e-6;
-  DELTA[ours] = degenerate ? [0, 0, 0, 1] : minArc(d, theirs.dir);
+  if (!tdir || !d) { unmapped.push(ours); continue; }
+  const degenerate = !src.boneLen(MAP[ours]) || Math.hypot(...tdir) < 1e-6;
+  DELTA[ours] = degenerate ? [0, 0, 0, 1] : minArc(d, tdir);
   REST[ours] = rotOf(ours);
   mapped++;
 }
@@ -261,29 +360,36 @@ for (const ours in MAP) {
    world rotation of the whole character — it leaves every local except the
    pelvis untouched, and puts the pelvis back on its bind orientation at the
    start of the clip. */
-const HEADING = qConj(forward(skel, raw[Math.max(0, Number(opt('from', 0)))]).q.root);
+const HEADING = qConj(src.kind === 'cmu'
+  ? forward(skel, raw[Math.max(0, Number(opt('from', 0)))]).q.root
+  : (src.at(0)[MAP.spine ? 'spine' : 'spine'] ? [0, 0, 0, 1] : [0, 0, 0, 1]));
 
+/* Frame range. CMU counts captured frames; an FBX clip counts seconds, so the
+   same --from/--to are read in the source's own units and both end up as a
+   span the sampler walks. */
 const FROM = Math.max(0, Number(opt('from', 0)));
-const TO = Math.min(raw.length - 1, Number(opt('to', raw.length - 1)));
+const TO = src.kind === 'cmu'
+  ? Math.min(raw.length - 1, Number(opt('to', raw.length - 1)))
+  : Number(opt('to', src.duration));
 if (TO <= FROM) { console.error('empty frame range'); process.exit(1); }
 
 /* Leg lengths, for rescaling the vertical bob. Theirs from the ASF, ours from
    the bind pose. */
-const legTheirs = skel.bones.lfemur.len + skel.bones.ltibia.len;
+const legTheirs = src.boneLen(MAP['thigh.L']) + src.boneLen(MAP['shin.L']);
 const hipP = posOf('thigh.L'), kneeP = posOf('shin.L'), ankP = posOf('foot.L');
 const legOurs = (Math.hypot(kneeP[0] - hipP[0], kneeP[1] - hipP[1], kneeP[2] - hipP[2]) +
   Math.hypot(ankP[0] - kneeP[0], ankP[1] - kneeP[1], ankP[2] - kneeP[2]));
 const legScale = legOurs / legTheirs;
 
 /* Their pose -> our world rotations, per captured frame. */
-function worldAt(fi) {
-  const src = forward(skel, raw[fi]);
+function worldAt(x) {
+  const S = src.kind === 'cmu' ? forward(skel, raw[Math.round(x)]) : { q: src.at(x), p: { root: src.rootAt(x) } };
   const W = {};
   for (const ours in DELTA) {
-    const S = src.q[MAP[ours]];
-    if (S) W[ours] = qNorm(qMul(HEADING, qMul(S, qMul(DELTA[ours], REST[ours]))));
+    const q = S.q[MAP[ours]];
+    if (q) W[ours] = qNorm(qMul(HEADING, qMul(q, qMul(DELTA[ours], REST[ours]))));
   }
-  return { W, p: src.p };
+  return { W, p: S.p };
 }
 
 /* ------------------------------------------------------------------ sample */
@@ -292,6 +398,7 @@ const times = [];
 for (let i = 0; i < STEPS; i++) times.push(FROM + (span * i) / (CYCLIC ? STEPS : STEPS - 1));
 
 const frames = times.map(x => {
+  if (src.kind !== 'cmu') { const a = worldAt(x); return { W: a.W, root: a.p.root }; }
   const i = Math.floor(x), u = x - i;
   const a = worldAt(Math.min(i, TO)), b = worldAt(Math.min(i + 1, TO));
   const W = {};
@@ -302,13 +409,16 @@ const frames = times.map(x => {
 
 /* Pelvis height: the subject's own, rescaled by leg length, with the mean
    removed so the clip sits at our own bind height rather than theirs. */
-const rootY = frames.map(f => f.root[1] * legScale);
+/* CMU's root is in the subject's own units and gets the leg-length rescale;
+   an FBX source is already metres by the time it arrives, and rescaling it a
+   second time would flatten or exaggerate the bob. */
+const rootY = frames.map(f => (src.kind === 'cmu' ? f.root[1] * legScale : f.root[1] * (legOurs / (legTheirs || 1))));
 const meanY = rootY.reduce((a, b) => a + b, 0) / rootY.length;
 const bindHipY = posOf('spine')[1];
 
 /* World -> local, against our own bind hierarchy. */
 const boneNames = [...bindG.keys()];
-const out = { clip: NAME, trial, fps: FPS, cyclic: CYCLIC, steps: STEPS, duration: +(span / FPS).toFixed(5), source: 'CMU Graphics Lab', tracks: {} };
+const out = { clip: NAME, trial, fps: FPS, cyclic: CYCLIC, steps: STEPS, duration: +(src.kind === 'cmu' ? span / FPS : span).toFixed(5), source: 'CMU Graphics Lab', tracks: {} };
 for (const name of boneNames) out.tracks[name] = [];
 const rootTrack = [];
 
@@ -332,9 +442,11 @@ frames.forEach((f, fi) => {
 out.root = rootTrack;
 
 /* ----------------------------------------------------------------- report */
-const dur = (span / FPS);
-console.log(`\nCMU ${trial}  ->  ${NAME}`);
-console.log(`  frames        ${FROM}..${TO} of ${raw.length}  (${dur.toFixed(2)}s at ${FPS}Hz)`);
+const dur = src.kind === 'cmu' ? (span / FPS) : span;
+console.log(`\n${src.label}  ->  ${NAME}`);
+console.log(`  convention    ${src.convention.name}, ${src.convention.matched} of ${src.convention.total} bone names matched` +
+  (src.convention.matched < src.convention.total * 0.7 ? '   <-- POOR MATCH, check fbx-inspect --bones' : ''));
+console.log(`  range         ${FROM}..${TO}${src.kind === 'cmu' ? ' of ' + raw.length + ' frames' : 's'}  (${dur.toFixed(2)}s)`);
 console.log(`  bones mapped  ${mapped} of ${Object.keys(MAP).length}` + (unmapped.length ? `   unmapped: ${unmapped.join(', ')}` : ''));
 console.log(`  leg scale     theirs ${legTheirs.toFixed(3)}m -> ours ${legOurs.toFixed(3)}m  (x${legScale.toFixed(3)})`);
 {
@@ -347,10 +459,12 @@ console.log(`  leg scale     theirs ${legTheirs.toFixed(3)}m -> ours ${legOurs.t
      LENGTH is pure geometry and independent of the frame rate, so a sane
      length beside an impossible rate means CMU's 120Hz claim is wrong for this
      trial — the check CLAUDE.md warns about. */
-  const p0 = forward(skel, raw[FROM]).p.root, p1 = forward(skel, raw[TO]).p.root;
-  const travel = Math.hypot(p1[0] - p0[0], p1[2] - p0[2]) * legScale;
-  console.log(`  travel        ${travel.toFixed(2)} m over ${dur.toFixed(2)}s  =  ${(travel / dur).toFixed(2)} m/s` +
-    (travel / dur > 9 ? '   <-- IMPOSSIBLE, check --fps' : ''));
+  if (src.kind === 'cmu') {
+    const p0 = forward(skel, raw[FROM]).p.root, p1 = forward(skel, raw[TO]).p.root;
+    const travel = Math.hypot(p1[0] - p0[0], p1[2] - p0[2]) * legScale;
+    console.log(`  travel        ${travel.toFixed(2)} m over ${dur.toFixed(2)}s  =  ${(travel / dur).toFixed(2)} m/s` +
+      (travel / dur > 9 ? '   <-- IMPOSSIBLE, check --fps' : ''));
+  }
   const bob = Math.max(...rootY) - Math.min(...rootY);
   console.log(`  pelvis bob    ${(bob * 100).toFixed(1)} cm`);
 }

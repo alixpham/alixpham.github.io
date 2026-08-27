@@ -58,6 +58,49 @@ node tools/fbx-to-glb.mjs ManA.fbx -o player.glb --texture atlas.png \
 Output lands in `tools/motion-ochi/` on the same terms as `tools/motion/`:
 committed, sampled, no network needed to rebuild.
 
+### Two sources, one interface
+
+CMU arrives as `.asf`/`.amc`; a downloaded or purchased pack arrives as FBX.
+Both give the same three things — a bone's rest direction, its rotation
+relative to that rest at time *t*, and a root position — so both are wrapped
+behind one `src` and nothing downstream knows which it got.
+
+```sh
+# CMU
+node tools/mocap/retarget-ochi.mjs 35_02 --fbx ManA.fbx --name Walk --cyclic
+# an FBX pack (Mixamo, MocapFlow, anything with a humanoid rig)
+node tools/mocap/retarget-ochi.mjs --src-fbx Dodge.fbx --fbx ManA.fbx \
+    --name Juke --from 0.4 --to 1.8
+```
+
+The bone-naming convention is **detected, not declared**: the CMU and Mixamo
+tables are both tried and the one that matches more source bone names wins, with
+the count printed. A convention that half-matches is worse than one that does
+not — it retargets the bones it recognises and silently leaves the rest at rest —
+so the report says so when the match is poor, and `fbx-inspect --bones` shows
+what the file actually calls things.
+
+Validated against `Samba Dancing.fbx` from three.js (MIT): mixamo detected,
+**22 of 22** bone names matched, and the dance comes out upright on the Ochi
+character with the pelvis bob intact.
+
+### Which rest pose — and it depends what you want it for
+
+A skinned FBX holds two, and they are **not** the same: the skin clusters'
+`TransformLink` (what the mesh is bound to) and the bone nodes' own `Lcl` values
+(what the animation curves continue). Measured on the Studio Ochi export, they
+sit up to **163°** apart.
+
+- For a **target** character you want the cluster bind — it is the pose the mesh
+  deforms from, and it is what gets the inverse binds right.
+- For an **animation source** you want whichever the curves are expressed
+  against, because a rotation is only meaningful against the rest it was
+  measured from. Pairing curve-composed world rotations with an unrelated bind
+  measures the gap between two poses and calls it motion.
+
+`fbx-pose.mjs` takes `restFrom: 'clusters' | 'nodes' | 'auto'` and reports which
+it used rather than leaving it to be guessed at.
+
 ### Why it is a second file rather than a flag
 
 The game rig's rest LOCAL rotations are all identity, which lets `retarget.mjs`
