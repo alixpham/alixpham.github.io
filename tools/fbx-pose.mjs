@@ -286,6 +286,44 @@ export function readClips(scene, rig) {
   return out;
 }
 
+/* Full forward kinematics at time t: world rotations RELATIVE TO REST plus
+   world POSITIONS, which is exactly the pair asf.mjs's forward() hands back for
+   CMU. Positions are what a foot-contact test needs, and a retargeter that
+   plants the target on the frames the SUBJECT was planted on needs them from
+   the source rather than from its own output.
+
+   A bone's position is its parent's plus the parent's CURRENT world rotation
+   applied to the rest offset between them — the rest offset being fixed, since
+   only rotation is animated below the root. */
+export function poseFK(rig, clip, t) {
+  const S = poseAt(rig, clip, t);
+  const worldQ = new Map();
+  const p = {};
+  const order = [];
+  const seen = new Set();
+  const visit = n => {
+    if (seen.has(n)) return;
+    seen.add(n);
+    const b = rig.bones.get(n);
+    if (b && b.parent) visit(b.parent);
+    order.push(n);
+  };
+  for (const [n] of rig.bones) visit(n);
+  for (const n of order) {
+    const b = rig.bones.get(n);
+    /* Current world orientation = deviation-from-rest composed onto the rest. */
+    const w = qNorm(qMul(S[n] || [0, 0, 0, 1], b.restWorldQ));
+    worldQ.set(n, w);
+    if (!b.parent) { p[n] = b.restPos.slice(); continue; }
+    const pb = rig.bones.get(b.parent);
+    const off = [b.restPos[0] - pb.restPos[0], b.restPos[1] - pb.restPos[1], b.restPos[2] - pb.restPos[2]];
+    /* Rotate the rest offset by how far the PARENT has turned since rest. */
+    const r = qRot(S[b.parent] || [0, 0, 0, 1], off);
+    p[n] = [p[b.parent][0] + r[0], p[b.parent][1] + r[1], p[b.parent][2] + r[2]];
+  }
+  return { q: S, p };
+}
+
 /* World rotation per bone at time t, RELATIVE TO THE REST — which is what a
    retargeter wants, and what asf.mjs's forward() returns for CMU. */
 export function poseAt(rig, clip, t) {

@@ -67,6 +67,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseFBX, indexScene } from '../fbx-read.mjs';
+import { readRig, readClips, poseFK } from '../fbx-pose.mjs';
 import { readSkeleton, readMotion, forward, qMul, qConj, qAxis, qRot, qSlerp, qNorm, minArc } from './asf.mjs';
 import { skeletonText, motionText, subjectOf } from './fetch.mjs';
 import { BONES, BONE_MAP, THIGH, SHIN, SOLE } from '../rig-def.mjs';
@@ -136,12 +138,12 @@ function sampleV(list, x) {
 
 /* ------------------------------------------------------------------- main */
 const argv = process.argv.slice(2);
-const trial = argv[0];
-if (!trial || trial.startsWith('--')) {
+const trial = (argv[0] && !argv[0].startsWith('--')) ? argv[0] : null;
+if (!trial && !argv.includes('--src-fbx')) {
   console.error('usage: retarget.mjs <trial e.g. 09_01> [--name Clip] [--from f] [--to f] [--cyclic] [--report]');
   process.exit(2);
 }
-const opt = (k, def) => { const i = argv.indexOf('--' + k); return i > 0 ? argv[i + 1] : def; };
+const opt = (k, def) => { const i = argv.indexOf('--' + k); return i >= 0 && argv[i + 1] ? argv[i + 1] : def; };
 const flag = k => argv.includes('--' + k);
 const NAME = opt('name', trial);
 const CYCLIC = flag('cyclic');
@@ -151,15 +153,92 @@ const CYCLIC = flag('cyclic');
    catches it is printed below rather than guessed at here: stride LENGTH is
    independent of the frame rate (it is pure geometry), so a clip whose length
    is sane while its rate is not has been read at the wrong speed. */
-const FPS = Number(opt('fps', 120));
+let FPS = Number(opt('fps', 120));
 
-const skel = readSkeleton(await skeletonText(subjectOf(trial)));
-const raw = readMotion(await motionText(trial));
+/* ------------------------------------------------------- an FBX source ----
+   CMU is not the only free library, and the best of them ship FBX: Rokoko's
+   packs are a direct public download and include TREADMILL runs, which are in
+   place by construction and are the one rung CMU cannot provide at all — its
+   capture volume is 3m x 8m, so nobody sprints in it and Sprint has been hand
+   authored ever since.
+
+   Rather than fork this file, an FBX source is presented UNDER CMU'S BONE
+   NAMES. Everything below — the delta solve, the contact search, the planting,
+   the ground-speed measurement — then runs unchanged on either. fbx-pose.mjs
+   returns the same { q, p } pair asf.mjs's forward() does, which is what makes
+   the disguise cheap. */
+const SRC_FBX = opt('src-fbx', null);
+const ALIAS_ROKOKO = {
+  root: 'Hips', lowerback: 'Spine1', upperback: 'Spine2', thorax: 'Spine3',
+  lowerneck: 'Spine4', upperneck: 'Neck', head: 'Head',
+  lclavicle: 'LeftShoulder', lhumerus: 'LeftArm', lradius: 'LeftForeArm', lhand: 'LeftHand',
+  rclavicle: 'RightShoulder', rhumerus: 'RightArm', rradius: 'RightForeArm', rhand: 'RightHand',
+  lfemur: 'LeftThigh', ltibia: 'LeftShin', lfoot: 'LeftFoot', ltoes: 'LeftToe',
+  rfemur: 'RightThigh', rtibia: 'RightShin', rfoot: 'RightFoot', rtoes: 'RightToe'
+};
+const ALIAS_MIXAMO = {
+  root: 'mixamorig:Hips', lowerback: 'mixamorig:Spine', upperback: 'mixamorig:Spine1',
+  thorax: 'mixamorig:Spine2', upperneck: 'mixamorig:Neck', head: 'mixamorig:Head',
+  lclavicle: 'mixamorig:LeftShoulder', lhumerus: 'mixamorig:LeftArm',
+  lradius: 'mixamorig:LeftForeArm', lhand: 'mixamorig:LeftHand',
+  rclavicle: 'mixamorig:RightShoulder', rhumerus: 'mixamorig:RightArm',
+  rradius: 'mixamorig:RightForeArm', rhand: 'mixamorig:RightHand',
+  lfemur: 'mixamorig:LeftUpLeg', ltibia: 'mixamorig:LeftLeg',
+  lfoot: 'mixamorig:LeftFoot', ltoes: 'mixamorig:LeftToeBase',
+  rfemur: 'mixamorig:RightUpLeg', rtibia: 'mixamorig:RightLeg',
+  rfoot: 'mixamorig:RightFoot', rtoes: 'mixamorig:RightToeBase'
+};
+
+let skel, raw, FWD;
+if (SRC_FBX) {
+  const sfbx = parseFBX(fs.readFileSync(SRC_FBX));
+  const sscene = indexScene(sfbx.root);
+  const srig = readRig(sscene, { restFrom: 'clusters' });
+  const clips = readClips(sscene, srig);
+  if (!clips.length) { console.error('no animation in ' + SRC_FBX); process.exit(1); }
+  const want = opt('src-clip', null);
+  const clip = want ? clips.find(c => c.name.includes(want)) : clips.reduce((a, b) => (b.duration > a.duration ? b : a));
+  const names = new Set(srig.bones.keys());
+  const score = a => Object.values(a).filter(v => names.has(v)).length;
+  const alias = score(ALIAS_ROKOKO) >= score(ALIAS_MIXAMO) ? ALIAS_ROKOKO : ALIAS_MIXAMO;
+  const aliasName = alias === ALIAS_ROKOKO ? 'rokoko' : 'mixamo';
+  /* FBX is centimetres here; the ASF path is metres, and the ground-speed and
+     planting maths downstream assume metres. */
+  const SU = 0.01;
+  skel = { bones: {}, fbx: true, alias: aliasName, matched: score(alias) };
+  for (const cmu in alias) {
+    const b = srig.bones.get(alias[cmu]);
+    if (b) skel.bones[cmu] = { dir: b.dir, len: b.len * SU };
+  }
+  /* An FBX clip is sampled at a rate WE choose, so the frame rate every
+     downstream cadence and stride figure is divided by has to be that same
+     rate. Leaving FPS at CMU's 120 while sampling at 30 reported a 465
+     steps-per-minute sprint, which is four times a real one — the same class of
+     error the --fps check downstream is there to catch. */
+  const FSRC = Number(opt('fps', 30));
+  FPS = FSRC;
+  const n = Math.max(2, Math.round(clip.duration * FSRC));
+  raw = Array.from({ length: n }, (_, i) => clip.t0 + (clip.duration * i) / (n - 1));
+  FWD = (_s, t) => {
+    const fk = poseFK(srig, clip, t);
+    const q = {}, p = {};
+    for (const cmu in alias) {
+      const nm = alias[cmu];
+      if (fk.q[nm]) q[cmu] = fk.q[nm];
+      if (fk.p[nm]) p[cmu] = fk.p[nm].map(v => v * SU);
+    }
+    return { q, p };
+  };
+} else {
+  skel = readSkeleton(await skeletonText(subjectOf(trial)));
+  raw = readMotion(await motionText(trial));
+  FWD = forward;
+}
 const DELTA = deltas(skel);
 
 /* Their pose -> our locals, for one captured frame. */
 function convert(fr) {
-  const src = forward(skel, fr);
+  const src = FWD(skel, fr);
   const G = {};
   for (const ours in MAP) {
     const s = src.q[MAP[ours]];
@@ -221,10 +300,31 @@ if (CYCLIC && !argv.includes('--from')) {
 const span = to - from;
 const duration = span / FPS;
 
-/* Travel direction over the window, from the pelvis. */
+/* Travel direction over the window, from the pelvis — and when there is no
+   travel, from where the pelvis is POINTING.
+
+   A treadmill capture is the case that breaks the travel test: the subject runs
+   for fifteen seconds and goes nowhere, so `dx, dz` stay under the threshold,
+   yaw falls back to zero, and the clip keeps whichever way the room happened to
+   face. Rokoko's treadmill run faces -Z, which came out as a ground speed of
+   -0.52 m/s: a sprint, backwards.
+
+   A rig's facing is well defined without travel. The pelvis's own forward axis
+   is measured over the window and averaged — averaged because it yaws through
+   every stride, and one frame of it is a lean rather than a heading. */
 const dx = poses[to].root[0] - poses[from].root[0];
 const dz = poses[to].root[2] - poses[from].root[2];
-const yaw = Math.hypot(dx, dz) > 0.15 ? Math.atan2(dx, dz) : 0;
+let yaw;
+if (Math.hypot(dx, dz) > 0.15) {
+  yaw = Math.atan2(dx, dz);
+} else {
+  let sx = 0, sz = 0;
+  for (let i = from; i <= to; i++) {
+    const f = qRot(poses[i].local.Hips, [0, 0, 1]);
+    sx += f[0]; sz += f[2];
+  }
+  yaw = (Math.hypot(sx, sz) > 1e-6) ? Math.atan2(sx, sz) : 0;
+}
 const align = qAxis([0, 1, 0], -yaw);
 
 /* ---- sample the window ------------------------------------------------- */

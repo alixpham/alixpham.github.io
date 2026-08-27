@@ -98,6 +98,42 @@ link with no gate, 16 clips, and two **treadmill** runs — in place by
 construction, which is what the locomotion ladder wants and what CMU's 3m x 8m
 capture volume cannot provide.
 
+### A treadmill clip has no ground speed, and this project runs on ground speed
+
+Rokoko's best-looking runs are captured on a treadmill, and that is exactly what
+makes them unusable for the gait ladder. `groundSpeed` here is measured off the
+BAKED clip by how far the stance foot sweeps under the body — see CLAUDE.md, it
+is deliberately not a number anybody types. On a treadmill the belt does that
+sweeping instead, so the stance foot stays under the runner and the measurement
+collapses: a window with stance 22% and flight 56% at 164 steps/min — a run by
+every other measure — reported **1.4 m/s**, which is a brisk walk.
+
+So treadmill captures are good for POSE and worthless for SPEED, and the ladder
+needs both. Prefer a clip that travels; `04-running-out-of-frame.fbx` and
+`07-runninginjured.fbx` in the same pack do.
+
+### Feeding the game rig from an FBX
+
+`retarget.mjs` takes `--src-fbx` too, presenting the source under CMU's bone
+names so the delta solve, contact search, planting and ground-speed measurement
+all run unchanged:
+
+```sh
+node tools/mocap/retarget.mjs --src-fbx run.fbx --name Sprint --cyclic --fps 30
+```
+
+Two things it had to learn, both real bugs rather than FBX quirks:
+
+- **The sample rate and `FPS` are the same number.** An FBX clip is sampled at a
+  rate we choose; leaving `FPS` at CMU's 120 while sampling at 30 reported a
+  465 steps-per-minute sprint, four times a real one.
+- **Facing comes from the pelvis when there is no travel.** The window's heading
+  was taken from how far the pelvis moved, with a 0.15m threshold below which it
+  gave up and used zero. A treadmill subject runs for fifteen seconds and goes
+  nowhere, so the clip kept whichever way the room faced — Rokoko's faces −Z,
+  which came out as a sprint at **−0.52 m/s**. The pelvis's own forward axis,
+  averaged over the window, is well defined without travel.
+
 ### The euler order, which is invisible until it is catastrophic
 
 FBX names a rotation order the way the rotations are APPLIED — `XYZ` means turn
