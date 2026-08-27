@@ -42,6 +42,11 @@ tools/glb-skin.mjs            posing and skinning a GLB, once
 tools/build-ochi-player.mjs   all five stages -> flagster/lib/ochiplayer.glb
 tools/mocap/ochi-clips.mjs    the game's own 22 clips -> the Ochi metarig
 tools/simstats.mjs            headless CPU-vs-CPU box score
+tools/qbstats.mjs             the QB's decision, frozen at the throw: how open
+                              the man he chose is WHEN THE BALL GETS THERE, how
+                              open the best one was, and who got the ball
+tools/ballcheck.mjs           is the football in his hands? read off the scene
+                              graph, which no headless probe can see
 tools/pullstats.mjs           the flag pull, timed; --user splits it by side
 tools/smoke.mjs               every screen x both orientations, 0 errors, field3d alive
 VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
@@ -190,6 +195,34 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   the same parts as that fallback; it only showed when a character that looks
   like someone else failed to appear. `field3d` clears `playersRef` on
   `PlayerModel.whenReady` now.
+- **An open receiver is open WHEN THE BALL GETS THERE.** `_aiThrow` ranked men
+  by the nearest defender at the instant of the decision, and the wind-up plus
+  the flight is over a second in which everyone is closing at nine yards a
+  second: the quarterback read 4.62 yards of separation and the ball landed in
+  1.87. `_readReceiver` measures it at the arrival point instead, off the same
+  lead solve `_releaseThrow` uses. Two traps either side of that. Handing the
+  defence the WIND-UP as well as the flight over-prices coverage — a covering
+  defender is running with his receiver, not at the spot, and the geometry
+  already counts that — and it produced a quarterback who threw the ball 0.06
+  yards behind the line on every down. And **separation has to be capped**: a
+  man three yards clear and a man eight yards clear are the same catch, so
+  ranking them apart makes the checkdown win forever, because nobody covers
+  the place the play is not going. `npm run qb` is the probe.
+- **A read ORDER is not a progression.** Taking the first man over a bar means
+  nobody after him is ever looked at: read four, the centre, caught 0.0% of the
+  passes in this game's existence. Score every read and let the best one win,
+  with the order priced in as what it is worth — a yard of separation on read
+  one, a quarter of one on read four.
+- **The ball offsets are an ABSOLUTE POSE, and they need `restAlign` too.**
+  The rest-alignment note above covers the ARM; nothing was carrying the BALL.
+  `field3d`'s carry grip is authored in the game rig's forearm frame ("0.27
+  down its own -Y to the wrist") and the Ochi athlete's forearm runs down its
+  own -X, so the football hung 0.33 yards off the arm on every carried frame
+  of every play — parented to exactly the right limb, and a foot away from the
+  hand. A vector authored in the game's frame comes back the OTHER way from a
+  pose: `A^-1 * v`, not `q * A`. `npm run ball` is the probe, and it asserts
+  two bars — not in a hand at all, and held at arm's length. The second is the
+  one that caught this.
 - **A ball that is hard to see is not always a ball that is too fast.** "We
   don't see the ball move" on short passes measured out as: no pass in the game
   is on screen for under eleven frames at 60fps, but a 3-yard one moves
@@ -251,6 +284,8 @@ merges, restart the branch instead — `git checkout -B <branch> origin/master`
   regression), `node tools/simstats.mjs` (box score), `npm run pulls` (why the
   box score looks like that — the flag pull, timed and split by side),
   `npm run celebs` (every celebration, forced and read back off the renderer),
+  `npm run qb` (what the quarterback threw at, and what he passed up),
+  `npm run ball` (the football, in the carrier's hands or not),
   `node tools/posesheet.mjs <Clip>` (a clip big enough to judge the pose —
   measure-clip says whether it is correct, this says whether it is any good). Playwright is a
   devDependency purely so the browser harnesses survive a new container — the

@@ -50,8 +50,49 @@
      out of range for a few frames. */
   var GRAB_DRAIN_S = 0.7;
   var AI_SCRAMBLE_AT = 3.4;              // seconds holding the ball before a QB tucks and runs
-  var AI_MIN_SEP = 2.2;                  // yards of separation a CPU QB wants before throwing
-  var AI_FORCE_THROW_AT = 3.0;           // ...unless it's been this long, then take what's there
+  /* D6 — HOW OPEN IS OPEN ENOUGH, measured WHERE THE BALL ARRIVES.
+
+     These used to be separation at the instant of the decision, and the ball
+     does not arrive at that instant: the wind-up runs 374ms and the flight is
+     another 0.7s on an average throw, through which every defender on the
+     field is closing at up to nine yards a second. Measured over eight games,
+     the quarterback read 4.62 yards of separation and the ball landed in 1.87
+     (tools/qbstats.mjs). The bar is the same bar; it is just being held up
+     against the right number now, so it reads about 2.5 yards lower. */
+  var AI_MIN_SEP = 1.50;                 // yards of separation ON ARRIVAL, clean pocket
+  var AI_MIN_SEP_LATE = 0.60;            // ...with nothing left of the down
+  var AI_FORCE_THROW_AT = 3.0;           // nobody open this long and the ball comes out anyway
+  /* WHAT A THROW HAS TO BE WORTH, in the same separation-equivalent units the
+     read is scored in, and it falls as the down runs out.
+
+     Without this the quarterback threw on the first frame he was allowed to,
+     every down: `snapT > 1.6` is barely into the drop, the routes are four
+     yards deep and the back in the flat is wide open because nobody covers
+     the place the play is not going. It measured as a 2.0s time to throw
+     against a real 2.5-3.5, and the ball went an average of six yards. Early
+     in a down a checkdown is a wasted down; late in one it is the play. */
+  var AI_TAKE_EARLY = 6.5;
+  var AI_TAKE_LATE = 0;
+  /* What the progression is WORTH, in yards of separation. It used to be worth
+     everything: the first man in the read order who cleared the bar got the
+     ball whatever the other three were doing, so the quarterback threw to the
+     most open man on the field 28% of the time and to the worse half of it
+     46%. A quarterback does look at his first read first — that is real — but
+     he comes off it when somebody else is wide open. Divided by the read's
+     place, so read 1 is worth a yard and read 4 a quarter of one. */
+  var AI_PROGRESSION = 1.0;
+  var AI_BREAK_LAG = 0.25;               // seconds a defender takes to read the release
+  /* SEPARATION STOPS BEING WORTH ANYTHING once there is enough of it. A man
+     three yards clear and a man eight yards clear are the same catch, and
+     ranking them apart is what turned the fixed read into a quarterback who
+     dumped the ball to the flat on every single down — the checkdown is always
+     the most open man on the field, because nobody is covering the place the
+     play is not going. Capped, so the extra five yards of daylight buy nothing
+     and the throw is decided by what it is WORTH instead. */
+  var AI_SEP_ENOUGH = 4.0;
+  var AI_DEPTH_WORTH = 0.16;             // yards downfield, priced in separation
+  var AI_LANE_COST = 1.8;                // a defender sitting in the throwing lane
+  var AI_GIVE_UP = 0.25;                 // below this on every read, throw it away
 
   /* Difficulty presets. The game shipped at roughly "All-Pro" and was brutal:
      defenders matched your speed and the flag came off the instant they
@@ -427,6 +468,16 @@
   var RELEASE_Z = 1.86;                  // yards: the throwing hand at release
   var CATCH_Z = 1.35;                    // yards: chest height, where it's gathered
 
+  /* HOW FAST THE BALL LEAVES THE HAND. Solved here and read in two places —
+     the ballistic solve that throws it, and the read that decides whether to.
+     A hand-copied second copy is the failure that put a gait's ground speed
+     out of step with its own stride table twice (see CLAUDE.md); a decision
+     made against a different launch speed from the one the ball is then thrown
+     at is the same bug wearing a different hat. */
+  Engine.prototype.armSpeed = function (p) {
+    return 18 + (clamp(p.data.throw, 40, 99) - 40) / 59 * 12;   // yards/sec
+  };
+
   /* Time for a ball launched upward at vz from z0 to fall back to z1.
      z1 = z0 + vz*t - g*t^2/2, taking the positive root. */
   function flightTime(vz, z0, z1) {
@@ -463,7 +514,7 @@
        later, where a local `var throwSpeed = 22` shadowed it. Every arm in the
        league threw at exactly the same velocity and the rating showed up only
        as scatter — the very thing the comment said had been fixed. */
-    var throwSpeed = 18 + (clamp(carrier.data.throw, 40, 99) - 40) / 59 * 12; // yards/sec
+    var throwSpeed = this.armSpeed(carrier);
     /* Lead the receiver to where they will BE when the ball arrives. The lead
        used to be a flat 0.35-0.57s regardless of distance, while a 15-yard
        ball is in the air 0.68s and a deep one well over a second — so every
@@ -1193,18 +1244,91 @@
     this._seek(p, { x: goalX, y: ty }, dt, 1.0);
   };
 
-  /* D3 — THE QUARTERBACK HAS A PROGRESSION.
+  /* D6 — WHAT A THROW TO THIS MAN IS ACTUALLY WORTH.
 
-     This threw on a fixed timer to whoever had 2.2 yards of separation, and
-     never threw the ball away. Two consequences: the ball only ever went to a
-     genuinely open man, which is why nothing was ever intercepted, and there
-     was no such thing as a bad decision.
+     One read, answered once, in the frame the ball will land in rather than
+     the frame the decision is made in. Three things move between those two
+     frames and none of them were being counted:
 
-     Now there is a read order, and pressure compresses it. Clean pocket: work
-     the progression and wait for real separation. Rusher bearing down, or the
-     seven-second clock running out: take what's there, which is sometimes a
-     window far too tight — and that is where interceptions come from. With
-     nothing at all and no time left, throw it away rather than eat the down. */
+       the FLIGHT      d / armSpeed, which on a 20-yard ball is another 0.9s
+       the COVERAGE    every defender closing on the spot at his own top speed
+       the BREAK       which does not start until the ball is in the air
+
+     So "open" is the gap left when the ball gets there, not the gap now. It is
+     deliberately allowed to go NEGATIVE: a defender who beats the ball to the
+     spot by two yards is a worse throw than one who arrives level with it, and
+     flooring both at zero makes them the same throw.
+
+     WHAT THE CLOSING WINDOW IS NOT is the whole time between the decision and
+     the catch. The first version of this handed every defender the wind-up as
+     well, and at nine yards a second that is three free yards of closing on a
+     spot none of them are running at yet: _aiDefender only breaks on the ball
+     once it is AIRBORNE, and until then a covering defender is running with
+     his receiver, which the geometry already counts — the receiver drags him
+     to the arrival point for free. Priced that way every downfield throw
+     looked covered and the checkdown always won, and the quarterback threw the
+     ball an average of 0.06 yards BEHIND the line of scrimmage. The window is
+     the flight, less the beat it takes to read the release.
+
+     The lane is the other half of it, and it is where interceptions come from
+     rather than where incompletions do. _resolveCatch gives a defender who has
+     got IN FRONT of the man he is covering an undercut bonus — he has read the
+     route and jumped it — so a read has to be able to see the same thing the
+     catch does. */
+  Engine.prototype._readReceiver = function (qb, r, def) {
+    var s = this.state;
+    var spd = this.armSpeed(qb);
+    /* Where the ball is going: the same lead solve _releaseThrow runs, so the
+       read and the throw are aimed at one point. */
+    var t = dist(qb, r) / spd, px = r.x, py = r.y;
+    for (var i = 0; i < 3; i++) {
+      px = r.x + (r.vx || 0) * t;
+      py = r.y + (r.vy || 0) * t;
+      t = Math.hypot(px - qb.x, py - qb.y) / spd;
+    }
+    px = clamp(px, 0, FIELD_LEN); py = clamp(py, 0, FIELD_WID);
+    var air = Math.max(0, t - AI_BREAK_LAG);  // flight, less the read on it
+    var d = Math.hypot(px - qb.x, py - qb.y);
+    var sep = 99, lane = 0;
+    for (var k = 0; k < def.length; k++) {
+      var o = def[k];
+      if (o.flagPulled) continue;
+      var gap = Math.hypot(o.x - px, o.y - py) -
+                this.speedYds(o.data.speed) * this.staminaScale(o) * air;
+      if (gap < sep) sep = gap;
+      // In the lane: nearer the passer than the ball's landing spot is — i.e.
+      // in FRONT of the receiver — and close enough to the line of the throw
+      // to step into it. That is the undercut _resolveCatch rewards.
+      if (Math.hypot(o.x - qb.x, o.y - qb.y) < d - 0.3 &&
+          Math.hypot(o.x - px, o.y - py) < d * 0.55 + 2) lane = 1;
+    }
+    return { r: r, x: px, y: py, air: air, sep: sep, lane: lane, depth: px - s.losX };
+  };
+
+  /* D3 — THE QUARTERBACK HAS A PROGRESSION, AND HE COMES OFF IT.
+
+     D3 shipped in v2.15.0 to replace a fixed timer that threw to whoever had
+     2.2 yards of separation and never threw the ball away — under which the
+     ball only ever went to a genuinely open man, so nothing was intercepted
+     and there was no such thing as a bad decision. What it replaced that with
+     walked the read order and threw to the FIRST man over a separation bar,
+     with pressure compressing the bar. Two things were wrong with that and
+     they compounded.
+
+     The bar was measured at the wrong instant (see _readReceiver), so a man
+     who was open when the decision was made and covered when the ball got
+     there cleared it. And the order was the whole decision, so once somebody
+     cleared, nobody else was looked at: measured over eight games, the ball
+     went to the most open man on the field 28.2% of the time and to the worse
+     half of it 45.6%, 71.8% of throws went into a lane with a defender in it,
+     and 38.9% arrived with under a yard of separation — a contested ball by
+     definition (tools/qbstats.mjs).
+
+     Now every read is scored and the best one wins. The progression survives
+     as what it really is — a yard of separation on read one, a quarter of a
+     yard on read four — rather than as the decision itself, so the checkdown
+     and the back out of the backfield finally get the ball when they are the
+     open man, which under the old rule they essentially never were. */
   Engine.prototype._aiThrow = function () {
     var s = this.state;
     var qb = s.carrier;
@@ -1236,8 +1360,15 @@
       var dd = dist(def[i], qb);
       if (dd < heat) heat = dd;
     }
-    var pressured = heat < 3.2;
     var late = s.snapT > PASS_CLOCK - 1.8;
+    /* TWO CLOCKS RUN ON A QUARTERBACK AT ONCE and he answers to whichever is
+       further along: the down itself, and the man arriving. `pressured` was a
+       step at 3.2 yards, which made a rusher who was ten yards away and one
+       who was three and a quarter the same amount of pressure, and everything
+       past the step identical to a sack. It reads as one number now, 0 in a
+       clean pocket on the first frame of the read and 1 with nothing left. */
+    var urgency = Math.max(clamp((s.snapT - 1.6) / (AI_FORCE_THROW_AT - 1.6), 0, 1),
+                           clamp((3.6 - heat) / 2.4, 0, 1));
 
     // Read order: the play names one, otherwise nearest-to-deepest.
     var order = (s.offPlay && s.offPlay.reads) || ['WR1', 'WR2', 'RB', 'C'];
@@ -1249,35 +1380,55 @@
     off.forEach(function (r) { if (!r.flagPulled && ranked.indexOf(r) < 0) ranked.push(r); });
     if (!ranked.length) return false;
 
-    function sepOf(r) {
-      var sep = 99;
-      for (var k = 0; k < def.length; k++) {
-        if (def[k].flagPulled) continue;
-        var q = dist(r, def[k]);
-        if (q < sep) sep = q;
+    var reads = ranked.map(function (r, i) {
+      var v = this._readReceiver(qb, r, def);
+      /* Openness is the currency and everything else is priced in it: where he
+         sits in the progression, how far downfield the throw is worth, and
+         what a defender in the lane costs. */
+      v.score = Math.min(v.sep, AI_SEP_ENOUGH)
+              + AI_PROGRESSION / (1 + i)
+              + clamp(v.depth, -4, 18) * AI_DEPTH_WORTH
+              - (v.lane ? AI_LANE_COST : 0);
+      return v;
+    }, this);
+    reads.sort(function (a, b) { return b.score - a.score; });
+
+    // What counts as open, and what counts as worth it, both shrink as the
+    // pocket does. Openness is the safety bar; worth is whether to take it yet.
+    var want = lerp(AI_MIN_SEP, AI_MIN_SEP_LATE, urgency);
+    var bar = lerp(AI_TAKE_EARLY, AI_TAKE_LATE, urgency);
+    if (late) { want = AI_MIN_SEP_LATE; bar = AI_TAKE_LATE; }
+
+    // Best decision on the field, if it clears both.
+    for (var j = 0; j < reads.length; j++) {
+      if (reads[j].sep >= want && reads[j].score >= bar) {
+        this.throwTo(reads[j].r.slot); return true;
       }
-      return sep;
     }
 
-    // What counts as open shrinks as the pocket does.
-    var want = AI_MIN_SEP;
-    if (pressured) want = 1.70;
-    if (late) want = Math.min(want, 1.15);
+    // Nothing worth throwing. Hold it unless we're out of road.
+    if (urgency < 1 && !late) return false;
 
-    // Work the read order and take the first man who is open enough.
-    for (var j = 0; j < ranked.length; j++) {
-      if (sepOf(ranked[j]) >= want) { this.throwTo(ranked[j].slot); return true; }
-    }
+    /* AND THE OUTLET IS NOT ONE, which is worth recording because it is the
+       obvious third option and it does not exist. `pitch()` puts the ball
+       BACKWARDS to a trailing team-mate; it is legal anywhere on the field, it
+       is a staple of this sport, and it cannot be intercepted. A CPU version
+       of it was written, and then measured: over 471 CPU-vs-CPU plays there
+       was a man behind the passer on ZERO of the 5,721 frames he was reading
+       from. There is no geometry for it. The quarterback drops five yards
+       behind the line and every route in the playbook goes forward — the
+       deepest start is `swing`, at x = -1. An outlet needs somebody to stay
+       home, which is a playbook change and not an AI one.
 
-    // Nobody open. Hold it unless we're out of road.
-    if (!pressured && !late && s.snapT < AI_FORCE_THROW_AT) return false;
-
-    // Out of road: force it to the best of a bad set, or throw it away.
-    var best = null, bestSep = -1;
-    ranked.forEach(function (r) { var q = sepOf(r); if (q > bestSep) { bestSep = q; best = r; } });
-    if (late && bestSep < 0.9) { this._throwAway(qb); return true; }
-    if (best) { this.throwTo(best.slot); return true; }
-    return false;
+       So: force it to the best of a bad set, or throw it away. The give-up
+       used to be gated on `late` as well, and `late` is the seven-second clock
+       at 5.2s while the ball comes out at 3.0 — so in eight games it never
+       once fired and the quarterback had no way of declining a throw. What
+       decides this is whether there is anything to throw AT, which is the
+       test on its own. */
+    if (reads[0].sep < AI_GIVE_UP) { this._throwAway(qb); return true; }
+    this.throwTo(reads[0].r.slot);
+    return true;
   };
 
   /* Out of bounds, deliberately. Costs the down, saves the sack, and cannot be

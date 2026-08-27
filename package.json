@@ -12,7 +12,9 @@
     "pulls": "node tools/pullstats.mjs",
     "pursuit": "node tools/pursuitstats.mjs",
     "smoke": "node tools/smoke.mjs",
-    "passes": "node tools/passstats.mjs"
+    "passes": "node tools/passstats.mjs",
+    "qb": "node tools/qbstats.mjs",
+    "ball": "node tools/ballcheck.mjs"
   },
   "devDependencies": {
     "playwright": "^1.61.1"

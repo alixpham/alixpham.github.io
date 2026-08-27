@@ -17,6 +17,8 @@ and a prioritised plan to close the gap. Written against **v2.11.0**
 | 5 — Presentation (E1–E3) | v2.16.0 | Body variance by position and ratings, a real snap off the turf, ball spot and down marker. **E3 partial** — benches, coaches, officials, chain crew and a non-static crowd were left. |
 | 6 — Clock (A6–A8) | v2.17.0 | Two 20-minute halves, continuously running clock with last-two-minute stoppages, alternating-possession overtime, real laterals. **A7 was not actually shipped** — see below. |
 | A7 redone (penalties) | v2.31.0 | The illegal rush rebuilt on measured eligibility and a live ball (v2.30.0), and flag guarding finally *called* rather than merely written. |
+| D6 — the quarterback read the wrong instant | v3.10.0 | Openness was measured where the receiver was standing when the decision was made, not where the ball would land — 4.62 yards read, 1.87 on arrival — and the read *order* was the whole decision, so the first man over the bar got it and two of the four eligible receivers were effectively not in the offence. Throws arriving into coverage 41.5% → **9.7%**. Plus `tools/qbstats.mjs`. |
+| E6 — the ball was not in his hands | v3.10.0 | The carry offsets are authored in the game rig's forearm frame; the character the game actually loads rests in an A-pose, so `[0, -0.27, -0.08]` pointed somewhere its forearm does not go and the football hung **0.33 yards** off the arm. Plus `tools/ballcheck.mjs`. |
 | D4 — nobody chased the runner | v3.7.0 | The defence asked "is there a runner?" as `carrier !== passer` while the carrier AI asked it as `!(passer && !handoffDone)`. They disagree on Flea Flicker, and there the whole defence stayed in coverage — 22% of every live-runner frame in the game had not one man in pursuit. Yards per run 8.75 → **4.33**. Plus `tools/pursuitstats.mjs`. |
 | E5 — an arm inside a head | v3.6.0 | Lasso drove the elbow 61mm inside the skull on every turn, and nothing measured it. `measure-clip` reports arm-vs-skull clearance now; all 22 clips are clear. Plus FlagPulled's 19.8° backward arch, and the menu's defender playing the ball-carrier's clip. |
 | A10 — chains after a turnover | v3.5.0 | Both turnover paths set `crossedMid = false` unconditionally, so a team handed the ball past midfield chased a line to gain behind it — and got a first down on the next snap however it went. 19.5% of takeovers; 23 free first downs in 8 games. |
@@ -435,6 +437,50 @@ the play is named for and — because A3's past-the-line check is written
 ball. That is a designed quarterback run, which is the exact thing QB Keeper was
 deleted for being. The defence chases him now; the rule still does not.
 
+### E6. The ball was not in his hands — *fixed in v3.10.0*
+
+Reported as "check the ball holding by players", and it took an instrument to
+see, because every way of getting this wrong still leaves a clean console and a
+football somewhere on the screen. The engine only knows who has *possession*;
+whether the ball is being drawn in that man's hands is a fact about the scene
+graph — a parent and a local offset — and no headless box score can reach it.
+`tools/ballcheck.mjs` drives a real game in headless Chromium and reads back off
+the renderer (`field3d.ballHold`) what the ball is actually parented to and how
+far, in world yards, it is from the nearest hand of the man carrying it.
+
+It measured **0.33 yards** — a foot — on the running carry, and 0.06 on the
+quarterback's ready position. That split is the diagnosis. The ready grip hangs
+off `Socket_Hand_R`, a frame the two rigs share; the carry grip hangs off
+`LowerArm_*`, and they do not.
+
+This is the `restAlign` lesson a second time. The carry offsets in `field3d.js`
+are authored against the game's own player, whose arm bones run straight down
+their own −Y — the comment says so out loud, "the bone runs 0.27 down its own
+−Y to the wrist". The character the game actually loads is the Studio Ochi
+athlete, which rests in an A-pose: its `LowerArm_R → Hand_R` is
+`[-0.207, -0.126, 0.019]`, mostly down its own −X. So `[0, -0.27, -0.08]`
+pointed 0.27 in a direction that forearm does not go, and the ball hung below
+the elbow, held by nothing, for every carried frame of every play.
+
+The arm itself was already correct: `poseArm` post-multiplies an authored pose
+by `restAlign`, the per-bone constant `tools/glb-rerig.mjs` measures at build
+time. Nothing was carrying the *ball* offsets through the same constant. A
+vector authored in the game's frame comes back the other way — `A⁻¹ · v`,
+because `A` maps the model's rest direction onto the game's — and the ball's
+rotation takes the same constant pre-multiplied. On the game's own rig there is
+no `restAlign` at all and it is a no-op, which is why nothing moves there.
+
+| 90 s of live game | before | after |
+| --- | --- | --- |
+| Ball to nearest hand, median | 0.348 yd | **0.087 yd** |
+| Ball to nearest hand, worst | 0.355 yd | **0.114 yd** |
+| Parented to nothing while carried | 0% | 0% |
+
+`ballcheck` asserts on both bars now: a ball more than 0.55 yd from a hand is
+not in one at all, and a ball more than 0.25 yd from one is being carried at
+arm's length — which is what the structural test could not see, since the ball
+was parented to exactly the right limb the whole time.
+
 ### E5. An arm inside a head, and nothing was looking — *fixed in v3.6.0*
 
 Reported by a player watching the landing screen, which is the second time that
@@ -597,6 +643,83 @@ actually being run.
 separation, and never throws the ball away. Under a 7-second clock (A1) this
 becomes the interesting decision it should be: work a read order, check down
 under pressure, or eat it.
+
+### D6. The quarterback read the wrong instant — *fixed in v3.10.0*
+
+Reported as "the QB should pass and hand off more to open players, he risks
+interceptions". Both halves of that are measurable, and `tools/qbstats.mjs`
+exists to measure them: it freezes the field at the moment a CPU quarterback
+commits to a throw and asks how open the man he chose really was, how open the
+best man available was, and whether a defender was sitting in the lane.
+
+**He was reading the wrong instant.** `_aiThrow` ranked receivers by the
+distance to the nearest defender *right then*, and the ball does not arrive
+right then: the wind-up runs 374 ms and the flight is another 0.7 s on an
+average throw, through which every defender is closing at up to nine yards a
+second. Measured over eight games at Pro, the quarterback read **4.62 yards** of
+separation and the ball landed in **1.87**. Nearly four in ten throws arrived
+with under a yard of it, which is a contested ball by definition.
+
+**And the read order was the whole decision.** The loop walked WR1, WR2, RB, C
+and threw to the first man over the bar, so nobody after him was ever looked
+at. That is not a progression, it is a priority list, and it showed in who got
+the ball:
+
+| Target share, 8 games, pro | before | after |
+| --- | --- | --- |
+| WR1 | 69.3% | 31.2% |
+| WR2 | 1.5% | 9.7% |
+| RB | 29.2% | 24.3% |
+| C | **0.0%** | 34.9% |
+
+The centre never caught a pass in his life. He is read four; nothing ever got
+past read one with anybody standing near him.
+
+The fix is one function, `_readReceiver`, which runs the same lead solve
+`_releaseThrow` runs and then measures separation **at the arrival point**,
+giving each defender the flight time — less the beat it takes to read the
+release — to close on it at his own top speed. Every read is then scored in
+those units, and the progression survives as what it really is: a yard of
+separation on read one, a quarter of one on read four.
+
+Two things had to be priced in beside openness, and the first attempt got both
+wrong. Handing defenders the wind-up as well as the flight made every downfield
+throw look covered, and the quarterback threw the ball an average of **0.06
+yards behind the line of scrimmage** — a checkdown on every down. And
+separation stops being worth anything once there is enough of it: a man three
+yards clear and a man eight yards clear are the same catch, and ranking them
+apart is why the flat always won, because nobody covers the place the play is
+not going. Capped at four yards, with depth priced at 0.16 yards of separation
+per yard downfield, the throw is decided by what it is *worth*.
+
+| 8 games, pro, seeds 1–3 | before | after | target |
+| --- | --- | --- | --- |
+| Separation on arrival | 1.82 yd | **3.58 yd** | — |
+| Threw into coverage (< 1 yd on arrival) | 41.5% | **9.7%** | — |
+| Threw into the lane (defender in front) | 73.7% | **35.8%** | — |
+| Threw to the most open man | 27.8% | **40.1%** | — |
+| Completion % | 50.2% | **60.5%** | ~55–65% |
+| Yards per pass play | 7.25 | **7.39** | ~7–9 |
+| Interception rate | 3.1% | 2.0% | ~3–5% |
+| Time to throw | 2.00 s | **2.41 s** | ~2.5–3.5 s |
+
+**Interceptions went under their band, and that is the trade, not a bug.**
+v2.15.0's note said completion sat below its band *on purpose* — "the
+quarterback forces throws under pressure now, which is what pays for the
+interceptions". This is that entry reversed: he stops forcing them, so
+completions come up into band and the picks he was paying with go away. If the
+band matters more than the read does, the honest knob is the catch model
+(`DEF_READ`, `CATCH_NEED`, the undercut) rather than making the quarterback
+throw badly again.
+
+**The outlet is not one, and this is worth recording.** A CPU version of
+`pitch()` — the backwards flick to a trailing team-mate, which is legal
+anywhere on the field and cannot be intercepted — was written and then
+measured out of the build: over 471 CPU-vs-CPU plays there was a man behind the
+passer on **zero** of the 5,721 frames the quarterback was reading from. He
+drops five yards behind the line and every route in the playbook goes forward;
+the deepest start is `swing`, at x = −1. An outlet needs somebody to stay home,
+which is a playbook change and not an AI one.
 
 ### D4. Routes don't respond to anything
 
