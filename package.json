@@ -10,6 +10,7 @@
     "celebs": "node tools/celebcheck.mjs",
     "build:player": "node tools/build-player-glb.mjs",
     "pulls": "node tools/pullstats.mjs",
+    "pursuit": "node tools/pursuitstats.mjs",
     "smoke": "node tools/smoke.mjs"
   },
   "devDependencies": {

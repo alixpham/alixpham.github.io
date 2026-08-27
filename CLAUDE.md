@@ -22,12 +22,25 @@ flagster/js/            boot3d (ESM bootstrap), engine, ui, field3d, hero3d,
                         teambuilder, roadtoglory, main
 flagster/lib/three/     vendored Three.js r185 (ESM) + jsm addons
 flagster/lib/flagplayer.glb   rigged, skinned, team-tintable player
+flagster/lib/ochiplayer.glb   the Studio Ochi athlete, converted and rebuilt
+                              onto the same rig; what the game loads by default
 tools/build-player-glb.mjs    regenerates flagplayer.glb (no deps, no Blender)
 tools/rig-def.mjs             the bone table + sole geometry, imported everywhere
 tools/rig-fk.mjs              general quaternion FK + the ground-speed measurement
 tools/mocap/                  CMU .asf/.amc -> this rig (fetch, asf, retarget)
 tools/motion/*.json           retargeted clips, committed; the .amc never is
 tools/measure-clip.mjs        reads a baked clip back out as joint angles
+tools/glb-repaint.mjs         splits a bought character's baked atlas into
+                              named, tintable material regions
+tools/glb-rerig.mjs           rebuilds a character onto this game's rig
+                              conventions; proves the skin did not move
+tools/glb-ground.mjs          puts a retargeted clip's feet back on the turf
+tools/glb-gait.mjs            groundSpeed + blendUp measured off a baked clip,
+                              from a sole taken from the MESH
+tools/glb-read.mjs            the GLB container, once
+tools/glb-skin.mjs            posing and skinning a GLB, once
+tools/build-ochi-player.mjs   all five stages -> flagster/lib/ochiplayer.glb
+tools/mocap/ochi-clips.mjs    the game's own 22 clips -> the Ochi metarig
 tools/simstats.mjs            headless CPU-vs-CPU box score
 tools/pullstats.mjs           the flag pull, timed; --user splits it by side
 tools/smoke.mjs               every screen x both orientations, 0 errors, field3d alive
@@ -128,6 +141,55 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   `Sprint` stays authored; and a retargeted clip is asymmetric and slightly
   non-contralateral because a person is, so `measure-clip` gives clips carrying
   `extras.mocap` the numbers without the verdict.
+- **A bought character is blocked by its TEXTURE, not its skeleton.** The
+  game tints ten named regions per player by multiplying `material.color`
+  over white artwork; Studio Ochi's athletes ship one material with the kit
+  baked into an eight-swatch palette atlas, so there is nothing to tint.
+  `tools/glb-repaint.mjs` regroups the triangles by which swatch they sample
+  into one primitive per region, sharing the SAME position, normal, joint and
+  weight accessors — only the index buffer is new, so nothing can tear. Two
+  traps: a colour is a paint bucket and not a body part (Ochi's navy is the
+  trousers AND the chest panel, which is why the split also takes a dominant-
+  bone rule), and one sample per triangle files the number under the number
+  and invents a region out of the one face that straddles a tile seam.
+- **A bought character is blocked by two things, and the second is the rig's
+  REST.** `rig-def.mjs` says "no bone carries a rest ROTATION" and the whole
+  renderer leans on it: the chest number hangs off `Chest` at plain metres, the
+  ball goes in `Socket_Hand_R` at a fixed offset, a carrying arm is posed by
+  writing euler triples onto `UpperArm_*`. A Rigify metarig carries a real rest
+  rotation on all 58 bones. `tools/glb-rerig.mjs` rebuilds the CHARACTER onto
+  this convention rather than teaching the renderer a second one, and it proves
+  the rebuild moved nothing — 0.0287mm worst, which is the quantisation. Where
+  a rest DIRECTION still differs (Ochi's upper arm rests 62 degrees off, in an
+  A-pose) the constant is measured into `extras.restAlign` and `field3d`
+  composes it onto poses it authors ITSELF. Only the absolute ones: the small
+  relative nudges — fatigue, turn lead, gaze — are body-axis rotations and both
+  rigs now rest world-aligned, so conjugating those would tilt the axis they
+  turn about, which is exactly the head bug the gaze block spent a version
+  getting rid of.
+- **A retarget carries angles, not contact.** The pelvis at the character's own
+  resting height is not the same as standing on the ground when the shin is 9mm
+  longer and the foot a different shape: the retargeted walk measured 53%
+  FLIGHT, which a walk does not have at all, while its speed still looked
+  plausible because a foot that touches occasionally is measured correctly on
+  the frames it does touch. `tools/glb-ground.mjs` matches the reference clip's
+  own foot-height profile per frame. Clamping to zero instead means a sprint
+  that never leaves the ground.
+- **`playermodel.js` silently drops a gait rung with no measured
+  `groundSpeed`,** and a player with no rungs never takes a step — so an
+  imported character needs `tools/glb-gait.mjs`, which takes the sole from the
+  MESH rather than from a table of offsets. Three centroids, not all the low
+  vertices: Ochi's boot has a score of cleat studs and tracking whichever is
+  lowest hops between them, which read as a walk a quarter slow. `--check`
+  reproduces the builder's own four numbers to 1.2% from independent code and
+  independent geometry, which is worth more than either alone.
+- **The rigged model only ever appeared if it loaded before the first snap.**
+  Players are built once and `Player3D.build` falls back to the procedural rig
+  SILENTLY, so a kickoff that beat the fetch fielded the fallback for the whole
+  game. Invisible for as long as it was because `flagplayer.glb` is built from
+  the same parts as that fallback; it only showed when a character that looks
+  like someone else failed to appear. `field3d` clears `playersRef` on
+  `PlayerModel.whenReady` now.
 - The camera sits behind whoever HAS THE BALL, and the offence always attacks
   +x, so it never turns round; `engine.viewSign()` is the seam that says which
   way is downfield and now always returns 1.

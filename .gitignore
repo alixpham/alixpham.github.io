@@ -42,3 +42,11 @@ _t3d_test.js
 # the retargeted clips in tools/motion/ are what the build actually reads)
 tools/mocap/cache/
 .smoke/
+
+# Studio Ochi SOURCE assets — the FBX and its atlas — are licensed and stay out
+# of the repo. What IS committed is the retargeted motion in tools/motion-ochi/,
+# the five tools that build from them, and the finished, repainted, rerigged
+# flagster/lib/ochiplayer.glb, which is the character the game ships and loads.
+*.fbx
+*.blend
+tools/ochi/

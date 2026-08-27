@@ -382,6 +382,263 @@ of seconds; it waits for the celebration the renderer is running to end.
 
 ---
 
+## `fbx-read.mjs` — the binary FBX record tree
+
+Not a tool; the shared parser that `fbx-inspect.mjs` and `fbx-to-glb.mjs` both
+import. One copy, for the same reason the rig lives once in `rig-def.mjs`.
+
+Handles the 7x00 record tree, u32/u64 offsets, zlib-deflated property arrays,
+`Properties70` lookups, and the scene index — objects by id plus the
+Model→Model parent links. That last one is fiddlier than it looks: a bone has
+several OO connections (its parent, its skin clusters, its animation nodes), so
+last-one-wins resolves 15 of 58 parents and leaves `spine.001` an orphan.
+
+---
+
+## `fbx-to-glb.mjs` — a purchased FBX, converted without Blender
+
+```sh
+node tools/fbx-to-glb.mjs ManA.fbx -o player.glb --texture atlas.png
+node tools/fbx-to-glb.mjs ManA.fbx -o player.glb --no-anim --stats
+```
+
+Mesh, normals, UVs, skeleton, skin weights, inverse binds, embedded texture and
+the bundled clips, straight to glTF 2.0 binary. There is no Blender in this
+environment — the same reason `build-player-glb.mjs` writes glTF by hand — and
+the pipeline has to be reproducible in the repo rather than on one machine.
+
+Four things it gets right that are easy to get wrong, each of which broke the
+output first and was found with `glb-view.mjs`:
+
+| | |
+|---|---|
+| **Vertex identity** | FBX indexes positions per control point and normals/UVs per polygon vertex. The de-duplicated tuple is `(cp, normal, uv)`, and the skin has to follow that remap or the weights land on the wrong people. |
+| **Polygons** | `PolygonVertexIndex` flags a polygon's last index by storing its bitwise NOT. Fan-triangulated. |
+| **The rest pose is a POSE** | Blender writes each bone's `Lcl` at the frame the file was saved on; the real bind survives only in each cluster's `TransformLink`. Composing the node chain for `spine` gave a global of `[-1.48, 38.37, -7.50]` against a `TransformLink` of `[0, 85.75, -0.72]` — a pelvis 38cm up on a 1.74m man. The rest hierarchy is rebuilt from the bind globals. |
+| **The inverse bind's other operand** | `inverse(TransformLink)` has to meet the transform that puts a *raw vertex* into the same world — the mesh MODEL's matrix, with Blender's −90° X and its scale of 100. The cluster's own `Transform` comes out at scale 1 here, which produced inverse binds at 0.01 and a character one hundredth of life size. |
+
+Units and axes are checked rather than assumed: it refuses a file that is not
+`UnitScaleFactor` 1 and Y-up, instead of silently emitting someone lying on
+their side at 100×.
+
+---
+
+## `glb-view.mjs` — does the converted asset actually load?
+
+```sh
+node tools/glb-view.mjs player.glb .views "American Football Run Fast"
+```
+
+Loads any GLB through the vendored Three.js and the real `GLTFLoader` in
+headless Chromium, writes four views, and prints bone count, skinned-mesh count,
+world bounds and every clip with its duration.
+
+`posesheet.mjs` is the equivalent for a clip on the game's own rig; this takes
+any GLB, which is what an import pipeline needs. Every bug listed in the table
+above was found here — the numbers said so before the picture did.
+
+---
+
+## `build-ochi-player.mjs` — the bought character, made a drop-in
+
+```sh
+node tools/mocap/ochi-clips.mjs --fbx ManA.fbx        # the 22 clips, retargeted
+node tools/build-ochi-player.mjs --fbx ManA.fbx --texture atlas.png
+```
+
+Five stages, each its own tool with its own report, because each was a bug at
+some point: convert the FBX with the retargeted clips baked in, split the
+palette atlas into tintable regions, rebuild onto the game's rig conventions,
+put the feet back on the turf, measure the gait ladder. Output is
+`flagster/lib/ochiplayer.glb`, 836 KB, which is what the game loads.
+
+Order matters twice. The repaint runs BEFORE the rerig, because its bone rules
+are written in the source rig's own names. The grounding runs BEFORE the gait
+measurement, because a foot that never lands measures its speed off the handful
+of frames where it happens to touch.
+
+The Ochi source assets are licensed and not in the repository; see `HANDOFF.md`.
+
+---
+
+## `glb-rerig.mjs` — rebuild a character onto this game's rig conventions
+
+```sh
+node tools/glb-rerig.mjs ochi.glb player.glb --preset ochi
+node tools/glb-rerig.mjs ochi.glb --report
+```
+
+`rig-def.mjs` says it in one line — *no bone carries a rest rotation* — and the
+whole renderer leans on it. The chest number hangs off `Chest` at "plain metres
+relative to the chest joint"; the ball goes in `Socket_Hand_R` at a fixed
+offset; a carrying arm is posed by writing euler triples straight onto
+`UpperArm_*`. Every one of those is only meaningful because a Flagster bone's
+rest frame IS the world frame. A Rigify armature is the opposite: 58 bones,
+each carrying a real rest rotation and pointing down its own +Y.
+
+So this does not adapt the game to the character. It rebuilds the character:
+every rest rotation removed at the position it already occupied, the mesh baked
+into that world space, every animation rewritten, bones renamed to the
+vocabulary the game looks up, and the four sockets added. The conversion is
+exact rather than approximate — with `R` the source's rest world rotation,
+`W_new = W_old · conj(R)` is identity at rest and puts every joint back exactly
+where it was.
+
+**It proves itself.** After writing, it skins 240 vertices through both files at
+six phases of every clip and prints the worst disagreement: **0.0287 mm**, which
+is the six-decimal quantisation and nothing else. That check is not decoration —
+it is what caught the six bundled Ochi clips whose per-bone scale tracks this
+conversion cannot carry (they threw a vertex **14 metres**, and are now dropped
+by name with a reason).
+
+Sockets are measured, not copied: `rig-def` puts the hand socket 9 cm "down" the
+hand, which is only down because the game's rig rests with its arms at its
+sides. The palm is found from the mesh instead. And where a rest DIRECTION still
+differs — Ochi's upper arm rests 62° from this rig's — the correction is written
+to `extras.restAlign`, which `playermodel.js` hands to `field3d.js` to compose
+onto poses it authors itself.
+
+---
+
+## `glb-ground.mjs` — put a retargeted clip back on the turf
+
+```sh
+node tools/glb-ground.mjs ochi.glb out.glb --like flagster/lib/flagplayer.glb
+```
+
+A retarget carries angles, not contact. Every joint is copied faithfully and the
+pelvis is put at the character's own resting height, and that is not the same as
+standing on the ground: this athlete's shin is 9 mm longer and his foot is a
+different shape. Measured, the retargeted walk came back with **53% flight** —
+a walk, by definition, has none — and the jog with 8% stance, while the speeds
+looked plausible throughout, because a foot that only touches occasionally is
+still measured correctly on the frames it does touch.
+
+The fix is a height, not a re-solve. The reference clip already knows how far
+its lowest sole sits off the turf at every instant; this reproduces that profile
+with a per-frame pelvis offset. Nothing rotates. Clamping to zero instead would
+mean a sprint that never leaves the ground.
+
+---
+
+## `glb-gait.mjs` — how fast a baked gait covers the ground
+
+```sh
+node tools/glb-gait.mjs player.glb out.glb            # writes the extras in
+node tools/glb-gait.mjs flagster/lib/flagplayer.glb --check
+```
+
+`playermodel.js` will not put a clip on the locomotion ladder without a measured
+`groundSpeed`, and a player with no rungs never takes a step. The game's own
+four are measured by the builder through `rig-fk.mjs` using the three sole
+points `rig-def.mjs` declares; a bought character has no such table, so the sole
+is derived from the MESH — the vertices each foot owns, the lowest centimetres
+of them, split fore-and-aft into thirds, one centroid each.
+
+Three points, not all the low vertices: Ochi's boot has a score of separate
+cleat studs, and tracking whichever is lowest hops between them from frame to
+frame, which is motion the foot is not making. It read as a walk whose stance
+sweep varied by 63% and came out a quarter slow.
+
+`--check` runs it against the game's own player and prints its answer beside the
+one the builder baked. Different code, different geometry, **1.2% worst
+disagreement** across all four rungs, with stance and flight percentages
+matching too — worth more than either number alone, which is why the flag
+exists. It also found the one place a mesh sole cannot follow three declared
+points: the floor has to be a percentile of the per-frame minima, not the global
+minimum, because the game's own walk plants at 5 mm and then digs its toe 5 mm
+deeper at toe-off.
+
+---
+
+---
+
+## `glb-repaint.mjs` — make a bought character team-tintable
+
+```sh
+node tools/glb-repaint.mjs ochi-manA.glb --report
+node tools/glb-repaint.mjs ochi-manA.glb kit.glb --map 'f1f2f2=jersey,ffffff=jersey'
+node tools/glb-repaint.mjs ochi-manA.glb dbg.glb --debug     # loud colours, then render
+```
+
+The game tints ten named material regions per player and multiplies each
+`material.color` over white artwork. A bought character arrives the other way
+round — one material, one texture, the shirt colour baked into the pixels — so
+there is nothing to tint. That, not the animations, was what blocked the Studio
+Ochi athletes.
+
+The Ochi atlas turns out to be a **palette**: eight 1000x1000 tiles of flat
+colour side by side, five of them a single colour to the pixel and three
+carrying one small decal apiece (a jersey number, in the three colourways the
+shirt needs). So the mesh is already partitioned into paint regions and the
+partition is recovered by asking each triangle which colour its UVs sit in.
+
+The split is lossless where it counts. Triangles are regrouped into one
+primitive per region, **all still pointing at the same position, normal, joint
+and weight accessors** — no vertex duplicated, no seam introduced, the skinning
+untouched. Only the index buffer is rewritten. The texture is then dead, and
+dropped, which is why the file gets smaller.
+
+Three things it gets right that a naive version does not:
+
+* **Ask the triangle, not the point.** A triangle is filed under the modal
+  colour over its whole UV footprint, sampled barycentrically. Sampling one
+  centroid instead files a triangle over the number under the number, and
+  invents a ninth region out of the single face that straddles a tile seam and
+  lands on the blended pixel between them.
+* **One palette entry can be two garments.** A colour is a paint bucket, not a
+  region: Ochi's navy is the trousers *and* the panel the chest number sits on.
+  `--map '262262@breast=trim'` splits an entry by the dominant bone of its
+  triangles, which is the one label that knows a chest from a thigh.
+* **Same name means one primitive.** The runtime shares a material across
+  meshes by name, so a shirt whose front and back panels are separate tiles has
+  to merge into one `jersey` or a tint lands on half of it.
+
+`--report` prints each group's triangle count, bounding box and **dominant
+bones** — the bones are what name a region; debug colours have to be read off a
+render and matched back by eye, which is how a facemask and a shoulder stripe
+end up sharing a verdict. It also prints the fraction of texel samples that
+disagreed with their triangle: that is exactly what flattening throws away.
+On Ochi it is 0.96% — the number, which cannot survive anyway, because a
+tintable shirt is a shirt with no pixels of its own. Tens of percent would mean
+the atlas is a picture and this is the wrong tool.
+
+The verified Ochi kit:
+
+| region | triangles | palette entries |
+|---|---|---|
+| `jersey` | 183 | `f1f2f2` body + `ffffff` back panel |
+| `trim` | 53 | `262262` on torso bones + `27aae1` on the sleeve |
+| `skin` | 406 | `f8b583` |
+| `helmet` | 294 | `262262`/`27aae1`/`ffce00` on `spine.005/006` |
+| `shorts` | 152 | `262262` on `thigh` |
+| `socks` | 44 | `ffce00` on `shin` |
+| `shoes` | 614 | the rest of the foot palette |
+| `gloves` | 24 | `3452ff` on `forearm`/`hand` |
+
+---
+
+## `fbx-inspect.mjs` — what is actually inside a purchased FBX
+
+```sh
+node tools/fbx-inspect.mjs asset.fbx --bones
+node tools/fbx-inspect.mjs --compare ManA.fbx ManC.fbx    # same armature?
+```
+
+Reads a binary FBX (Kaydara 7x00) without Blender, without Autodesk's SDK and
+without adding a dependency: skeleton (every LimbNode, its parent, its rest
+offset), animation stacks and their lengths, mesh vertex counts, materials and
+textures. `node:zlib` is the only import, because FBX property arrays are
+usually deflated.
+
+It exists because an asset pipeline rests on claims about files nobody has
+opened. The Studio Ochi pack ships six rigged characters and the whole plan for
+one shared animation library turns on whether they share one armature —
+`--compare` answers that in bone names and rest offsets rather than in trust.
+(They do: 57 of 58 bones identical, the 58th being where the armature stands.)
+
+---
+
 ## `pullstats.mjs` — why a flag pull takes as long as it does
 
 ```sh

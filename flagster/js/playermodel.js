@@ -116,7 +116,20 @@
   }
 
   /* ------------------------------------------------------- asset location */
-  var MODEL_URL = (function () {
+  /* WHICH CHARACTER. `ochi` is the Studio Ochi athlete — helmet, pads, cleats —
+     converted from FBX and rebuilt onto this rig by tools/build-ochi-player.mjs,
+     and it is what the game shows. `flagplayer` is the parametric one this repo
+     builds from tools/build-player-glb.mjs; it stays, because it is the
+     fallback when the imported asset is missing and because it carries the hair
+     and face variation the helmeted athlete has no use for.
+
+     They are interchangeable because the second was MADE to be: same bone
+     names, same rest convention, same clip vocabulary, same tintable material
+     regions. Nothing outside this file knows which is loaded. */
+  var CHARACTERS = { flagplayer: 'lib/flagplayer.glb', ochi: 'lib/ochiplayer.glb' };
+  var CHARACTER = 'ochi';
+
+  var BASE = (function () {
     try {
       var s = document.currentScript && document.currentScript.src;
       if (!s) {
@@ -125,11 +138,23 @@
           if (/playermodel\.js/.test(ss[i].src)) { s = ss[i].src; break; }
         }
       }
-      return s ? s.replace(/js\/playermodel\.js.*$/, 'lib/flagplayer.glb') : 'lib/flagplayer.glb';
-    } catch (e) { return 'lib/flagplayer.glb'; }
+      return s ? s.replace(/js\/playermodel\.js.*$/, '') : '';
+    } catch (e) { return ''; }
   })();
+  function urlFor(name) { return BASE + (CHARACTERS[name] || CHARACTERS.flagplayer); }
+  var MODEL_URL = urlFor(CHARACTER);
 
-  var MODEL = { ready: false, failed: false, loading: false, scene: null, clips: null, error: null };
+  /* Choose before preload(); after it, the asset is already in flight. Unknown
+     names are ignored rather than obeyed — a typo should not blank the field. */
+  function setCharacter(name) {
+    if (!CHARACTERS[name] || MODEL.ready || MODEL.loading) return CHARACTER;
+    CHARACTER = name;
+    MODEL_URL = urlFor(name);
+    return CHARACTER;
+  }
+
+  var MODEL = { ready: false, failed: false, loading: false, scene: null, clips: null, error: null,
+                restAlign: null, authorHeight: AUTHOR_HEIGHT_M };
   var SCALE = DEFAULT_SCALE;
   var waiters = [];
 
@@ -145,18 +170,44 @@
       MODEL.failed = true; MODEL.error = new Error('GLTFLoader/SkeletonUtils unavailable'); settle(); return;
     }
     MODEL.loading = true;
+    var want = url || MODEL_URL;
     try {
-      new THREE.GLTFLoader().load(url || MODEL_URL,
+      new THREE.GLTFLoader().load(want,
         function (gltf) {
           MODEL.scene = gltf.scene;
           MODEL.clips = gltf.animations || [];
+          /* WHAT AN IMPORTED CHARACTER BRINGS WITH IT. `restAlign` is the
+             per-bone rotation that carries ITS rest direction onto the one the
+             game's own rig has, so a pose the renderer authors by hand — a
+             carried ball, a reach — means the same thing on both; it is absent
+             on flagplayer, whose rest IS the reference. `authorHeight` is how
+             tall this model actually is, so both characters end up the same
+             size on the field. See tools/glb-rerig.mjs. */
+          var ud = MODEL.scene.userData || {};
+          MODEL.restAlign = ud.restAlign || null;
+          MODEL.authorHeight = (ud.authorHeight > 0) ? ud.authorHeight : AUTHOR_HEIGHT_M;
+          SCALE = DEFAULT_SCALE * (AUTHOR_HEIGHT_M / MODEL.authorHeight);
           // Skinned bounds are unreliable before the first pose, and every
           // instance is frustum-culled by its own root anyway.
           MODEL.scene.traverse(function (o) { if (o.isMesh || o.isSkinnedMesh) o.frustumCulled = false; });
           MODEL.ready = true; MODEL.loading = false; settle();
         },
         undefined,
-        function (err) { MODEL.failed = true; MODEL.loading = false; MODEL.error = err || new Error('glb load error'); settle(); });
+        function (err) {
+          /* A MISSING IMPORT FALLS BACK TO THE PLAYER THAT IS ALWAYS THERE.
+             The Ochi athlete is built from licensed source assets that are not
+             in the repository, so a checkout without them has no
+             lib/ochiplayer.glb — and a field of invisible players is a far
+             worse failure than a field of the parametric ones. */
+          if (CHARACTER !== 'flagplayer' && want === MODEL_URL) {
+            CHARACTER = 'flagplayer';
+            MODEL_URL = urlFor(CHARACTER);
+            MODEL.loading = false;
+            preload(THREE, MODEL_URL);
+            return;
+          }
+          MODEL.failed = true; MODEL.loading = false; MODEL.error = err || new Error('glb load error'); settle();
+        });
     } catch (e) {
       MODEL.failed = true; MODEL.loading = false; MODEL.error = e; settle();
     }
@@ -688,7 +739,7 @@
     var plate = nameplate(THREE, opts.name);
     // Matches where Player3D floats its tag (~0.5 units clear of the head), so
     // swapping the two builders doesn't shift labels around the field.
-    plate.position.y = AUTHOR_HEIGHT_M * scale + 0.50;
+    plate.position.y = MODEL.authorHeight * scale + 0.50;
     root.add(plate);
 
     /* --- animation ------------------------------------------------------- */
@@ -708,6 +759,9 @@
     var current = null;
     var api = {
       root: root, nodes: nodes, sockets: sockets, materials: mats, parts: parts,
+      /* Per-bone rest correction for anything the renderer poses by hand;
+         null on the game's own player, whose rest is the reference. */
+      restAlign: MODEL.restAlign,
       mixer: mixer, actions: actions, isModel: true, scale: scale,
       _yaw: 0, _speed: 1, _oneShot: null, _returnTo: 'Idle'
     };
@@ -1105,6 +1159,9 @@
   global.FLAGSTER = global.FLAGSTER || {};
   global.FLAGSTER.PlayerModel = {
     preload: preload,
+    setCharacter: setCharacter,
+    character: function () { return CHARACTER; },
+    characters: Object.keys(CHARACTERS),
     whenReady: whenReady,
     isReady: function () { return !!MODEL.ready; },
     isFailed: function () { return !!MODEL.failed; },

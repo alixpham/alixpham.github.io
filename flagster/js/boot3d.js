@@ -87,6 +87,15 @@ async function setupThree() {
   // soon as it's ready and falls back to the procedural rig until then.
   try {
     if (window.THREE && window.FLAGSTER && window.FLAGSTER.PlayerModel) {
+      /* WHICH CHARACTER, decided once and before the fetch — after preload the
+         asset is already in flight. `?character=` wins so a build can be
+         checked without touching anyone's saved preference; otherwise it is
+         whatever the menu's toggle last stored. An unknown name is ignored by
+         setCharacter, and a model that fails to load falls back on its own. */
+      let want = null;
+      try { want = new URLSearchParams(location.search).get('character'); } catch (e) { /* file:// */ }
+      if (!want && window.FLAGSTER.storage) want = window.FLAGSTER.storage.get('character', null);
+      if (want) window.FLAGSTER.PlayerModel.setCharacter(want);
       window.FLAGSTER.PlayerModel.preload(window.THREE);
     }
   } catch (e) { /* optional: procedural rig still works */ }

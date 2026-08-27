@@ -1141,9 +1141,33 @@
 
      Holding the ball forever is not the answer either, so after the pocket
      collapses the quarterback tucks it and goes. */
-  Engine.prototype._aiQBOrCarrier = function (p, dt) {
+  /* D4 — IS THE MAN WITH THE BALL A RUNNER, OR A PASSER IN THE POCKET?
+
+     One question, asked in three places, and two of them asked it wrong.
+     `_aiQBOrCarrier` got it right — a passer is working the pocket only until
+     the handoff resolves — while `_aiDefender` used the shorter, plausible,
+     WRONG test `carrier !== passer`.
+
+     Those two disagree on exactly one case, and the case exists: `_doHandoff`
+     on a play whose designed carrier is already the quarterback (Flea Flicker)
+     hands the ball to nobody and just sets `handoffDone`. The carrier IS the
+     passer, and he is running. `_aiQBOrCarrier` sends him downfield; the
+     defence, asking its own version of the question, concluded there was no
+     runner and left all five men in coverage — so nobody ever pursued him.
+     Measured, 22% of every frame in the game that had a live runner in it had
+     not one defender chasing, and in those frames two thirds of the defenders
+     goal-side of the ball were drifting DOWNFIELD, backing away in front of a
+     man running straight at them. A 46-yard untouched run, every time.
+
+     So it is asked once, here, and the other two read it. */
+  Engine.prototype._isRunner = function (p) {
     var s = this.state;
-    if (p === s.passer && !s.handoffDone) {
+    if (!p || !s) return false;
+    return !(p === s.passer && !s.handoffDone);
+  };
+
+  Engine.prototype._aiQBOrCarrier = function (p, dt) {
+    if (!this._isRunner(p)) {
       /* The passer never becomes a runner. They work the pocket for the whole
          seven seconds and throw it away rather than tuck it — carrying it past
          the line is a dead ball, so "tuck and run" was never a legal out. */
@@ -1315,7 +1339,7 @@
     if (d.blitz && (!s.carrier || s.carrier.slot === 'QB' || s.ball.inAir === false)) {
       // rush the passer / chase carrier
       var tgt = s.carrier || (s.thrownTo || { x: s.losX - 4, y: FIELD_WID / 2 });
-      if (tgt === s.carrier && tgt !== s.passer) {
+      if (tgt === s.carrier && this._isRunner(tgt)) {
         var bspd = this.speedYds(d.data.speed) * this.staminaScale(d);
         tgt = this._interceptPoint(d, tgt, bspd);
       }
@@ -1337,7 +1361,7 @@
       if (covering || reachable) { this._seek(d, to, dt, 1.05); return; }
       // otherwise fall through and keep playing your assignment
     }
-    if (s.carrier && s.carrier !== s.passer) {
+    if (this._isRunner(s.carrier)) {
       // Pursue where the carrier is GOING, not where they are.
       var spd = this.speedYds(d.data.speed) * this.staminaScale(d) *
                 ((!this.demo && this.difficulty && d.team !== this.userSide) ? this.difficulty.defSpeed : 1);

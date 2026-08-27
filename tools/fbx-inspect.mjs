@@ -1,0 +1,177 @@
+#!/usr/bin/env node
+/* ============================================================================
+   FLAGSTER — FBX INSPECTOR
+
+   Reads a binary FBX (Kaydara 7x00) far enough to answer the questions an
+   asset pipeline actually turns on, without Blender, without Autodesk's SDK,
+   and without adding a runtime dependency to a site that has none:
+
+     * what the SKELETON is — every LimbNode, its parent, and its rest offset,
+       so two characters can be compared bone for bone;
+     * what ANIMATION STACKS the file carries, and how long each one runs;
+     * how heavy the MESHES are, and what materials and textures they want.
+
+     node tools/fbx-inspect.mjs <file.fbx> [--bones] [--json]
+     node tools/fbx-inspect.mjs --compare a.fbx b.fbx      # same armature?
+
+   WHY THIS EXISTS. The Studio Ochi pack ships six rigged characters, and the
+   whole animation plan rests on a claim nobody had checked: that they share
+   one armature, so one retargeted library serves all of them. That is a
+   question about bone names and rest offsets, which is a question about the
+   bytes in the file.
+
+   FORMAT, briefly. After a 27-byte header the file is a tree of records:
+
+     EndOffset  NumProperties  PropertyListLen  NameLen  Name  props...  kids
+     (u32/u64)  (u32/u64)      (u32/u64)        (u8)
+
+   Offsets are u32 below version 7500 and u64 from 7500 on. A record's children
+   run until EndOffset, terminated by a null record. Property arrays may be
+   raw or zlib-deflated, which is why the only import here is node:zlib.
+   ============================================================================ */
+import fs from 'node:fs';
+import path from 'node:path';
+
+const args = process.argv.slice(2);
+const AS_JSON = args.includes('--json');
+const SHOW_BONES = args.includes('--bones');
+const COMPARE = args.includes('--compare');
+const files = args.filter(a => !a.startsWith('--'));
+
+if (!files.length) {
+  console.error('usage: node tools/fbx-inspect.mjs <file.fbx> [--bones] [--json]');
+  console.error('       node tools/fbx-inspect.mjs --compare a.fbx b.fbx');
+  process.exit(2);
+}
+
+/* The parser and its helpers live in fbx-read.mjs — see the note there on why
+   there is one copy. */
+import { parseFBX, kids, kid, prop70, indexScene, KTIME } from './fbx-read.mjs';
+
+/* ------------------------------------------------------------------ digest */
+function inspect(file) {
+  const { version, root } = parseFBX(fs.readFileSync(file));
+  const { byId, parentOf } = indexScene(root);
+  const bones = [];
+  for (const [id, o] of byId) {
+    if (o.type !== 'Model' || o.sub !== 'LimbNode') continue;
+    const t = prop70(o.node, 'Lcl Translation') || [0, 0, 0];
+    const par = byId.get(parentOf.get(id));
+    bones.push({
+      name: o.name,
+      parent: par ? par.name : null,
+      offset: [t[0] || 0, t[1] || 0, t[2] || 0]
+    });
+  }
+
+  const stacks = [];
+  for (const [, o] of byId) {
+    if (o.type !== 'AnimationStack') continue;
+    const local = prop70(o.node, 'LocalStop') || prop70(o.node, 'ReferenceStop');
+    // FBX times are in ktime units: 46186158000 per second.
+    const secs = local && local[0] ? local[0] / KTIME : null;
+    stacks.push({ name: o.name, seconds: secs });
+  }
+
+  const meshes = [];
+  for (const [, o] of byId) {
+    if (o.type !== 'Geometry') continue;
+    const v = kid(o.node, 'Vertices');
+    const pv = kid(o.node, 'PolygonVertexIndex');
+    meshes.push({
+      name: o.name,
+      vertices: v ? Math.floor(v.props[0].length / 3) : 0,
+      polygonIndices: pv ? pv.props[0].length : 0
+    });
+  }
+
+  const materials = [];
+  for (const [, o] of byId) if (o.type === 'Material') materials.push(o.name);
+  const textures = [];
+  for (const [, o] of byId) {
+    if (o.type !== 'Texture' && o.type !== 'Video') continue;
+    const rel = kid(o.node, 'RelativeFilename');
+    textures.push(rel ? path.basename(String(rel.props[0]).replace(/\\/g, '/')) : o.name);
+  }
+
+  const deformers = [];
+  for (const [, o] of byId) if (o.type === 'Deformer') deformers.push(o.sub);
+
+  return {
+    file: path.basename(file), version,
+    bones, stacks, meshes, materials: [...new Set(materials)],
+    textures: [...new Set(textures)],
+    skinned: deformers.includes('Skin')
+  };
+}
+
+/* ------------------------------------------------------------------ output */
+function report(d) {
+  const verts = d.meshes.reduce((a, m) => a + m.vertices, 0);
+  console.log(`\n${d.file}   FBX ${d.version}`);
+  console.log(`  meshes        ${d.meshes.length}, ${verts} vertices total${d.skinned ? ', SKINNED' : ', no skin deformer'}`);
+  console.log(`  bones         ${d.bones.length}`);
+  console.log(`  materials     ${d.materials.length ? d.materials.join(', ') : '(none)'}`);
+  console.log(`  textures      ${d.textures.length ? d.textures.join(', ') : '(none)'}`);
+  console.log(`  animations    ${d.stacks.length}`);
+  for (const s of d.stacks) {
+    console.log(`      ${s.name.padEnd(28)} ${s.seconds != null ? s.seconds.toFixed(2) + 's' : '(no length)'}`);
+  }
+  if (SHOW_BONES) {
+    console.log('  skeleton:');
+    const byParent = new Map();
+    for (const b of d.bones) {
+      const k = b.parent || '(root)';
+      if (!byParent.has(k)) byParent.set(k, []);
+      byParent.get(k).push(b);
+    }
+    const walk = (nm, depth) => {
+      for (const b of (byParent.get(nm) || [])) {
+        const o = b.offset.map(v => v.toFixed(3)).join(', ');
+        console.log(`    ${'  '.repeat(depth)}${b.name}   [${o}]`);
+        walk(b.name, depth + 1);
+      }
+    };
+    walk('(root)', 1);
+    for (const [k] of byParent) if (k !== '(root)' && !d.bones.some(b => b.name === k)) walk(k, 1);
+  }
+}
+
+if (COMPARE) {
+  const ds = files.map(inspect);
+  ds.forEach(report);
+  console.log('\n=== armature comparison ===');
+  const base = ds[0];
+  for (const d of ds.slice(1)) {
+    const aN = base.bones.map(b => b.name).sort();
+    const bN = d.bones.map(b => b.name).sort();
+    const sameNames = aN.length === bN.length && aN.every((v, i) => v === bN[i]);
+    const aMap = new Map(base.bones.map(b => [b.name, b]));
+    let maxOff = 0, worst = '';
+    for (const b of d.bones) {
+      const a = aMap.get(b.name);
+      if (!a) continue;
+      const dd = Math.hypot(a.offset[0] - b.offset[0], a.offset[1] - b.offset[1], a.offset[2] - b.offset[2]);
+      if (dd > maxOff) { maxOff = dd; worst = b.name; }
+    }
+    console.log(`  ${base.file}  vs  ${d.file}`);
+    console.log(`    bone count      ${base.bones.length} vs ${d.bones.length}`);
+    console.log(`    same bone names ${sameNames ? 'YES' : 'NO'}`);
+    if (!sameNames) {
+      const onlyA = aN.filter(x => !bN.includes(x)), onlyB = bN.filter(x => !aN.includes(x));
+      if (onlyA.length) console.log(`      only in ${base.file}: ${onlyA.join(', ')}`);
+      if (onlyB.length) console.log(`      only in ${d.file}: ${onlyB.join(', ')}`);
+    }
+    console.log(`    rest offsets    max delta ${maxOff.toFixed(4)} on ${worst || '(n/a)'}` +
+      (maxOff < 1e-4 ? '   <-- identical rest pose' : maxOff < 0.01 ? '   (near-identical)' : '   <-- DIFFERENT PROPORTIONS'));
+    const aS = base.stacks.map(s => s.name).sort().join('|');
+    const bS = d.stacks.map(s => s.name).sort().join('|');
+    console.log(`    same clip set   ${aS === bS ? 'YES' : 'NO'}`);
+  }
+  console.log('');
+} else if (AS_JSON) {
+  console.log(JSON.stringify(files.length === 1 ? inspect(files[0]) : files.map(inspect), null, 2));
+} else {
+  files.map(inspect).forEach(report);
+  console.log('');
+}
