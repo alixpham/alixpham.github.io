@@ -812,7 +812,7 @@
           // all; an older .glb without one simply has fewer rungs.
           if (!a || !cl || !ex || !ex.gait || !(ex.groundSpeed > 0)) return;
           rungs.push({ name: nm, action: a, dur: cl.duration, nat: ex.groundSpeed * scale,
-                       blendUp: ex.blendUp || null });
+                       blendUp: ex.blendUp || null, sweepWarp: ex.sweepWarp || null });
         });
         rungs.sort(function (p, q) { return p.nat - q.nat; });
         ladder[kind] = rungs;
@@ -904,13 +904,41 @@
        timeScale 0 as NOT running, and these deliberately run at timeScale 0
        because the phase is written rather than integrated. Trusting isRunning()
        here re-activated both rungs on the mixer every single frame. */
+    /* WHICH PART OF THE CLIP PLAYS AT THIS PHASE. See `sweepWarp` in
+       tools/glb-gait.mjs, which measures it.
+
+       A gait's `groundSpeed` is a MEAN, and the ladder matches it to a tenth
+       of a percent — the stride is the right length, the cadence is right, the
+       playback rate sits at 1.000. What the mean cannot say is that the
+       support foot creeps through early stance and whips through toe-off, so
+       it averages out correct while SLIDING for the part of it the eye
+       watches. Measured off the renderer with tools/bodycheck.mjs, a planted
+       foot was travelling at 31% of the player's own speed; measured offline
+       at 60fps with the lean, the facing and the camera all taken away, the
+       clip and the ladder on their own still did 10-35%, worst at exactly the
+       two clips whose stance sweep is least even.
+
+       So the phase advances uniformly — cadence is a real property of the gait
+       — and this maps it onto the part of the clip that makes the foot sweep
+       at a CONSTANT rate. Nothing else moves: the table is normalised to the
+       clip's own duration and pinned at both ends, so stride length, ground
+       speed, and the left foot's contact at phase 0 are all what they were.
+
+       A clip with no table plays unwarped, which is what an older .glb does. */
+    function warped(r, p) {
+      var c = r.sweepWarp;
+      if (!c || c.length < 2) return p;
+      var x = p * (c.length - 1), i = Math.floor(x);
+      if (i >= c.length - 1) return c[c.length - 1];
+      return c[i] + (c[i + 1] - c[i]) * (x - i);
+    }
     function mountRung(r, w) {
       var a = r.action;
       if (!r.on) { a.reset(); a.play(); r.on = true; }
       a.enabled = true;
       a.timeScale = 0;                       // phase is written below, not integrated
       a.setEffectiveWeight(w);
-      a.time = phase * r.dur;
+      a.time = warped(r, phase) * r.dur;
     }
     function unmountRung(r) {
       r.on = false;

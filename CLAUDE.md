@@ -51,6 +51,13 @@ tools/qbstats.mjs             the QB's decision, frozen at the throw: how open
 tools/ballcheck.mjs           is the football in his hands? read off the scene
                               graph, which no headless probe can see
 tools/pullstats.mjs           the flag pull, timed; --user splits it by side
+tools/gaitslip.mjs            planted-foot slip from the LADDER alone, with the
+                              facing, the lean and the camera taken away —
+                              deterministic, where bodycheck is not
+tools/bodycheck.mjs           is this body possible? planted-foot slip and
+                              float, and every arm joint against a human's
+                              limits — off the RENDERER, with a standing
+                              player as the control
 tools/smoke.mjs               every screen x both orientations, 0 errors, field3d alive
 VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
                         through this environment's proxy, so these are the
@@ -272,6 +279,41 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   samples is 0.7s of history at 20fps and 0.12s at 120. Samples carry their age
   and are dropped by it, the same lesson as the ball's spin being a rate per
   second rather than per frame.
+- **A GAIT'S GROUND SPEED IS A MEAN, AND A MEAN CANNOT SEE A SLIDE.** The
+  ladder matches `groundSpeed` to within a tenth of a percent — right stride,
+  right cadence, playback rate 1.000 — and the support foot still slid at 31%
+  of the player's own travel speed, because it creeps through early stance and
+  whips through toe-off. That is the `spread` column in `npm run body`'s
+  cousin `glb-gait --report`, and it is what "the players skate" actually is.
+  The fix is a re-timing, not a re-authoring: `du = (v/G) dt` through stance
+  and `du = dt` through flight makes the sweep constant, and normalising back
+  to the clip's own duration leaves stride length, cadence, ground speed and
+  the left contact at phase 0 all exactly as they were. Baked per clip as
+  `extras.sweepWarp`, read back by `playermodel.js`, same contract as
+  `groundSpeed` and `blendUp` — no constant to keep in step.
+- **Skating is measured in two places and they answer different questions.**
+  `npm run body` measures the feet in the LIVE game, which is where it finally
+  counts, and it is far too noisy to judge a change by: three runs of one
+  unchanged build gave 31%, 42% and 57%, because each is a different football
+  match. It is seeded now, and even so the pair has to be run seed for seed.
+  `npm run slip` takes everything else away — constant speed, straight line, no
+  lean, no turn, no camera — and answers the same question about the ladder
+  ALONE, deterministically, in a second. Locate a cause with `slip`; confirm
+  the game still looks right with `body`.
+- **The obvious suspect for skating is the FACING, and it was not guilty.**
+  A body pointing off its line of travel does slide, and `alongMotion` exists
+  for it — but measured in the live game the median skew is **3.5 degrees**,
+  which accounts for about 6% of slip against the 31% measured. Proving that
+  took removing everything else: an offline replay of the ladder at 60fps with
+  no lean, no facing and no camera reproduced 10-35% on its own. Measure the
+  thing itself (where the foot IS, frame to frame, in world space) rather than
+  a proxy for it.
+- **A probe that indexes players by slot is comparing two different men.**
+  Every formation change disposes ten bodies and builds ten new ones, and the
+  index is reused, so one frame either side of a rebuild differences one man's
+  arm against another's. It reported a 3,219 deg/s whip on a player standing
+  still and it was the worst reading in the file. `debugLimbs` publishes a
+  build generation now; drop the pair, do not believe it.
 - **A player has NO vertical physics.** The engine gives gravity to the ball
   and to nothing else: every centimetre a player rises or falls is the clip
   plus `PLAYER_LIFT`, one constant that raises the holder because the rig dips
@@ -336,6 +378,8 @@ merges, restart the branch instead — `git checkout -B <branch> origin/master`
   `npm run celebs` (every celebration, forced and read back off the renderer),
   `npm run qb` (what the quarterback threw at, and what he passed up),
   `npm run ball` (the football, in the carrier's hands or not),
+  `npm run body` (do the feet slide, and are the arms a human's),
+  `npm run slip` (…and how much of that is the gait ladder on its own),
   `node tools/posesheet.mjs <Clip>` (a clip big enough to judge the pose —
   measure-clip says whether it is correct, this says whether it is any good). Playwright is a
   devDependency purely so the browser harnesses survive a new container — the

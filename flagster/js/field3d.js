@@ -966,8 +966,18 @@
       /* A takeaway is the defence's touchdown. It gets the whole side, like a
          score, but a beat shorter and without the spin: the man holding the
          ball has just turned upfield out of habit and the celebration is the
-         other four arriving at him, not a pose for the camera. */
-      takeaway:  { dur: 2.1,  hop: 0.30, radius: Infinity, stagger: 0.10, spin: 0.35,
+         other four arriving at him, not a pose for the camera.
+
+         "Without the spin" is what this comment has always said and 0.35 is
+         what it has always carried, which is not none — it is the FASTEST
+         full turn in the game: `spin` is the number of seconds a whole 360
+         takes, so 0.35 asks a body for 1,029 degrees a second. A person can
+         jump-turn through a full revolution in something like six or seven
+         tenths; a third of a second is not a turn anybody makes, and with the
+         arms out at the top of a celebration it is the one thing on this field
+         that genuinely rotates through 360 faster than a human could. The
+         comment was right; the value was a typo for it. */
+      takeaway:  { dur: 2.1,  hop: 0.30, radius: Infinity, stagger: 0.10, spin: 0,
                    ring: { r: 5.5, dur: 0.65 }, star: 1.30 }
     };
     var HOP_RATE = Math.PI * 2;
@@ -1218,7 +1228,15 @@
       return { h: h, w: w };
     }
 
+    /* WHICH SET OF BODIES THESE ARE. Ten new Player3D instances at ten new
+       spots, on every formation change — so a probe differencing bone
+       positions frame to frame is otherwise comparing one man's arm with a
+       different man's arm at the same index, and reporting the gap as a
+       3,200-degree-per-second whip. Published in debugLimbs so the difference
+       can be dropped rather than believed. */
+    var buildGen = 0;
     function rebuildPlayers(players) {
+      buildGen++;
       // Dispose old Player3D instances + their holders/rings.
       pMeshes.forEach(function (e) {
         if (e.P) e.P.dispose();
@@ -2391,6 +2409,66 @@
                      clip: ci ? ci.clip : null,
                      a: g ? g.a : '-', b: g ? g.b : '-', blend: g ? g.blend : 0,
                      rate: g ? g.rate : 0, phase: g ? g.phase : 0, w: g ? g.weight : 0 });
+        }
+        return out;
+      },
+      /* WHERE THE LIMBS ACTUALLY ARE, in world space, on the frame being drawn.
+
+         `debugPlayers` above reports SKEW — how far a body's facing sits off
+         its line of travel — and skew is a proxy for skating rather than a
+         measurement of it. A foot slides when its world position moves while
+         it is on the ground, and that is a property of the skinned pose: it
+         is the stride, the facing, the lean, the blend weight and the playback
+         rate all resolved together, which is exactly the thing no headless
+         probe can reconstruct. So the bones are read off the scene graph and
+         `tools/bodycheck.mjs` differences them frame to frame.
+
+         The arms come back for the same reason and from the same matrices: an
+         elbow's flexion is the angle at the elbow between the shoulder and the
+         wrist, and you cannot get it from a euler triple on a bone without
+         redoing the whole chain. */
+      debugLimbs: function () {
+        var out = [], _v = new THREE.Vector3();
+        var LIMB_BONES = ['Hips', 'Chest',
+          'Foot_L', 'Toe_L', 'Foot_R', 'Toe_R',
+          'Shoulder_L', 'UpperArm_L', 'LowerArm_L', 'Hand_L',
+          'Shoulder_R', 'UpperArm_R', 'LowerArm_R', 'Hand_R'];
+        for (var i = 0; i < pMeshes.length; i++) {
+          var e = pMeshes[i], gp = (playersRef || [])[i];
+          if (!gp || !e.P || !e.P.nodes) continue;
+          var g = e.P.gaitInfo ? e.P.gaitInfo() : null;
+          var n = e.P.nodes, row = {
+            i: i, gen: buildGen, slot: gp.slot, team: gp.team,
+            vx: gp.vx || 0, vy: gp.vy || 0,
+            juke: (gp.jukeCd || 0) > 0, stun: (gp.stun || 0) > 0,
+            pulled: !!gp.flagPulled, oneShot: !!e.P._oneShot,
+            hx: e.holder.position.x, hy: e.holder.position.y, hz: e.holder.position.z,
+            /* Enough of the gait to ATTRIBUTE a slide rather than only report
+               it: which rungs are mounted, the rate they are running at (1.0
+               means the blend matched the speed and nothing is being
+               stretched), and how far the body's facing sits off its line of
+               travel, which is the other way a stride and the ground disagree. */
+            /* The RENDERED facing, not the target. `ud.yaw` is what the body
+               is easing toward and `P.face` decides how fast it gets there, so
+               grading the skew against the target grades out the lag — and the
+               lag is exactly what a hard cut is made of. */
+            yaw: gp.faceYaw != null ? gp.faceYaw : e.ud.yaw,
+            rate: g ? g.rate : 0, blend: g ? g.blend : 0,
+            ga: g ? g.a : null, gb: g ? g.b : null, gw: g ? g.weight : 0,
+            // Which layers are writing the arms, so a spin can be attributed
+            // to a pose rather than only reported.
+            carryW: e.ud.carryW || 0, grabW: e.ud.grabW || 0,
+            bank: e.ud.bank || 0, pitch: e.ud.pitch || 0,
+            j: {}
+          };
+          LIMB_BONES.forEach(function (b) {
+            var nd = n[b];
+            if (!nd) return;
+            nd.updateWorldMatrix(true, false);
+            _v.setFromMatrixPosition(nd.matrixWorld);
+            row.j[b] = [_v.x, _v.y, _v.z];
+          });
+          out.push(row);
         }
         return out;
       },
