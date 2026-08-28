@@ -15,7 +15,9 @@
     "passes": "node tools/passstats.mjs",
     "qb": "node tools/qbstats.mjs",
     "ball": "node tools/ballcheck.mjs",
-    "feet": "node tools/footcheck.mjs"
+    "feet": "node tools/footcheck.mjs",
+    "body": "node tools/bodycheck.mjs",
+    "slip": "node tools/gaitslip.mjs"
   },
   "devDependencies": {
     "playwright": "^1.61.1"

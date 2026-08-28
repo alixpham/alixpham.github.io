@@ -553,6 +553,35 @@ deeper at toe-off.
 
 ---
 
+### The stance sweep, and the warp that evens it
+
+`groundSpeed` is a **mean**, and the ladder matches it to within a tenth of a
+percent — right stride length, right cadence, playback rate 1.000. What a mean
+cannot say is that the support foot **creeps through early stance and whips
+through toe-off**, so it averages out correct while sliding for the part of it
+the eye watches. That is the `spread` column, and it is what "the players
+skate" actually is: measured off the renderer with `npm run body`, a planted
+foot was travelling at **31% of the player's own speed**; measured offline at
+60 fps with the lean, the facing and the camera all taken away, the clip and
+the ladder on their own still did **10–35%**, worst at exactly the two clips
+whose spread is worst (Ochi Walk 48%, Run 35%).
+
+So the clip is **re-timed**, not re-authored. `du = (v/G) dt` through stance and
+`du = dt` through flight makes the support foot's sweep constant; normalising
+the result back to the clip's own duration means stride length, cadence, ground
+speed and the left foot's contact at phase 0 are all exactly what they were,
+and only the distribution of time inside the cycle changes. It is baked per
+clip as `extras.sweepWarp` (33 samples, pinned to 0 and 1 so the loop closes)
+and `playermodel.js` writes `warp(phase) * duration` into the action instead of
+`phase * duration`. A clip with no table plays unwarped, which is what an older
+`.glb` does.
+
+Through double support there are two feet down and which one to believe looks
+like it ought to matter. It was measured all three ways — faster, slower, mean
+— on both characters at seven speeds: the resulting slip agreed to within a
+tenth of a percent everywhere except the walk, where the spread across the
+three was 1.2 points. It is not a knob.
+
 ## `glb-repaint.mjs` — make a bought character team-tintable
 
 ```sh
@@ -670,6 +699,106 @@ Two ways to get this wrong, both of which were got wrong first:
   per-frame low instead: stance, not the one frame he left his feet.
 
 ---
+
+---
+
+## `gaitslip.mjs` — does the ladder, on its own, slide a planted foot?
+
+```sh
+npm run slip
+node tools/gaitslip.mjs flagster/lib/flagplayer.glb --nowarp
+```
+
+`bodycheck.mjs` measures the feet in the **live game**, which is the only place
+the answer finally counts — and it cannot tell you *why*, because everything is
+in the frame at once: the stride, the blend, the facing, the lean, the turn,
+the acceleration. It is also far too noisy to judge a change by. **Three runs
+of one unchanged build returned 31%, 42% and 57%.** That is not a statistic
+with error bars; it is three different football matches.
+
+So this takes everything else away. It reproduces `playermodel.js`'s blend
+exactly — the two rungs bracketing the speed, weighted so their measured ground
+speeds interpolate to it, corrected with `blendUp`, both driven from one shared
+phase through `sweepWarp` — then skins the result and differences the sole in
+world space with the body translating at the speed asked for. Constant speed,
+straight line, no lean, no camera. If a foot slides here it is the clip and the
+ladder and nothing else, and it answers the same every time.
+
+That is how the skating was actually located. The **facing** was the obvious
+suspect — a body pointing off its line of travel does slide, and `alongMotion`
+exists for it — but the live median skew is **3.5 degrees**, worth about 6% of
+slip against the 31% measured. This reported 10–35% with the facing removed
+entirely, worst at exactly the two clips whose stance sweep is least even.
+
+`--nowarp` ignores `extras.sweepWarp` and plays the clips as authored, which is
+what the before/after of that fix is measured with:
+
+| | as authored | warped |
+|---|---|---|
+| `ochiplayer.glb` | 18.0% | **13.1%** |
+| `flagplayer.glb` | 17.3% | **11.7%** |
+
+---
+
+## `bodycheck.mjs` — is this body possible?
+
+```sh
+npm run body
+node tools/bodycheck.mjs --secs 150 --character flagplayer
+```
+
+Two complaints, one run, because both are properties of the **skinned pose**
+and the only way to see a skinned pose is to draw it.
+
+### The feet
+
+*"Players should never move like skaters... they always must have one or two
+feet planted, and the feet never slide."* A foot that is on the ground and
+whose world position is moving is sliding — that is the whole definition, and
+it is not the facing, not the blend weight and not the playback rate, it is
+those and the lean and the stride resolved together.
+
+`debugPlayers` has reported **skew** (how far a body points off its line of
+travel) for a while, and skew is a *proxy* for skating. This measures the thing
+itself: the world position of `Foot_*`/`Toe_*`, differenced frame to frame,
+against the ground moving under them.
+
+**Support slip** is the number that matters — the minimum across whatever feet
+are down, i.e. *is there at least one foot bearing weight that is not sliding*.
+Not "how fast is a planted foot moving": a foot at touchdown and a foot at
+toe-off are both legitimately in the plant band and both legitimately moving.
+
+### The arms
+
+*"Their arms cannot rotate 360 degrees: they are humans and have
+limitations."* Measured at the joint from world positions, so it does not
+depend on how any one bone's euler triple was authored: **elbow flexion** (0 is
+straight, a human folds to ~145 and hyperextends ~10), **shoulder elevation**
+in the *chest's* frame so a leaning body does not read as a raised arm, and two
+rates — the upper arm's **sweep**, and each arm bone's **total turn including
+twist**, taken from its world quaternion, because a forearm rotating on its own
+length is exactly what "the arms spin" looks like while every joint position
+stays put.
+
+### Three ways to get this wrong
+
+* **No control.** A standing player's support foot must be pinned. If the probe
+  says otherwise, nothing else it says means anything. It reads 0.03 yd/s.
+* **An absolute ground height.** There isn't one — build scale, `PLAYER_LIFT`
+  and the clip mix move a sole by centimetres and a dive puts one 30 cm down.
+  Each foot's own ground is the tenth percentile of its own height, the same
+  lesson `footcheck.mjs` learned.
+* **Indexing players by slot across a rebuild.** Every formation change
+  disposes ten bodies and builds ten new ones at new spots, and the index is
+  reused — so one frame either side of a rebuild differences *one man's arm
+  against another man's arm*. It reported a 3,219 deg/s whip on a player
+  standing still and it was the worst reading in the file. `debugLimbs`
+  publishes a build generation; the pair is dropped.
+
+`render` takes the game **state**, not a delta. The delta it uses is the
+engine's own, clamped at 50 ms, and reading that back rather than timing the
+wrapper is the difference between differencing positions over the interval they
+actually moved in and differencing them over however long swiftshader took.
 
 ---
 

@@ -133,12 +133,93 @@ function measure(poseAt, n, dur) {
   };
 }
 
+/* THE STANCE SWEEP, AND THE WARP THAT EVENS IT.
+
+   `groundSpeed` is a MEAN, and the ladder matches it to within a tenth of a
+   percent — so the stride is the right length and the right cadence and the
+   playback rate sits at 1.000. It is the wrong PARAMETERISATION. The support
+   foot creeps through early stance and whips through toe-off, so it averages
+   out correct while sliding for the part of it the eye watches, which is the
+   `spread` column above and is what "the players skate" actually is. Measured
+   on the Ochi athlete at 60fps, with no lean, no facing and no camera in the
+   way, a planted foot slid 10-35% of the player's own travel speed, worst at
+   exactly the two clips whose spread is worst.
+
+   So re-time it. `du = (v/G) dt` through stance and `du = dt` through flight
+   makes the support foot's sweep CONSTANT; normalising the result back to the
+   clip's own duration means stride length, cadence, ground speed and the
+   contact at phase 0 are all exactly what they were, and only the
+   distribution of time inside the cycle changes. `playermodel.js` reads the
+   table back and writes `warp(phase) * duration` into the action instead of
+   `phase * duration`.
+
+   It is a table rather than a formula for the same reason `blendUp` is: there
+   is no constant to keep in step with the clips, so re-author a stride and the
+   curve is rebuilt with it. */
+const WARP_STEPS = 32;
+function warpOf(poseAt, n, dur) {
+  const sole = [];
+  for (let k = 0; k < n; k++) {
+    const JM = poseAt(k);
+    sole.push({ L: R.solePoints(JM, soleOf, 'L'), R: R.solePoints(JM, soleOf, 'R') });
+  }
+  const minima = [];
+  for (const f of sole) for (const s of ['L', 'R']) {
+    let lo = Infinity;
+    for (const p of f[s]) lo = Math.min(lo, p[1]);
+    minima.push(lo);
+  }
+  minima.sort((a, b) => a - b);
+  const ON = CONTACT + Math.max(0, minima[Math.floor(minima.length * 0.10)]);
+  const dt = dur / n;
+  /* The sweep of whichever foot is carrying the load. Through double support
+     there are two, and which one to believe looks like it ought to matter —
+     the front foot has just struck and is nearly still, the rear is rolling
+     off. It was measured all three ways (faster, slower, mean) on both
+     characters at seven speeds: the resulting slip agreed to within a tenth of
+     a percent everywhere except the walk, where the spread across the three
+     was 1.2 points. It is not a knob. Faster, and no more thought about it. */
+  const v = [];
+  for (let k = 0; k < n; k++) {
+    const j = (k + 1) % n;
+    let best = null;
+    for (const side of ['L', 'R']) {
+      let lo = 0;
+      for (let m = 1; m < sole[k][side].length; m++) if (sole[k][side][m][1] < sole[k][side][lo][1]) lo = m;
+      if (sole[k][side][lo][1] > ON) continue;
+      const r = -(sole[j][side][lo][2] - sole[k][side][lo][2]) / dt;
+      if (best == null || r > best) best = r;
+    }
+    v.push(best);
+  }
+  const on = v.filter(x => x != null && x > 0);
+  if (on.length < n * 0.1) return null;            // not enough contact to time from
+  const G = on.reduce((a, b) => a + b, 0) / on.length;
+  const u = [0];
+  for (let k = 0; k < n; k++) u.push(u[k] + ((v[k] != null && v[k] > 0) ? v[k] / G : 1) * dt);
+  const k2 = dur / u[n];
+  const uu = u.map(x => x * k2);
+  // Invert: for each uniform phase, which source phase plays there.
+  const table = [];
+  for (let i = 0; i <= WARP_STEPS; i++) {
+    const t = (i / WARP_STEPS) * dur;
+    let lo = 0, hi = n;
+    while (lo < hi - 1) { const mid = (lo + hi) >> 1; if (uu[mid] <= t) lo = mid; else hi = mid; }
+    const span = uu[lo + 1] - uu[lo];
+    const f2 = span > 1e-9 ? (t - uu[lo]) / span : 0;
+    table.push(+(((lo + f2) / n)).toFixed(5));
+  }
+  table[0] = 0; table[WARP_STEPS] = 1;             // the loop has to close exactly
+  return table;
+}
+
 const have = clipNames(g);
 const rungs = [];
 for (const name of LADDER) {
   if (!have.includes(name)) continue;
   const clip = loadClip(g, name);
   const m = measure(k => jointMats(localsOf(clip, (k / STEPS) * clip.dur)), STEPS, clip.dur);
+  m.sweepWarp = warpOf(k => jointMats(localsOf(clip, (k / (STEPS * 3)) * clip.dur)), STEPS * 3, clip.dur);
   rungs.push({ name, clip, m, baked: clip.extras || {} });
 }
 if (!rungs.length) { console.error('none of ' + LADDER.join(', ') + ' is in this file'); process.exit(1); }
@@ -171,6 +252,15 @@ for (const r of rungs) {
     `${(r.m.stance * 100).toFixed(0).padStart(6)}% ${(r.m.flight * 100).toFixed(0).padStart(6)}%` + tail);
 }
 for (const r of rungs) if (r.m.blendUp) console.log(`  blend ${r.name.padEnd(8)} ${r.m.blendUp.map(v => v.toFixed(3)).join('  ')}`);
+/* How much re-timing the warp actually asks for: the largest gap between the
+   phase that plays and the phase that asked for it. Zero means the clip's
+   stance sweep was already even and the warp is the identity. */
+for (const r of rungs) {
+  if (!r.m.sweepWarp) { console.log(`  warp  ${r.name.padEnd(8)}  none — too little ground contact to time from`); continue; }
+  let worst = 0;
+  r.m.sweepWarp.forEach((v, i) => { worst = Math.max(worst, Math.abs(v - i / (r.m.sweepWarp.length - 1))); });
+  console.log(`  warp  ${r.name.padEnd(8)} shifts phase by at most ${(worst * 100).toFixed(1)}%`);
+}
 
 if (CHECK) {
   const withBaked = rungs.filter(r => r.baked.groundSpeed);
@@ -188,6 +278,7 @@ for (const r of rungs) {
   const keep = anim.extras && anim.extras.mocap ? { mocap: anim.extras.mocap } : {};
   anim.extras = { ...r.m, ...keep };
   for (const k of ['groundSpeed', 'steady', 'even', 'stance', 'flight', 'cycle']) anim.extras[k] = +anim.extras[k].toFixed(6);
+  if (!anim.extras.sweepWarp) delete anim.extras.sweepWarp;
 }
 const jsonBuf = Buffer.from(JSON.stringify(J), 'utf8');
 const jPad = Buffer.alloc((4 - (jsonBuf.length % 4)) % 4, 0x20);
