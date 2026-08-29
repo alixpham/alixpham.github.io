@@ -23,7 +23,11 @@ flagster/js/            boot3d (ESM bootstrap), engine, ui, field3d, hero3d,
 flagster/lib/three/     vendored Three.js r185 (ESM) + jsm addons
 flagster/lib/flagplayer.glb   rigged, skinned, team-tintable player
 flagster/lib/ochiplayer.glb   the Studio Ochi athlete, converted and rebuilt
-                              onto the same rig; what the game loads by default
+                              onto the same rig — helmeted; the graft's INPUT,
+                              and the only way back to a helmet
+flagster/lib/ochibare.glb     the same athlete with the helmet cut off and
+                              flagplayer's head, hair and beards grafted on;
+                              what the game loads
 tools/build-player-glb.mjs    regenerates flagplayer.glb (no deps, no Blender)
 tools/rig-def.mjs             the bone table + sole geometry, imported everywhere
 tools/rig-fk.mjs              general quaternion FK + the ground-speed measurement
@@ -40,6 +44,9 @@ tools/glb-gait.mjs            groundSpeed + blendUp measured off a baked clip,
 tools/glb-read.mjs            the GLB container, once
 tools/glb-skin.mjs            posing and skinning a GLB, once
 tools/build-ochi-player.mjs   all five stages -> flagster/lib/ochiplayer.glb
+tools/glb-graft-head.mjs      cuts a helmet off one character and grafts
+                              another's head, hair and beards on; --report
+                              prints the neck seam as a number
 tools/mocap/ochi-clips.mjs    the game's own 22 clips -> the Ochi metarig
 tools/simstats.mjs            headless CPU-vs-CPU box score
 tools/qbstats.mjs             the QB's decision, frozen at the throw: how open
@@ -205,6 +212,40 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   lowest hops between them, which read as a walk a quarter slow. `--check`
   reproduces the builder's own four numbers to 1.2% from independent code and
   independent geometry, which is worth more than either alone.
+- **A HELMET IS NOT A PART, IT IS A BONE.** `build-ochi-player.mjs` files the
+  shell and facemask under `jersey` so they take the team's primary, and the
+  stripe and chinstrap under `trim` — so the triangles are merged into the
+  SHIRT, and nothing in the renderer can address them. The only thing that
+  tells a helmet triangle from a sleeve triangle is which bone it hangs off.
+  And what is under it is not a head: sixteen `skin` triangles of flat
+  face-plate and twelve of `hair`, 0.17m tall where a head is 0.23m, with no
+  face at all. So `tools/glb-graft-head.mjs` cuts the helmet AND grafts on the
+  head this repo already builds — which is a pure scale and shift, and only
+  because `glb-rerig.mjs` guarantees no rest rotation in either rig. The face
+  comes free: that head carries the UVs `playermodel.js` draws its face canvas
+  into, so eyes, nose, mouth and hair light up with no renderer change.
+- **The seam is at the NECK, and the neck is not neck-weighted.** This body's
+  is mostly `spine.003`/`spine.004`, with one band straddling Head and Neck
+  that carries the jaw flare — 0.0464 half-wide at y 1.478, 0.0629 by 1.528.
+  By majority those triangles are Neck's, they survive a dominant-bone cut,
+  and the flare then stands 12mm outside the new jaw. On `skin` and `hair` a
+  triangle goes if ANY vertex is Head's; on `jersey` and `trim` the majority
+  rule stays, because their neck triangles are the COLLAR and a collar is
+  shirt. Measure the ring against the neck the cut LEAVES BEHIND, not against
+  the file as it stands — the face-plate you are about to delete reads as an
+  overhang that does not exist.
+- **`hair_long` was 326 vertices of NaN, and had been forever.** Its row in the
+  builder's style table sets `rib` and forgets `ribs`, so the thickness term is
+  `Math.cos(NaN)`: one player in six, bald, invisibly, because a style that
+  renders nothing looks exactly like a style you did not roll. A donor mesh is
+  not automatically good geometry — `glb-graft-head` refuses non-finite
+  positions and names them, and `showOne` falls back to a style the model
+  actually carries.
+- **DO NOT REBUILD `flagplayer.glb` CASUALLY.** A rebuild from the current
+  `build-player-glb.mjs` drops `extras.sweepWarp` from all four gait clips —
+  the committed asset went through `glb-gait.mjs` afterwards, and the builder
+  alone does not emit it. Rebuilding to fix a cosmetic bug would quietly
+  reinstate the skating. `build:player` is only half the pipeline.
 - **The rigged model only ever appeared if it loaded before the first snap.**
   Players are built once and `Player3D.build` falls back to the procedural rig
   SILENTLY, so a kickoff that beat the fetch fielded the fallback for the whole

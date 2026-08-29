@@ -681,7 +681,13 @@ const HAIR_STYLES = [
   { id: 'fade',  front: 1.776, temple: 1.730, side: 1.694, back: 1.684, th: 0.0110, rib: 0, taper: 1 },
   { id: 'afro',  front: 1.778, temple: 1.744, side: 1.720, back: 1.704, th: 0.0280, rib: 0.15, ribs: 9, curl: 1, seg: 36 },
   { id: 'locs',  front: 1.776, temple: 1.740, side: 1.706, back: 1.664, th: 0.0190, rib: 0.32, ribs: 9, seg: 36 },
-  { id: 'long',  front: 1.780, temple: 1.732, side: 1.688, back: 1.646, th: 0.0150, rib: 0.06 }
+  /* `ribs` IS NOT OPTIONAL ONCE `rib` IS SET. Without it the thickness term
+     below evaluates Math.cos(frac * TAU * undefined) = NaN, every vertex of
+     the shell comes out NaN, and the style renders as nothing at all — one
+     player in six has been bald for as long as this table has had six rows.
+     5 rather than 9 because this shell is SEG_HEAD (24) columns wide and the
+     note below is right: past about 5 cycles a ripple aliases into a zigzag. */
+  { id: 'long',  front: 1.780, temple: 1.732, side: 1.688, back: 1.646, th: 0.0150, rib: 0.06, ribs: 5 }
 ];
 for (const st of HAIR_STYLES) {
   const Rg = R('hair_' + st.id, 'hair');

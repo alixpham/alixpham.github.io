@@ -117,17 +117,29 @@
 
   /* ------------------------------------------------------- asset location */
   /* WHICH CHARACTER. `ochi` is the Studio Ochi athlete — helmet, pads, cleats —
-     converted from FBX and rebuilt onto this rig by tools/build-ochi-player.mjs,
-     and it is what the game shows. `flagplayer` is the parametric one this repo
-     builds from tools/build-player-glb.mjs; it stays, because it is the
-     fallback when the imported asset is missing and because it carries the hair
-     and face variation the helmeted athlete has no use for.
+     converted from FBX and rebuilt onto this rig by tools/build-ochi-player.mjs.
+     `flagplayer` is the parametric one this repo builds from
+     tools/build-player-glb.mjs; it stays, because it is the fallback when the
+     imported asset is missing and because it is where the hair and the face
+     come from.
 
-     They are interchangeable because the second was MADE to be: same bone
+     `ochibare` is what the game shows: the Ochi body with the helmet cut off
+     and flagplayer's head, hair and beards grafted onto it, built by
+     tools/glb-graft-head.mjs out of the other two. It is a separate file
+     rather than a rewrite of `ochiplayer.glb` on purpose — the graft's INPUT
+     is the helmeted athlete, and overwriting it would make the helmet
+     unrecoverable without the licensed FBX that is not in this repository.
+     Set CHARACTER to 'ochi' to put the helmets back.
+
+     All three are interchangeable because the second was MADE to be: same bone
      names, same rest convention, same clip vocabulary, same tintable material
      regions. Nothing outside this file knows which is loaded. */
-  var CHARACTERS = { flagplayer: 'lib/flagplayer.glb', ochi: 'lib/ochiplayer.glb' };
-  var CHARACTER = 'ochi';
+  var CHARACTERS = {
+    flagplayer: 'lib/flagplayer.glb',
+    ochi: 'lib/ochiplayer.glb',
+    ochibare: 'lib/ochibare.glb'
+  };
+  var CHARACTER = 'ochibare';
 
   var BASE = (function () {
     try {
@@ -692,10 +704,24 @@
        nobody in the women's tournament grows a beard — rather than sitting in
        the data unused. */
     var female = String(opts.gender || 'M').toUpperCase().charAt(0) === 'F';
+    /* A STYLE THE LOADED CHARACTER DOES NOT CARRY MUST NOT LEAVE HIM WITH
+       NOTHING. `hair_long` is NaN geometry in flagplayer.glb — its row in the
+       builder's style table sets `rib` and forgets `ribs`, so every vertex of
+       the shell is Math.cos(NaN) — and tools/glb-graft-head.mjs refuses to
+       copy a mesh like that onto another body. Without this the one player in
+       six who rolled 'long' would simply be bald, and it would look like the
+       graft's fault rather than the asset's. Falls back to the first style the
+       model actually has; the moment flagplayer.glb is rebuilt with the fixed
+       table and re-grafted, 'long' is present again and this does nothing.
+
+       `pick` of null is a deliberate choice — no beard — and is left alone. */
     function showOne(prefix, list, pick) {
-      for (var i = 0; i < list.length; i++) {
-        var mesh = parts[prefix + list[i]];
-        if (mesh) mesh.visible = (list[i] === pick);
+      var present = [];
+      for (var i = 0; i < list.length; i++) if (parts[prefix + list[i]]) present.push(list[i]);
+      if (pick != null && present.indexOf(pick) === -1 && present.length) pick = present[0];
+      for (var k = 0; k < list.length; k++) {
+        var mesh = parts[prefix + list[k]];
+        if (mesh) mesh.visible = (list[k] === pick);
       }
     }
     var hairStyle = opts.hairStyle;
