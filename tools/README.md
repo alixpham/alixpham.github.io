@@ -702,6 +702,81 @@ Two ways to get this wrong, both of which were got wrong first:
 
 ---
 
+## `posecheck.mjs` — can a body HOLD this pose?
+
+```sh
+npm run pose
+node tools/posecheck.mjs flagster/lib/flagplayer.glb --clip Lasso
+```
+
+`bodycheck.mjs` asks whether a joint is bent further than a joint bends, and
+across every clip the answer was no — they are all inside a human's range. That
+is necessary and it is not sufficient. **A pose can have every joint inside its
+limit and still be one nobody can hold, and an arm can travel through a full
+revolution without ever moving faster than a person moves.**
+
+**Balance.** Centre of mass from Dempster's segment masses placed on the bones
+(trunk 49.7% of body mass, thigh 10.0% each, upper arm 2.8% each…), base of
+support from the sole points that are on the ground, widened by half a boot.
+The margin is the distance from one to the other, in centimetres, with 3 cm of
+slack for a table of averages laid over a stylised rig.
+
+**Winding.** The rotation is *integrated* per bone along its own path, so a slow
+full revolution shows up. Degrees-per-second cannot see it: Lasso winds a
+forearm 363° at a perfectly human speed.
+
+### A loop is what makes a pose impossible, not the pose
+
+A **one-shot** may put the centre of mass outside the feet — a dive, a cut and a
+jump are exactly that, a controlled fall — and it may sweep an arm through most
+of a revolution, because a throw does. A **looping** clip may do neither: it
+plays for as long as the move is on screen, so 360° a cycle never unwinds and a
+lean past your own feet never gets caught.
+
+### Three ways to get the base of support wrong
+
+All three were got wrong first:
+
+* **A band too tight** collapses a two-footed stance to a *single point* — this
+  rig stands with its heels 3 cm apart in height — and then everything reads off
+  balance, Idle included.
+* **A per-frame floor** can never report anybody airborne, because there is
+  always a lowest point. With both knees up in HighStep it declared the swing
+  foot 58 cm out in front to be the base, and called a man 66 cm off balance who
+  was simply in the air.
+* **Judging any frame but a settled two-footed stance** grades running, and
+  running is a controlled fall by definition. Requiring both feet down selects
+  exactly the poses that are meant to be held — with no list of clip names to
+  keep in step with the `.glb`.
+
+---
+
+## `herocheck.mjs` — the landing screen is a claim, and this checks it
+
+```sh
+npm run hero
+```
+
+Three players cycle through a list of moves on the front page. That list is the
+first thing anyone sees of what this game thinks a footballer looks like, so it
+had better be a list of things a footballer can do. It was not — and note that
+**the menu is a different renderer** (`hero3d.js`, its own camera, its own
+drivers, its own cast); an earlier investigation into "the arms rotate 360"
+measured the in-game demo and was looking at the wrong screen.
+
+This loads `hero3d.js` against a bare `window` — no canvas, no WebGL, `mount`
+never called — and reads `CAST` **out of it**, so a move added to the screen is
+a move this refuses. There is no second list to keep in step.
+
+Locomotion is checked differently, because a gait clip is not a pose: the speed
+the driver translates the body at is compared against the ladder the strides
+come from, and they have to agree. That is what the glide was — the hero ran on
+`play('run') + setSpeed(1.35)`, sweeping a 6.02 m/s clip's feet at 8.13 m/s
+while the root moved at 1.01 m/s, **eight times faster than the ground**, and
+then `travel` hit its cap and the root stopped dead while the legs kept going.
+
+---
+
 ## `gaitslip.mjs` — does the ladder, on its own, slide a planted foot?
 
 ```sh

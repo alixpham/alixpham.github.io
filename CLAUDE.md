@@ -51,6 +51,13 @@ tools/qbstats.mjs             the QB's decision, frozen at the throw: how open
 tools/ballcheck.mjs           is the football in his hands? read off the scene
                               graph, which no headless probe can see
 tools/pullstats.mjs           the flag pull, timed; --user splits it by side
+tools/posecheck.mjs           can a body HOLD this? centre of mass over the base
+                              of support, and rotation integrated so a slow
+                              360 shows up; a loop must pass, a one-shot may
+                              be a controlled fall
+tools/herocheck.mjs           the landing screen's cast, read out of hero3d.js
+                              and run through posecheck — the menu is a claim
+                              about what a player can do, and this checks it
 tools/gaitslip.mjs            planted-foot slip from the LADDER alone, with the
                               facing, the lean and the camera taken away —
                               deterministic, where bodycheck is not
@@ -98,7 +105,7 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   tables twice already. The same goes for `blendUp`, the correction for how fast
   a *blend* of two gaits really is.
 - **Locomotion is a ladder, not a clip.** Walk / Jog / Run / Sprint are blended
-  by `P.gait(kind, speed)`; `play('run')` is for the menu hero only. A clip can
+  by `P.gait(kind, speed)`, on the field AND on the menu. A clip can
   only be played faster, and playback rate changes cadence while leaving the
   baked stride exactly as long as it was authored — which is how the old
   renderer ended up sprinting at 465 steps a minute. All four rungs put the LEFT
@@ -291,6 +298,38 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   the left contact at phase 0 all exactly as they were. Baked per clip as
   `extras.sweepWarp`, read back by `playermodel.js`, same contract as
   `groundSpeed` and `blendUp` — no constant to keep in step.
+- **THE MENU IS A DIFFERENT RENDERER, and it was never being checked.** The
+  landing screen is `hero3d.js`, not `field3d.js`: its own camera, its own move
+  drivers, its own cast list. A whole investigation into "the arms rotate 360"
+  measured the in-game demo, found every joint inside a human's range, and was
+  looking at the wrong screen. `npm run hero` reads the cast OUT of hero3d.js
+  and refuses a move whose clip a body could not perform.
+- **A LOOP IS WHAT MAKES A POSE IMPOSSIBLE, not the pose.** A one-shot may put
+  the centre of mass outside the feet — a dive, a cut and a jump are exactly
+  that, a controlled fall — and it may sweep an arm through most of a
+  revolution, because a throw does. A LOOPING clip may do neither: it plays for
+  as long as the move is on screen, so 360 degrees a cycle never unwinds and
+  a lean past your own feet never gets caught. That one distinction is the
+  whole verdict in `npm run pose`.
+- **Degrees per second cannot see an arm going round.** `bodycheck` measures
+  rate and found nothing; Lasso winds a forearm 363 degrees every cycle at a
+  perfectly human speed. Integrate the rotation along its path — the NET
+  winding about an axis — or a slow full revolution is invisible.
+- **Balance is a point and a polygon.** Centre of mass from Dempster's segment
+  masses on the bones (trunk 49.7%, thigh 10.0% each…), base of support from
+  the sole points that are on the ground. Three ways to get the base wrong,
+  all of them found the hard way: a band too tight collapses a two-footed
+  stance to ONE point (this rig's heels differ 3cm in height) and everything
+  reads off balance including Idle; a per-frame floor can never report anybody
+  airborne, so both-knees-up in HighStep became a foot planted 58cm forward;
+  and judging any frame but a settled TWO-FOOTED stance grades running, which
+  is a controlled fall by definition.
+- **The hero glided because two numbers disagreed and nothing compared them.**
+  `play('run') + setSpeed(1.35)` sweeps a 6.02 m/s clip's feet at 8.13 m/s
+  while the root translated at 1.01 m/s — eight times — and then `travel` hit
+  a cap and the root stopped while the legs kept going. The menu goes through
+  `P.gait(kind, speed)` with the speed it is actually covering now, and the
+  move lasts exactly one traversal of the runway so nothing needs capping.
 - **Skating is measured in two places and they answer different questions.**
   `npm run body` measures the feet in the LIVE game, which is where it finally
   counts, and it is far too noisy to judge a change by: three runs of one
@@ -380,6 +419,8 @@ merges, restart the branch instead — `git checkout -B <branch> origin/master`
   `npm run ball` (the football, in the carrier's hands or not),
   `npm run body` (do the feet slide, and are the arms a human's),
   `npm run slip` (…and how much of that is the gait ladder on its own),
+  `npm run pose` (can a body hold these poses at all),
+  `npm run hero` (…and is every move on the FRONT PAGE one of them),
   `node tools/posesheet.mjs <Clip>` (a clip big enough to judge the pose —
   measure-clip says whether it is correct, this says whether it is any good). Playwright is a
   devDependency purely so the browser harnesses survive a new container — the

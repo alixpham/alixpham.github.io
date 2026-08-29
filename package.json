@@ -17,7 +17,9 @@
     "ball": "node tools/ballcheck.mjs",
     "feet": "node tools/footcheck.mjs",
     "body": "node tools/bodycheck.mjs",
-    "slip": "node tools/gaitslip.mjs"
+    "slip": "node tools/gaitslip.mjs",
+    "pose": "node tools/posecheck.mjs",
+    "hero": "node tools/herocheck.mjs"
   },
   "devDependencies": {
     "playwright": "^1.61.1"
