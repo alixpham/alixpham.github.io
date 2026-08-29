@@ -4,14 +4,47 @@
    flag-football players (see player3d.js — a real AnimationMixer driving
    authored clips). Each player cycles through a distinct list of moves,
    switching every few seconds, driven entirely through the Player3D API:
-     CARTER (blue)  — run / juke / highstep, weaving toward the camera
-     RIVERA (red)   — celebrate / throw / dive (owns the ball prop)
+     CARTER (blue)  — run / juke / griddy, weaving toward the camera
+     RIVERA (red)   — flex / throw / dance / dive (owns the ball prop)
      MÜLLER (green) — flaggrab / run / highstep (owns the loose-flag prop)
+   The cast list is hoisted to CAST below and CHECKED: every move on this
+   screen is a move a body can actually perform — see tools/herocheck.mjs.
    Self-cleans (and disposes the Player3D instances + their mixers) when its
    canvas leaves the DOM, so it never leaks when you navigate away from the menu.
    ============================================================================ */
 (function (global) {
   'use strict';
+
+  /* ---------------------------- THE CAST ---------------------------------
+     WHO PLAYS WHAT, hoisted out of mount() so that a test can read it without
+     a browser, a canvas or a WebGL context — see tools/herocheck.mjs, which
+     loads this file against a bare `window`, takes this list, and refuses any
+     move whose clip a body could not actually perform.
+
+     THIS LIST IS A CLAIM ABOUT WHAT A PLAYER CAN DO, and it is checked. Two
+     moves were removed from it when the check was first written and pointed at
+     the screen they were already on:
+
+       LASSO winds the right forearm through 363 degrees EVERY CYCLE. In a
+       one-shot a full revolution is one long sweep and a throwing arm really
+       does travel most of one; in a LOOP it never unwinds — it goes round
+       again every 0.9s for as long as the move is on screen. That is the arm
+       spinning in the air.
+
+       CELEBRATE stands with both feet planted and its centre of mass outside
+       the ground its feet cover, on 62% of its frames. You cannot loop that:
+       a loop plays for as long as the move lasts and nobody spends that long
+       past the edge of their own feet. That is the lean back nothing is
+       holding up.
+
+     Both were replaced with moves from the same repertoire that pass —
+     the end-zone celebrations are still here, they are the ones a body can
+     hold. `node tools/posecheck.mjs` prints the whole table. */
+  var CAST = [
+    { name: 'CARTER', moves: ['run', 'juke', 'griddy', 'run'] },
+    { name: 'RIVERA', moves: ['flex', 'throw', 'dance', 'dive'] },
+    { name: 'MÜLLER', moves: ['flaggrab', 'run', 'highstep', 'flaggrab'] }
+  ];
 
   function mount(canvas, opts) {
     if (!global.THREE || !canvas) return null;
@@ -171,11 +204,11 @@
       if (!running || players.length) return;
       players = [
         setupRotation(makeP3D(COL.blue, 'CARTER', 24, -5.0, 1.8),
-          ['run', 'juke', 'griddy', 'run'], { x: -3.1, z: 1.8 }, 0.0),
+          CAST[0].moves, { x: -3.1, z: 1.8 }, 0.0),
         setupRotation(makeP3D(COL.red, 'RIVERA', 7, 0.0, 1.8),
-          ['lasso', 'throw', 'celebrate', 'dive'], { x: 0.0, z: 1.8 }, 1.5),
+          CAST[1].moves, { x: 0.0, z: 1.8 }, 1.5),
         setupRotation(makeP3D(COL.green, 'MÜLLER', 55, 5.0, 1.8),
-          ['flaggrab', 'run', 'highstep', 'flaggrab'], { x: 5.0, z: 1.8 }, 3.0)
+          CAST[2].moves, { x: 5.0, z: 1.8 }, 3.0)
       ];   // each takes a {P, carrier} from makeP3D
     }
     var PM = global.FLAGSTER && global.FLAGSTER.PlayerModel;
@@ -278,10 +311,38 @@
   /* --------------------- MOVE ROTATION / STATE MACHINE ------------------- */
   // How long (seconds) each kind of move plays before rotating to the next.
   var MOVE_DUR = {
-    run: 5.0, juke: 4.5, highstep: 4.5,
+    run: 2.9, juke: 3.3, highstep: 4.5,
     throw: 5.5, dive: 4.2, celebrate: 5.0, flaggrab: 5.0,
-    griddy: 4.6, lasso: 5.0
+    griddy: 4.6, lasso: 5.0, flex: 5.0, dance: 5.0, bow: 5.0, salute: 5.0
   };
+
+  /* HOW FAST THE CAST ACTUALLY TRAVELS, and the whole point is that it is one
+     number rather than two that disagree.
+
+     The hero used to run on `play('run') + setSpeed(1.35)` — the road that
+     predates the gait ladder, and the one CLAUDE.md reserves for exactly this
+     screen. The Run clip covers 6.02 m/s of ground; at 1.35x its feet sweep
+     8.13 m/s, and the root was translating at 1.1 units/s, which is 1.01 m/s.
+     The legs went past the turf EIGHT TIMES faster than the turf went past the
+     player. Then `travel` hit its cap at 3.1s of a 5s move and the root stopped
+     dead while the legs kept going, which is running on the spot.
+
+     So locomotion here goes through `P.gait(kind, speed)` with the speed the
+     body is genuinely covering, exactly as the game does it — the ladder picks
+     the two authored strides that bracket it and the feet match the ground by
+     construction. The move lasts as long as one traversal of the runway takes,
+     so nothing has to be capped and nobody runs on the spot.
+
+     HIGHSTEP TRAVELS NOWHERE, on purpose: it is a knees-to-the-chest drill
+     authored on the spot, so the honest translation for it is zero. It used to
+     drift at 0.7 units/s under a clip that covers no ground at all, which is
+     the same mismatch in the other direction. */
+  var SPEED = { run: 3.4, juke: 3.0, highstep: 0 };
+  /* Units of approach. The move lasts RUNWAY/SPEED seconds, so the player
+     arrives at his mark exactly as the move ends rather than overshooting the
+     camera or stopping short and standing there. 10 units puts the start at
+     z=-8.2, which is 16.6 from the lens and just inside the fog. */
+  var RUNWAY = 10.0;
 
   // Yaw each move wants the body to face. setYaw(y) => rotation.y = PI/2 - y
   // and the rig faces local +Z, so yaw 0 aims the player at world +X. That
@@ -342,12 +403,13 @@
     // reset carrier position at the start of each move (weave/dive translate it)
     st.carrier.position.set(st.base.x, 0, st.base.z);
     switch (name) {
+      /* No play('run') and no setSpeed: the ladder is asked for a speed every
+         frame in driveRun/driveJuke below, and it picks the strides. Naming a
+         clip here would take the body off the blend space and put it back on
+         the one-clip road this whole screen used to skate on. */
       case 'run':
-        P.setSpeed(1.35); P.play('run', 0.25);
         break;
       case 'juke':
-        P.setSpeed(1.35);
-        P.play('run', 0.2);
         P.oneShot('juke', 'run', 0.15);   // plant + spin, auto-return to run
         break;
       case 'highstep':
@@ -366,12 +428,21 @@
       case 'celebrate':
         P.play('celebrate', 0.25);
         break;
-      // The end-zone repertoire, on the landing screen. Same guard the
-      // HighStep case carries: an older .glb simply doesn't have these, and
-      // the menu must still animate rather than freeze on a T-pose.
+      /* The end-zone repertoire, on the landing screen. Same guard the
+         HighStep case carries: an older .glb simply doesn't have these, and
+         the menu must still animate rather than freeze on a T-pose.
+
+         The fallback is Idle, not Celebrate. Celebrate is the clip that stands
+         with its centre of mass outside its own feet for 62% of a LOOP, which
+         is the lean this screen was reported for; falling back onto it would
+         reintroduce the exact pose the cast list exists to keep off. */
       case 'griddy':
       case 'lasso':
-        P.play(hasClip(P, name) ? name : 'celebrate', 0.25);
+      case 'flex':
+      case 'dance':
+      case 'bow':
+      case 'salute':
+        P.play(hasClip(P, name) ? name : 'idle', 0.25);
         break;
       case 'flaggrab':
         /* THE DEFENDER'S CLIP, NOT THE CARRIER'S. This asked for 'flagPull',
@@ -420,34 +491,47 @@
     celebrate: driveCelebrate,
     griddy: driveCelebrate,
     lasso: driveCelebrate,
+    flex: driveCelebrate,
+    dance: driveCelebrate,
+    bow: driveCelebrate,
+    salute: driveCelebrate,
     flaggrab: driveFlagPull
   };
 
-  // Sprint downfield with a gentle weave; bank the facing into the weave.
+  /* HOW FAST THIS BODY IS REALLY MOVING, taken from the motion the driver is
+     about to apply rather than asserted separately — the two disagreeing is
+     what the glide was. The weave is part of the path, so it counts. */
+  function askGait(st, dt, vx, vz) {
+    if (st.P._oneShot) return;          // a one-shot owns the body; don't fight it
+    if (st.P.gait) st.P.gait('forward', Math.hypot(vx, vz));
+  }
+
+  // Run at the camera with a gentle weave, covering the ground the legs cover.
   function driveRun(st, t, dt, ctx) {
-    var P = st.P, b = st.base, c = st.carrier;
-    var travel = Math.min(t * 1.1, 3.4);                 // ease toward camera, capped
-    c.position.x = b.x + Math.sin(t * 1.2) * 0.6;        // gentle weave
-    c.position.z = approachZ(b.z, travel, 3.4);
+    var P = st.P, b = st.base, c = st.carrier, v = SPEED.run;
+    var wx = Math.sin(t * 1.2) * 0.6;
+    c.position.x = b.x + wx;
+    c.position.z = approachZ(b.z, t * v, RUNWAY);
+    askGait(st, dt, Math.cos(t * 1.2) * 0.6 * 1.2, v);
     P.face(moveBaseYaw('run') + Math.sin(t * 1.2) * 0.18, dt);
   }
 
-  // Juke: jog downfield with a lateral hop; the mixer plays the spin one-shot.
+  // Juke: run at the camera cutting side to side; the mixer plays the spin.
   function driveJuke(st, t, dt, ctx) {
-    var P = st.P, b = st.base, c = st.carrier;
-    var travel = Math.min(t * 0.9, 2.6);
+    var P = st.P, b = st.base, c = st.carrier, v = SPEED.juke;
     c.position.x = b.x + Math.sin(t * 1.6) * 0.8;        // cut side to side
-    c.position.z = approachZ(b.z, travel, 2.6);
-    c.position.y = Math.max(0, Math.sin(t * 3.0)) * 0.12; // little lateral hop
+    c.position.z = approachZ(b.z, t * v, RUNWAY);
+    askGait(st, dt, Math.cos(t * 1.6) * 0.8 * 1.6, v);
     P.face(moveBaseYaw('juke'), dt);
   }
 
-  // High-step strut downfield — lively walk cadence, slow drift.
+  /* High-step: a knees-to-the-chest drill, performed ON THE SPOT because that
+     is what the clip is. It used to drift 0.7 units/s under a clip that covers
+     no ground at all — the same mismatch as the run, in the other direction. */
   function driveHighStep(st, t, dt, ctx) {
     var P = st.P, b = st.base, c = st.carrier;
-    var travel = Math.min(t * 0.7, 2.6);
-    c.position.x = b.x + Math.sin(t * 0.7) * 0.4;
-    c.position.z = approachZ(b.z, travel, 2.6);
+    c.position.x = b.x;
+    c.position.z = b.z;
     P.face(moveBaseYaw('highstep') + Math.sin(t * 0.7) * 0.2, dt);
   }
 
@@ -514,5 +598,5 @@
   }
 
   global.FLAGSTER = global.FLAGSTER || {};
-  global.FLAGSTER.hero3d = { mount: mount };
+  global.FLAGSTER.hero3d = { mount: mount, CAST: CAST, MOVE_DUR: MOVE_DUR, SPEED: SPEED };
 })(window);
