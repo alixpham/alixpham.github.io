@@ -76,6 +76,11 @@ tools/bodycheck.mjs           is this body possible? planted-foot slip and
                               float, and every arm joint against a human's
                               limits — off the RENDERER, with a standing
                               player as the control
+tools/touchcheck.mjs          can a THUMB play this? every control against the
+                              44pt/48dp floors and the notch insets, a hit-test
+                              grid for the dead channels between the buttons,
+                              and a real CDP stroke to catch the slash steering
+                              the player before it becomes a route
 tools/smoke.mjs               every screen x both orientations, 0 errors, field3d alive
 VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
                         through this environment's proxy, so these are the
@@ -494,6 +499,7 @@ merges, restart the branch instead — `git checkout -B <branch> origin/master`
   `npm run slip` (…and how much of that is the gait ladder on its own),
   `npm run pose` (can a body hold these poses at all),
   `npm run hero` (…and is every move on the FRONT PAGE one of them),
+  `npm run touch` (can a thumb play it — targets, safe areas, dead zones),
   `node tools/posesheet.mjs <Clip>` (a clip big enough to judge the pose —
   measure-clip says whether it is correct, this says whether it is any good). Playwright is a
   devDependency purely so the browser harnesses survive a new container — the
