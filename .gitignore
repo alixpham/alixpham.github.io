@@ -42,6 +42,10 @@ _t3d_test.js
 # the retargeted clips in tools/motion/ are what the build actually reads)
 tools/mocap/cache/
 .smoke/
+# …and the same for the mobile control red team's shots. `npm run touch`
+# rewrites all five every run, they are a megabyte each, and they are a
+# rendering of the current tree rather than an input to it.
+.touch/
 
 # Studio Ochi SOURCE assets — the FBX and its atlas — are licensed and stay out
 # of the repo. What IS committed is the retargeted motion in tools/motion-ochi/,

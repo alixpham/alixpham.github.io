@@ -668,6 +668,26 @@
        Touching the field again cancels the route and hands the stick back. */
     var SLASH_MIN = 64;        // px of travel before a drag becomes a slash
     var SLASH_STEP = 12;       // px between sampled points along the stroke
+    /* AND A GESTURE THAT MIGHT STILL BECOME A SLASH MUST NOT STEER YET.
+
+       The block above says leaving the stick live while you draw "is how you
+       end up on the sideline before the route even exists", and then did
+       exactly that for the first 64px of every stroke: the stick went live at
+       7px of travel and was only released when `beginSlash()` fired at 64.
+       Measured with a real touch stroke, an L-shaped slash fed the engine NINE
+       live steering frames along its first leg before the route took over —
+       the player is driven up to a slash-threshold's worth of travel in
+       whatever direction you happened to start drawing, which is the one thing
+       drawing a route is meant to avoid.
+
+       So the stick waits until the gesture has declared itself. What tells a
+       stroke from a drag is SPEED, not distance: a slash is drawn in one quick
+       movement, a drag is a thumb pushed out and held. A touch that reaches
+       SLASH_MIN before this expires was a stroke and never steers at all; one
+       that is still short of it afterwards was a drag and takes over from
+       there. The knob follows the thumb from the first pixel either way, so
+       the control still feels immediate while it is making its mind up. */
+    var STICK_HOLD_MS = 120;
     var trail = [], slashing = false;
 
     function trailPush(x, y) {
@@ -703,8 +723,11 @@
       else if (slashing && fresh) inkPoint(x, y);
       if (slashing) return;
       var nx = m ? dx / m : 0, ny = m ? dy / m : 0, cl = Math.min(m, max);
+      // The knob tracks the thumb from the first pixel; the STEERING waits for
+      // the gesture to stop being a candidate slash. See STICK_HOLD_MS.
       fknob.style.transform = 'translate(-50%,-50%) translate(' + (nx * cl) + 'px,' + (ny * cl) + 'px)';
-      eng.setStick(nx, ny, m > 7);
+      var settled = (Date.now() - tapT) >= STICK_HOLD_MS;
+      eng.setStick(nx, ny, settled && m > 7);
     }
     function sEnd(x, y) {
       var wasTap = !slashing && (moved < 12) && (Date.now() - tapT < 320);
@@ -741,12 +764,28 @@
       b.addEventListener('click', function (e) { if (!IS_TOUCH) fire(e); });
       return b;
     }
-    // sprint is a hold button
+    /* Sprint is a HOLD button, and a hold button needs a way to be let go of
+       that isn't the finger lifting.
+
+       `touchend` was the only thing that turned it off. The OS takes touches
+       away without ever sending one — an edge swipe, a notification sliding
+       down, palm rejection, a call arriving — and every one of those fires
+       `touchcancel` instead. Miss it and sprint is latched ON for the rest of
+       the game: the player runs flat out, burns stamina to the floor and never
+       stops, and nothing the user can press will release it because the button
+       is waiting for the end of a touch that no longer exists.
+       (`npm run touch` fires a real touchcancel and checks.) */
     var sprint = h('button', { class: 'act-btn sprint', html: '⚡' });
     function sprintOn(e) { e.preventDefault(); eng.input.sprint = true; sprint.classList.add('on'); }
-    function sprintOff(e) { e.preventDefault(); eng.input.sprint = false; sprint.classList.remove('on'); }
-    sprint.addEventListener('touchstart', sprintOn); sprint.addEventListener('touchend', sprintOff);
-    sprint.addEventListener('mousedown', sprintOn); sprint.addEventListener('mouseup', sprintOff);
+    function sprintOff(e) { if (e && e.preventDefault) e.preventDefault(); eng.input.sprint = false; sprint.classList.remove('on'); }
+    sprint.addEventListener('touchstart', sprintOn);
+    sprint.addEventListener('touchend', sprintOff);
+    sprint.addEventListener('touchcancel', sprintOff);
+    sprint.addEventListener('mousedown', sprintOn);
+    sprint.addEventListener('mouseup', sprintOff);
+    // A window that loses focus mid-hold is the desktop version of the same
+    // thing: the mouseup lands somewhere else and never reaches this button.
+    global.addEventListener('blur', sprintOff);
 
     this._snapBtn = actBtn('SNAP', 'snap', 'primary');
 
