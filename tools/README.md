@@ -988,3 +988,48 @@ went from a reported 38% to the 0% a walk actually has.
 See [`mocap/README.md`](mocap/README.md). Converts CMU Graphics Lab `.asf`/`.amc`
 captures onto this rig and writes `tools/motion/<Clip>.json`, which the builder
 bakes; a name that matches an authored clip replaces it.
+
+## `glb-deshoulder.mjs` — take the shoulder pads off
+
+```sh
+node tools/glb-deshoulder.mjs flagster/lib/ochibare.glb out.glb
+node tools/glb-deshoulder.mjs flagster/lib/ochibare.glb --report
+```
+
+Flag football is played in a shirt. The Studio Ochi athlete is an *American*
+footballer and wears the pads to match: measured in the Idle pose the shirt
+reaches 0.332 m from the midline where the shoulder joint is at 0.191 — **14 cm
+of material outboard of the joint** — and the cap rises to y 1.505, ten
+centimetres above the neck joint and level with the jaw.
+
+**The pads are neither a part nor a bone.** The helmet at least hung off
+`Head`, which is what made `glb-graft-head.mjs` possible. These are 41 jersey
+vertices per `Shoulder_*` and 27 per `UpperArm_*`, in the same primitive as the
+sleeve and the chest. There is nothing to delete — deleting would open a hole
+in a closed shirt — so the geometry is sculpted.
+
+### Three formulations, and the two that failed are the point
+
+| | what happened |
+|---|---|
+| shrink **toward the joint** | moved the silhouette **5 mm** against a 90 mm pad — a shell at a constant distance from the joint is exactly what a radial shrink cannot shift. Widening the falloff to fix it reaches the elbow and **shortens the arm**. |
+| deflate **along the normal** | turns thin features inside out. The cap's lip is thinner than the 65 mm being removed, so its underside was pushed up through its own top and the measured shoulder went **1.496 → 1.539**. |
+| contract the radius **about the arm axis** | a linear contraction in a plane, so it cannot invert; the component along the bone is untouched, so the arm keeps its length by construction. |
+
+And only the **excess** radius comes off. Contracting by a flat fraction thinned
+the limb too — the upper arm lost 40% along its whole length. `keep` is what a
+shoulder is, and it is **not a taste setting**: it must clear the limb's own
+radius (0.061–0.084 here, hence 0.095) or the tool is sculpting the arm. At
+0.070 the arm loses 14%; at 0.055, a third.
+
+The frame has to be **bones**. The bind pose is an A-pose, so at the height of
+the shoulder cap the widest thing in the mesh is the *sleeve of a raised arm*,
+and no rule written in world x can tell a pad from a sleeve.
+
+Nothing tears, and that is not luck: `glb-repaint.mjs` built this body so all
+seven parts share one position accessor, so a moved vertex moves for every part
+that uses it. The tool asserts that rather than assuming it, **rebuilds the
+normals** (no cheap rule carries them through a non-uniform deform), and
+**stamps the output** so a second pass is refused — sculpting twice sculpts
+twice.
+
