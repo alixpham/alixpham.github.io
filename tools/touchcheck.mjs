@@ -123,8 +123,32 @@ async function startGame(page) {
      behind a full-screen play-call sheet — the first run of this probe
      measured the button cluster through that sheet and reported a screen with
      no dead zones and no players on it, because there were none. */
-  await page.locator('.play-card').first().click({ timeout: 10000 }).catch(() => {});
-  await page.waitForTimeout(600);
+  /* AND PICK IT WITH A THUMB. `locator.click()` is a MOUSE click, and it waits
+     for the element to be "visible, enabled and stable" first — a check that
+     timed out after ten seconds on every device here while the card's bounding
+     box was byte-identical across six consecutive animation frames and
+     `elementFromPoint` at its centre returned the card. Whatever that check is
+     unhappy about under swiftshader, it is not something a finger would care
+     about: the same tap dispatched as a real touch selects the play in 800ms.
+
+     Two devices were silently landing on the play-call sheet because of it,
+     and the sheet is opaque and full-screen — every field measurement taken
+     through it is void. It only surfaced at all because of the `state` guard a
+     few lines down, which exists because an earlier version of this probe
+     measured the sheet and reported a screen with no dead zones and no players
+     on it. A touch probe that reaches its own test fixture by mouse deserved
+     to be bitten. */
+  const card = await page.evaluate(() => {
+    const c = document.querySelector('.play-card'); if (!c) return null;
+    const r = c.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  if (card) {
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: card.x, y: card.y }] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  }
+  await page.waitForTimeout(900);
   await page.evaluate(() => {
     const sh = window.FLAGSTER.activeShell;
     document.body.classList.add('is-touch');
@@ -163,6 +187,24 @@ for (const dev of DEVICES) {
   if (phase.phase !== 'live' || phase.sheet)
     add('BLOCK', dev.id, 'state', `not measuring a live play (phase=${phase.phase}, playcall sheet up=${phase.sheet}) — field results below are void`);
 
+  /* THE MODELLED NOTCH, STOOD UP BEFORE ANYTHING IS MEASURED.
+
+     A headless browser has no notch and resolves `env(safe-area-inset-*)` to 0
+     in every direction, so a stylesheet that pads for one and a stylesheet that
+     ignores it lay out identically here. Checking the modelled inset against
+     that geometry graded the stylesheet's intentions, not the layout.
+
+     The insets are read through `--safe-*` variables that default to `env()`,
+     so putting this device's real values in their place is one setProperty per
+     side. Everything below then measures where the controls ACTUALLY went on a
+     phone with that notch. */
+  await page.evaluate((s) => {
+    const r = document.documentElement.style;
+    r.setProperty('--safe-t', s.t + 'px'); r.setProperty('--safe-r', s.r + 'px');
+    r.setProperty('--safe-b', s.b + 'px'); r.setProperty('--safe-l', s.l + 'px');
+  }, dev.safe);
+  await page.waitForTimeout(150);
+
   /* ---------------- 1. control geometry, both button sets ---------------- */
   const geo = await page.evaluate(() => {
     const sh = window.FLAGSTER.activeShell;
@@ -191,7 +233,17 @@ for (const dev of DEVICES) {
     else if (min < MATERIAL) add('MED', dev.id, 'size', `"${b.label}" is ${b.w.toFixed(0)}x${b.h.toFixed(0)} — meets Apple 44 but under Material 48`);
   }
 
-  /* ---------------- 2. safe areas ---------------- */
+  /* ---------------- 2. safe areas ----------------
+     A HEADLESS BROWSER HAS NO NOTCH, and `env(safe-area-inset-*)` resolves to
+     0 in one — so a stylesheet that pads for the notch and one that ignores it
+     lay out identically here, and this check could only ever compare the
+     modelled inset against geometry that never moved. It graded the
+     stylesheet's intentions.
+
+     The insets are read through `--safe-*` variables that default to `env()`,
+     so standing the modelled device's real values up in their place is one
+     `setProperty` per side. The layout then reflows as it would on the phone
+     and what follows measures where the buttons ACTUALLY went. */
   const S = dev.safe;
   for (const b of geo.off.concat(geo.def)) {
     const over = [];
@@ -224,7 +276,7 @@ for (const dev of DEVICES) {
         out.total++;
         let kind = 'swallowed';
         if (!el) kind = 'swallowed';
-        else if (el.closest('.act-btn')) kind = 'btn';
+        else if (el.closest('.act-btn, .mini-btn')) kind = 'btn';
         else if (el.closest('.swipe-pad')) kind = 'swipe';
         else if (el.closest('.sb, .playcall, .overlay, .grab-wrap')) kind = 'hud';
         out[kind === 'hud' ? 'swipe' : kind]++;   // HUD is not a control failure
@@ -290,9 +342,60 @@ for (const dev of DEVICES) {
     if (occl.players && occl.hidden / occl.players > 0.06)
       add('MED', dev.id, 'occlude',
         `${(100 * occl.hidden / occl.players).toFixed(0)}% of all on-screen player pixels sit under the button cluster`);
-    if (occl.carrierPts && occl.carrierHidden > 0)
+  }
+
+  /* ---------------- 6a. …and where he is over a whole DOWN ---------------
+     "Right now" is one frame, and one frame of a football match is not a
+     measurement — the same lesson the QB work learned from a single seed. The
+     carrier is drawn low because the chase camera looks PAST him at a point
+     downfield, so he sits below the screen centre for the whole play and the
+     button cluster is bottom-right: whether they collide depends entirely on
+     how far he drifts sideways, which is exactly what one still cannot tell
+     you. A single sample here read 52% on one device and 0% on three others
+     that turn out to be no better.
+
+     So sample him every rendered frame for a stretch of live play and report
+     the distribution: what share of frames he is under the buttons at all, and
+     the worst overlap seen. Cheap enough to do per frame because
+     `carrierScreen` projects eight corners instead of raycasting the viewport.
+
+     Note the clock. Under swiftshader the renderer manages about two frames a
+     second against a 50ms clamped delta, so sim time runs at roughly a tenth
+     of real — waiting in WALL time samples almost nothing. Count FRAMES. */
+  const track = await page.evaluate(async () => {
+    const sh = window.FLAGSTER.activeShell;
+    const f3 = sh.field3d;
+    if (!f3 || !f3.carrierScreen) return null;
+    const cl = document.querySelector('.right-cluster').getBoundingClientRect();
+    const out = [];
+    for (let i = 0; i < 90; i++) {
+      await new Promise(r => requestAnimationFrame(r));
+      const st = sh.engine.state;
+      if (st.phase !== 'live') continue;
+      const b = f3.carrierScreen(st, innerWidth, innerHeight);
+      if (!b || b.w <= 0 || b.h <= 0) continue;
+      const ox = Math.max(0, Math.min(b.x + b.w, cl.right) - Math.max(b.x, cl.x));
+      const oy = Math.max(0, Math.min(b.y + b.h, cl.bottom) - Math.max(b.y, cl.y));
+      out.push({ frac: (ox * oy) / (b.w * b.h), cx: (b.x + b.w / 2) / innerWidth });
+    }
+    return out;
+  });
+  if (track && track.length >= 10) {
+    const hit = track.filter(t => t.frac > 0.02);
+    const worst = track.reduce((m, t) => Math.max(m, t.frac), 0);
+    const mean = track.reduce((a, t) => a + t.frac, 0) / track.length;
+    const cx = track.reduce((a, t) => a + t.cx, 0) / track.length;
+    add('INFO', dev.id, 'carrier',
+      `over ${track.length} live frames the carrier sits at x=${(100 * cx).toFixed(0)}% of the width; ` +
+      `under the buttons in ${(100 * hit.length / track.length).toFixed(0)}% of them ` +
+      `(mean ${(100 * mean).toFixed(1)}% of him, worst ${(100 * worst).toFixed(0)}%)`);
+    if (hit.length / track.length > 0.15 || worst > 0.5)
       add('HIGH', dev.id, 'occlude',
-        `the BALL CARRIER is ${(100 * occl.carrierHidden / occl.carrierPts).toFixed(0)}% behind the buttons right now`);
+        `the BALL CARRIER is behind the buttons in ${(100 * hit.length / track.length).toFixed(0)}% of ` +
+        `${track.length} live frames (worst ${(100 * worst).toFixed(0)}% of him); ` +
+        `he averages x=${(100 * cx).toFixed(0)}% of the screen width`);
+  } else if (track) {
+    add('MED', dev.id, 'carrier', `only ${track.length} live frames sampled — carrier tracking inconclusive`);
   }
 
   /* ---------------- 6b. do the controls collide with the HUD? ----------- */

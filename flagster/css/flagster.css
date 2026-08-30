@@ -6,7 +6,17 @@
   --line:#1d5c38; --grass:#2f8f3f; --ink:#eafff0; --muted:#9fd3b0;
   --accent:#2ec77a; --accent2:#ffd23f; --danger:#ff5a5a; --blue:#3c82ff;
   --shadow:0 8px 30px rgba(0,0,0,.45);
-}
+
+  /* THE NOTCH, AS A VARIABLE. `env(safe-area-inset-*)` is the real source and
+     these default to it, but a headless browser has no notch and resolves
+     every one of them to 0 — so a test can never see whether the controls
+     actually move out of the way. Reading them through variables lets
+     `npm run touch` stand a real device's insets up in their place and MEASURE
+     that the buttons cleared them, instead of taking the stylesheet's word. */
+  --safe-t:env(safe-area-inset-top,0px);
+  --safe-r:env(safe-area-inset-right,0px);
+  --safe-b:env(safe-area-inset-bottom,0px);
+  --safe-l:env(safe-area-inset-left,0px)}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;height:100%}
 body{
@@ -170,7 +180,12 @@ h1,h2,h3,h4{margin:.2em 0}
 .stam-fill.mid{background:var(--accent2)}
 .stam-fill.low{background:#ff6b6b}
 
-.game-top-btns{position:absolute;top:auto;bottom:12px;left:12px;z-index:20;display:flex;gap:8px}
+/* The pause button is a control, so it clears the insets as well — and the
+   container is transparent to touch for the same reason the right-hand cluster
+   is: its flex gap is not a button and must not eat a steer. */
+.game-top-btns{position:absolute;top:auto;z-index:20;display:flex;gap:8px;pointer-events:none;
+  bottom:calc(12px + var(--safe-b));left:calc(12px + var(--safe-l))}
+.mini-btn{pointer-events:auto}
 .mini-btn{width:40px;height:40px;border-radius:10px;border:1px solid var(--line);background:rgba(15,47,28,.9);color:var(--ink);font-size:1.1rem}
 
 /* playcall */
@@ -205,8 +220,26 @@ h1,h2,h3,h4{margin:.2em 0}
    label colour and a thin left rule instead of a full-bleed fill. Tucked into
    the bottom-right corner so the ball carrier, who sits low-centre under the
    chase cam, isn't behind a button. */
-.right-cluster{position:absolute;right:14px;bottom:16px;display:flex;flex-direction:column;
-  align-items:flex-end;gap:8px;pointer-events:auto;z-index:3}
+/* THE GAPS BETWEEN THE BUTTONS ARE NOT BUTTONS, AND THEY WERE NOT THE FIELD
+   EITHER. `pointer-events:auto` on the CONTAINER makes the whole column eat
+   touches — the 8px flex gaps, the ragged edge where a row wraps short, the
+   strip above SNAP — and none of it has a handler. Measured across five phone
+   sizes, 7-10% of the entire screen hit `.right-cluster` and did nothing: a
+   thumb landing there neither pressed a button nor steered the player, on a
+   layer sitting directly over the swipe pad. The container is transparent to
+   touch now and only the BUTTONS take it, so every gap falls through to the
+   field beneath. (`npm run touch` hit-tests the whole screen on a grid.)
+
+   And the insets are real estate the phone has already spent. `viewport-fit=
+   cover` is set in index.html, so the layout runs under the notch and the home
+   indicator unless it is told not to; without these the sprint button, SWITCH
+   and PULL sat in the bottom inset on every iPhone tested, and in landscape the
+   whole right-hand column sat 45px inside the notch. */
+.right-cluster{position:absolute;display:flex;flex-direction:column;
+  right:calc(14px + var(--safe-r));
+  bottom:calc(16px + var(--safe-b));
+  align-items:flex-end;gap:8px;pointer-events:none;z-index:3}
+.act-btn{pointer-events:auto}
 .btn-cluster{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;max-width:184px}
 .act-btn{min-width:54px;height:46px;border-radius:11px;padding:0 11px;
   border:1px solid rgba(255,255,255,.16);border-left:3px solid rgba(255,255,255,.30);
@@ -415,3 +448,13 @@ body:not(.is-touch) .right-cluster{display:none}
 .demo-exit{background:var(--panel2);border:1px solid var(--line);color:var(--ink);
   border-radius:14px;padding:4px 12px;font-weight:700;cursor:pointer}
 @media (max-width:620px){ .demo-badge{font-size:.72rem} }
+
+/* A LANDSCAPE PHONE IS WIDE AND SHORT, and the situation panels were only
+   dropped by a `max-width:620px` query — a portrait breakpoint that no
+   landscape phone ever reaches, because they are 850-950px across. So on every
+   landscape handset the button stack sat on top of `.sit`, covering 34-47% of
+   it. What makes the screen small here is the HEIGHT, so that is what this
+   asks about. Tablets and desktops are taller and keep their panels. */
+@media (orientation:landscape) and (max-height:520px){
+  .pc,.sit{display:none}
+}

@@ -80,7 +80,9 @@ tools/touchcheck.mjs          can a THUMB play this? every control against the
                               44pt/48dp floors and the notch insets, a hit-test
                               grid for the dead channels between the buttons,
                               and a real CDP stroke to catch the slash steering
-                              the player before it becomes a route
+                              the player before it becomes a route. Tracks the
+                              carrier's screen box over a whole down, because
+                              one frame is not a measurement
 tools/smoke.mjs               every screen x both orientations, 0 errors, field3d alive
 VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
                         through this environment's proxy, so these are the
@@ -448,6 +450,64 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
 - The camera sits behind whoever HAS THE BALL, and the offence always attacks
   +x, so it never turns round; `engine.viewSign()` is the seam that says which
   way is downfield and now always returns 1.
+- **THE CONTROLS' CONTAINER IS NOT A CONTROL.** `pointer-events:auto` on
+  `.right-cluster` made the whole column eat touches — the 8px flex gaps, the
+  ragged edge where a row wraps short, the strip above SNAP — and none of it
+  has a handler, on a layer sitting directly over the swipe pad. Measured on a
+  hit-test grid across five phones, **7-10% of the entire screen** hit that
+  container and did nothing: a thumb landing there neither pressed a button nor
+  steered. The container is transparent now and only the BUTTONS take touch.
+  The same bug twice: `.game-top-btns` had it too, and the pause button inside
+  it was ALSO missing from the probe's classifier, so a working control was
+  being counted as a dead zone. Both halves have to be right or the number lies.
+- **A HOLD BUTTON NEEDS A WAY TO BE LET GO OF THAT ISN'T THE FINGER LIFTING.**
+  Sprint listened for `touchend` only. The OS takes touches away without ever
+  sending one — an edge swipe, a notification, palm rejection, a call — and
+  every one of those fires `touchcancel` instead. Miss it and sprint is latched
+  ON for the rest of the game, stamina on the floor, with nothing the user can
+  press to release it. `blur` is the desktop half of the same hole.
+- **A GESTURE THAT MIGHT STILL BECOME A SLASH MUST NOT STEER YET.** Leaving the
+  stick live while a route is being drawn "is how you end up on the sideline
+  before the route even exists" — and the code did exactly that for the first
+  64px of every stroke, going live at 7px and only releasing when the slash
+  threshold fired. An L-shaped slash fed the engine NINE live steering frames
+  along its first leg. What tells a stroke from a drag is SPEED, not distance:
+  `STICK_HOLD_MS` waits for the gesture to declare itself. The knob still
+  follows the thumb from the first pixel, so it feels immediate either way.
+- **A HEADLESS BROWSER HAS NO NOTCH.** `env(safe-area-inset-*)` resolves to 0
+  in one, so a stylesheet that pads for a notch and one that ignores it lay out
+  identically — the check was grading the stylesheet's intentions. Reading the
+  insets through `--safe-*` variables that DEFAULT to `env()` lets the harness
+  stand a real device's insets up in their place and measure where the buttons
+  actually went. (`viewport-fit=cover` is set, so without the padding SWITCH,
+  PULL and sprint sat in the bottom inset on every iPhone tested.)
+- **A LANDSCAPE PHONE IS WIDE AND SHORT**, and the situation panels were only
+  dropped by a `max-width:620px` query — a portrait breakpoint no landscape
+  phone ever reaches, because they are 850-950px across. So on every landscape
+  handset the button stack sat on top of `.sit`. What makes the screen small
+  there is the HEIGHT, so that is what the query has to ask about.
+- **THE MAN YOU ARE DRIVING WAS PERMANENTLY UNDER YOUR OWN THUMB, and one
+  frame could not see it.** The action buttons are 172px of a 375px screen —
+  46% of the width, left edge at half of it — and the chase camera puts the
+  carrier dead centre by construction, so his right shoulder is always inside
+  them. A single-frame probe read 52% on one device and a clean 0% on the other
+  four; sampled over 90 live frames it is **100% of frames on both portrait
+  handsets**, up to 46% of his body, and **0% on all three landscape** ones —
+  the same lesson as the single seed in the QB work. The fix is
+  `CAM.tall.latBias`, yards of look-at offset toward screen-right (which is
+  `+z*s`), spent on the LOOK-AT alone so the lens never moves and no downfield
+  visibility is lost: 1.6yd carries him from x=50% to x=35% and the overlap to
+  zero. Raising him in the frame instead is the obvious alternative and the
+  wrong one — it means aiming nearer his own feet, and the downfield he stops
+  seeing is exactly where the play is going. Gated on `is-touch`, so a narrow
+  desktop window with no buttons keeps the centred shot.
+- **A TOUCH PROBE THAT REACHES ITS OWN FIXTURE BY MOUSE DESERVES TO BE BITTEN.**
+  `locator.click()` waits for "visible, enabled and stable" and timed out after
+  ten seconds on every device, while the play card's bounding box was
+  byte-identical across six consecutive frames and `elementFromPoint` at its
+  centre returned the card. The same tap dispatched as a real CDP touch selects
+  the play in 800ms. Two devices were silently measuring through the opaque
+  full-screen play-call sheet, and only the `state` guard caught it.
 
 ## The container is not the repo
 

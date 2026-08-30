@@ -1759,11 +1759,14 @@
        `s` flips with possession so the camera is always behind the side we're
        playing as and the opponent's end zone is the thing we're driving at. */
     var _target = new THREE.Vector3(0, 1.6, 0);
+    // Cached because the look-at bias below reads it every frame, and
+    // `document.body` is a getter rather than a field.
+    var _bodyEl = document.body;
     // Portrait phones get a slightly higher, slightly further camera: the frame
     // is narrow, so a lower one would hide the whole width of the play behind
     // the carrier's shoulders. Wide screens keep the low, dramatic sightline.
     var CAM = {
-      wide: { back: 11.0, height: 4.2, ahead: 17.0, lookY: 1.5, fov: 52 },
+      wide: { back: 11.0, height: 4.2, ahead: 17.0, lookY: 1.5, fov: 52, latBias: 0 },
       // Portrait runs a NARROWER lens, not a wider one. The stands are 30
       // units tall and only ~60 yards away, so they subtend ~27 degrees above
       // the true horizon — a wide vertical FOV on a tall screen fills the top
@@ -1773,7 +1776,24 @@
       // carrier, which crops the play down to the one player you're driving.
       // Height rises with the distance so the pitch stays steep enough to keep
       // the bowl out of the top of the frame.
-      tall: { back: 12.5, height: 6.6, ahead: 11.5, lookY: 0.85, fov: 54 }
+      /* `latBias` PUSHES THE SHOT SIDEWAYS TO GET THE MAN OUT FROM UNDER THE
+         BUTTONS. On a phone held upright the action buttons are 172px of a
+         375px screen — 46% of the width, with their left edge at half of it —
+         and the chase camera puts the carrier dead centre by construction.
+         Measured over 90 live frames on two portrait handsets he was behind
+         them in 100% of them, up to 46% of his body at a time: not an
+         occasional collision, a permanent one. (A single-frame check read 52%
+         on one device and a clean 0% on the other four, which is what one frame
+         of a football match is worth.) Landscape measures 0% and gets none of
+         this.
+
+         Yards of look-at offset toward screen-RIGHT, which swings the frame and
+         carries him left. It is spent on the LOOK-AT alone, so the lens does
+         not move and this costs nothing: no downfield visibility, no change to
+         how close the shot is. Raising him in the frame instead — the obvious
+         alternative — means aiming nearer his own feet, and the downfield he
+         stops seeing is exactly where the play is going. */
+      tall: { back: 12.5, height: 6.6, ahead: 11.5, lookY: 0.85, fov: 54, latBias: 1.6 }
     };
 
     /* THE HARD GUARANTEE THAT THE BALL IS IN SHOT.
@@ -2025,6 +2045,24 @@
         ty = lerp(ty, Math.max(0.6, state.ball.z || 0), w);
         tz = lerp(tz, wz(state.ball.y), w);
       }
+      /* THE HUD OFFSET, applied last so nothing above dilutes it — the carrier
+         hold above lerps the look-at 45% of the way back toward the man, which
+         would eat almost half of this if it went in any earlier.
+
+         Screen-right is +z*s: the lens looks along +x*s and up is +y, so
+         forward x up is (0,0,s). Aiming that way carries him the other way.
+
+         Gated on `is-touch`, the same class the stylesheet hangs the buttons
+         off, so the shot is biased exactly when there is something on top of
+         him and not one frame otherwise — a narrow desktop window is portrait
+         too, and has no buttons to get out from under.
+
+         `keepInFrame` still runs underneath and still wins. A 1.6yd offset puts
+         him at about a quarter of the way out in NDC against a safe box of
+         0.72, so it changes nothing on a normal down; a runner breaking for the
+         right sideline reaches the edge sooner and gets pulled back, which is
+         the guarantee doing its job. */
+      if (C.latBias && _bodyEl.classList.contains('is-touch')) tz += C.latBias * s;
       _target.set(
         lerp(_target.x, tx, k),
         lerp(_target.y, ty, k),
@@ -2427,6 +2465,45 @@
          elbow's flexion is the angle at the elbow between the shoulder and the
          wrist, and you cannot get it from a euler triple on a bone without
          redoing the whole chain. */
+      /* WHERE THE MAN YOU ARE DRIVING ACTUALLY IS ON SCREEN, this frame.
+
+         `pick()` answers it too, but only by raycasting a grid over the whole
+         viewport — four thousand rays a frame, which is fine for one still and
+         hopeless for sampling a whole play. The question the HUD needs asked is
+         a box-against-box one: project the carrier's bounds through the camera
+         that is actually rendering, and hand back the rectangle he occupies in
+         CSS pixels. Eight projections.
+
+         Reported as a rectangle rather than a hit count so the caller can ask
+         it about any part of the screen — which button cluster covers him, how
+         far from an edge he is — without this needing to know what the HUD
+         looks like. tools/touchcheck.mjs samples it every frame of a live play,
+         because where he is in ONE frame is not where he spends a down. */
+      carrierScreen: function (state, w, h) {
+        var c = state && state.carrier;
+        var i = c ? (playersRef || []).indexOf(c) : -1;
+        var e = i >= 0 ? pMeshes[i] : null;
+        if (!e || !e.holder) return null;
+        e.holder.updateWorldMatrix(true, true);
+        var box = new THREE.Box3().setFromObject(e.holder);
+        if (box.isEmpty()) return null;
+        camera.updateMatrixWorld();
+        var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, seen = 0, v = new THREE.Vector3();
+        for (var b = 0; b < 8; b++) {
+          v.set(b & 1 ? box.max.x : box.min.x,
+                b & 2 ? box.max.y : box.min.y,
+                b & 4 ? box.max.z : box.min.z).project(camera);
+          // Behind the lens the projection mirrors; such a corner says nothing.
+          if (v.z > 1) continue;
+          seen++;
+          var sx = (v.x * 0.5 + 0.5) * w, sy = (0.5 - v.y * 0.5) * h;
+          if (sx < minX) minX = sx; if (sx > maxX) maxX = sx;
+          if (sy < minY) minY = sy; if (sy > maxY) maxY = sy;
+        }
+        if (!seen) return null;
+        return { idx: i, x: minX, y: minY, w: maxX - minX, h: maxY - minY, corners: seen };
+      },
+
       debugLimbs: function () {
         var out = [], _v = new THREE.Vector3();
         var LIMB_BONES = ['Hips', 'Chest',
