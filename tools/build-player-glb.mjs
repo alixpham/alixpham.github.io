@@ -2792,17 +2792,39 @@ posedClip('Bow', 1.90, [
    one, which is why the amplitude is chosen by measuring rather than by
    solving the key poses: `node tools/measure-clip.mjs Lasso`. */
 {
-  const HZ = [90, 45, 0, -45, -90, -135, -180, -225, -270];   // one full turn
-  const N = HZ.length - 1, DUR = 0.90;
-  posedClip('Lasso', DUR, HZ.map((hz, i) => {
-    const ph = i / N, w = Math.sin(ph * Math.PI * 2), b = Math.cos(ph * Math.PI * 4);
+  /* AND THE SHOULDER CANNOT BE THE THING THAT TURNS.
+
+     Sweeping `horiz` a full 360 is a circle drawn on a cone about the TRUNK's
+     own vertical axis, and the paragraph above already establishes that no such
+     circle exists: below the skull the elbow goes through it, and clearing it
+     needs an elevation the humerus cannot reach. What that argument was missing
+     is what the near-vertical escape costs. Elevation 178 is two degrees off
+     straight up, and at straight up `horiz` and `er` are THE SAME DEGREE OF
+     FREEDOM — azimuth about an axis the bone is already lying on. So driving
+     horiz through the top with er held at 62 does not swing the arm at all
+     there; it SPINS it, and the clip wound the humerus 365 degrees about its
+     own axis every 0.9 seconds, forever, in a loop. A shoulder has about 180
+     of axial range in total. `npm run pose` is what finally said so.
+
+     A real twirl never asks the shoulder for a revolution. The arm holds up and
+     outboard and traces a SMALL circle, and the rope — which is what the
+     onlooker is actually watching — goes round because the wrist drives it. So
+     the azimuth oscillates about a centre instead of sweeping past it, with the
+     elevation a quarter-turn out of phase: two sinusoids in quadrature trace a
+     closed circle on the sphere about a TILTED axis, which is the one thing a
+     fixed-elevation sweep cannot do. The hand still draws a circle in the air;
+     the humerus now stays inside a 40-degree cone and unwinds every cycle. */
+  const N = 8, DUR = 0.90;
+  const HZ_MID = -46, HZ_AMP = 52;      // azimuth: up and across, swinging outboard
+  const EL_MID = 138, EL_AMP = 20;      // elevation, a quarter turn out of phase
+  posedClip('Lasso', DUR, Array.from({ length: N + 1 }, (_, i) => {
+    const ph = i / N, a = ph * Math.PI * 2;
+    const w = Math.sin(a), b = Math.cos(a * 2);
     return {
       t: +(DUR * ph).toFixed(4),
       pel: 7 * w, trk: -9 * w, lean: 2, tilt: -4 * w,
       L: [0.13, 24 + 6 * b], R: [-0.13, 24 + 6 * b],
-      // elevation leads horiz by half a turn: out to the side at horiz 0,
-      // near-vertical at horiz 180, which is the tilt that misses the head.
-      arm: [148 - 30 * Math.cos(hz * D), hz, 62, 22],
+      arm: [EL_MID + EL_AMP * Math.sin(a), HZ_MID + HZ_AMP * Math.cos(a), 62, 22],
       off: [24, -12, 12, 98],                       // spare hand at the belt
       look: [-0.20, 0.26 * w]
     };

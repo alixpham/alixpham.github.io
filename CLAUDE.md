@@ -52,6 +52,10 @@ tools/glb-graft-head.mjs      cuts a helmet off one character and grafts
                               another's head, hair and beards on; --report
                               prints the neck seam as a number
 tools/mocap/ochi-clips.mjs    the game's own 22 clips -> the Ochi metarig
+tools/mocap/ochi-cycle.mjs    ONE cycle out of a bought 4-second performance:
+                              period by whole-pose autocorrelation (harmonics
+                              score better, so the shortest good lag wins),
+                              phase matched against the clip it replaces
 tools/simstats.mjs            headless CPU-vs-CPU box score
 tools/qbstats.mjs             the QB's decision, frozen at the throw: how open
                               the man he chose is WHEN THE BALL GETS THERE, how
@@ -280,6 +284,35 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   not automatically good geometry — `glb-graft-head` refuses non-finite
   positions and names them, and `showOne` falls back to a style the model
   actually carries.
+- **THE STUDIO OCHI SOURCE IS IN THE DROPBOX, AND IT REPRODUCES THE SHIPPED
+  CHARACTER BYTE FOR BYTE.** `build-ochi-player.mjs --fbx <_ANIM.fbx> --texture
+  <atlas.png>` remakes `ochiplayer.glb` at the same 856,816 bytes and the same
+  sha256 as the committed asset, which is what makes any of the chain safe to
+  re-run. **The `--fbx` must be one of the six `*_ANIM.fbx`**: the static
+  `AmericanFootballMan.00N.fbx` meshes carry no skin and the build stops at
+  stage 3 with "not a skinned model". The pack holds six athletes x six
+  hand-authored clips — Catch and Fall, Hold, Kick, Kickoff, Run Fast, Throw 01
+  — on this character's own metarig, and the `.blend` carries exactly the same
+  six. **There is no Celebrate and no Lasso in it**; those are this repo's, and
+  what the source unblocked was the CHAIN, not the clips.
+- **A BOUGHT CLIP IS A PERFORMANCE, NOT A CYCLE.** All six are 4.125s and about
+  nine strides, and a gait rung is one. `ochi-cycle.mjs` extracts one — the clip
+  is already in place, so there is no root motion to strip, and its period
+  measures 0.454s against the authored Sprint's 0.48s, which is the same
+  cadence. Two traps: a HARMONIC scores better than the fundamental on
+  autocorrelation (three strides averages over fewer and more similar pairs), so
+  take the shortest lag within tolerance of the best; and the phase cannot be
+  guessed, because every rung must put the LEFT foot's contact at phase 0.
+  Matching the clip it replaces is a stand-in for the FK that would find contact
+  properly, and it is not reliable — matched against Sprint it gives a clean
+  5.43 m/s and 18% spread, matched against Run it lands half a cycle out and
+  measures 2.64 m/s at 255%.
+- **AND `Run Fast` IS NOT A SPRINT: 5.43 m/s, measured.** That is slower than
+  this game's own Run (6.02) and a long way under its Sprint (8.83), so it
+  cannot be the top rung and there is no rung it improves. Studio Ochi animated
+  a realistic fast run; this ladder is deliberately heroic. Measured and
+  declined, the same way the QB expected-value model was — the tooling is here
+  (`fbx-to-glb --adopt`, `ochi-cycle.mjs`) for when a clip does win.
 - **DO NOT REBUILD `flagplayer.glb` CASUALLY.** A rebuild from the current
   `build-player-glb.mjs` drops `extras.sweepWarp` from all four gait clips —
   the committed asset went through `glb-gait.mjs` afterwards, and the builder
@@ -384,6 +417,46 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   measured the in-game demo, found every joint inside a human's range, and was
   looking at the wrong screen. `npm run hero` reads the cast OUT of hero3d.js
   and refuses a move whose clip a body could not perform.
+- **A PLANAR STANCE TEST CANNOT SEE A HOP, AND A ONE-AXIS CONTACT PATCH
+  COLLAPSES A SQUARE STANCE TO A LINE.** Two more of the same bug that has now
+  bitten `posecheck` four times. `travel` measured the hips in the GROUND PLANE
+  only, so a body going straight up read as perfectly still and Celebrate was
+  judged on 119 of its 120 frames, the airborne ones included — an 8.5cm hop
+  against a 6cm contact band, and the toe of a tilted foot never leaves it. And
+  the sole points were padded by half a boot in x and NOTHING in z, so two feet
+  level with each other were collinear, `hull()` correctly dropped them to a
+  two-point line, and `marginInside` fell to its degenerate branch and answered
+  with the distance to the nearest vertex: a centre of mass 2.4cm behind the
+  middle of the feet was reported 17.3cm outside them. The tell was that the two
+  numbers disagreed — every healthy clip's margin is smaller than its offset,
+  and Celebrate's was seven times larger. A stance is settled in THREE
+  dimensions and a contact patch has two axes. Celebrate needed no change at
+  all; it now reads -0.4cm, inside the slack, and Dive, Spike and HighStep
+  correctly report no settled stance instead of a fictitious one.
+- **AND WHICH WAY HE IS FALLING IS HALF THE ANSWER.** A margin on its own says a
+  pose is impossible and leaves you to guess whether the fix is the arms, the
+  lean or the stance — at a full asset rebuild per guess. `posecheck` reports
+  the offset from the base's own centroid now, and it is what showed the
+  reported margin could not be believed.
+- **AT VERTICAL, AZIMUTH AND AXIAL ROTATION ARE THE SAME DEGREE OF FREEDOM.**
+  Lasso swept `horiz` a full 360 with `elev` reaching 178 — two degrees off
+  straight up — to clear the skull. Driving azimuth through the top of a bone
+  that is already lying on that axis does not swing the arm, it SPINS it: the
+  humerus wound 365 degrees about its own axis every 0.9s, forever, against a
+  shoulder's ~180 of total axial range. The clip's own notes had already proved
+  no full turn exists that clears the head; what they missed is what the
+  near-vertical escape costs. A real twirl never asks the shoulder for a
+  revolution — the arm holds up and outboard and traces a SMALL circle while the
+  wrist drives the rope. Two sinusoids in QUADRATURE (azimuth about a centre,
+  elevation a quarter-turn out of phase) trace a closed circle about a TILTED
+  axis, which a fixed-elevation sweep cannot do. Winding 365 -> 40 degrees, and
+  skull clearance went the right way too, 63mm -> 129mm.
+- **`flagplayer` NEVER HAD SHOULDER PADS.** The note that said it did was an
+  assumption that the fallback shared the bought character's problem. Its
+  shoulder is an anatomical deltoid: joint at 0.200, sleeve radius 0.094, 12mm
+  of bulge on top, and nothing above the collar line at 1.512 — where the Ochi
+  pads rose 10cm above the neck joint, level with the jaw. Measure the fallback
+  before assuming it inherited anything.
 - **A LOOP IS WHAT MAKES A POSE IMPOSSIBLE, not the pose.** A one-shot may put
   the centre of mass outside the feet — a dive, a cut and a jump are exactly
   that, a controlled fall — and it may sweep an arm through most of a
