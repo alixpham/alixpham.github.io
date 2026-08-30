@@ -85,6 +85,17 @@ const SEGMENTS = [
 ];
 const ARM_BONES = ['UpperArm_L', 'LowerArm_L', 'Hand_L', 'UpperArm_R', 'LowerArm_R', 'Hand_R'];
 const BOOT_HALF_WIDTH = 0.045;   // metres — a sole is a patch, not a line
+/* …AND A PATCH HAS TWO AXES. Padding only in x left a stance whose feet are
+   level with each other collinear in z, and `hull()` correctly drops collinear
+   points, so the base of a perfectly ordinary square stance came back as a
+   two-point LINE — at which point `marginInside` falls to its degenerate
+   branch and answers with the distance to the nearest vertex. That reads as a
+   catastrophe rather than a stance: Celebrate's centre of mass is 2.4cm behind
+   the middle of its feet and was reported 17.3cm outside them, because the
+   nearest hull point was a toe 13cm away across the body. Every symmetrical
+   two-footed pose in the file was one contact point per foot away from the
+   same reading. A contact patch is small but it is not nothing. */
+const BOOT_HALF_LEN = 0.02;      // metres — and the patch has depth as well
 const CONTACT = 0.06;            // metres above the clip's own floor that still bears weight
 const SLACK = 0.03;              // metres of margin the model itself is worth
 const STILL = 0.25;              // m/s of hip travel below which this is a stance
@@ -229,7 +240,7 @@ for (const name of names) {
   minima.sort((a, b) => a - b);
   const floor = minima[Math.floor(minima.length * 0.10)];
 
-  let worstMargin = Infinity, worstAt = 0, judged = 0, over = 0;
+  let worstMargin = Infinity, worstAt = 0, judged = 0, over = 0, worstOff = [0, 0];
   /* A GAIT CLIP CARRIES NO ROOT MOTION, so its hips do not translate and every
      stride frame looked like a man standing still. It is not: the ground is
      going past at `groundSpeed`, which the builder measured and baked. Without
@@ -239,8 +250,23 @@ for (const name of names) {
   const gaitSpeed = (clip.extras && clip.extras.groundSpeed) || 0;
   for (let k = 1; k < frames.length; k++) {
     const f = frames[k];
+    /* AND A HOP IS TRAVEL TOO. This measured the hips in the GROUND PLANE only,
+       so a body going straight up read as perfectly still — and a celebration
+       hop is exactly that. Celebrate was judged on 119 of its 120 frames, the
+       airborne ones included, because the hop is 8.5cm against a 6cm contact
+       band and the toe of a tilted foot never leaves it. What came back was not
+       a balance reading at all: nudging the tuck by fifteen degrees swung the
+       centre of mass from 2.4cm behind the base to 24.3cm in front of it, which
+       is not something a body does and not something the eye would see.
+
+       The fourth variant of one bug — a band too tight collapsed a stance to a
+       point, a per-frame floor could never report anybody airborne, and now a
+       planar speed cannot see a jump. A stance is settled in THREE dimensions
+       or it is not settled. */
     const travel = Math.max(gaitSpeed,
-      Math.hypot(f.hips[0] - frames[k - 1].hips[0], f.hips[2] - frames[k - 1].hips[2]) / dt);
+      Math.hypot(f.hips[0] - frames[k - 1].hips[0],
+                 f.hips[1] - frames[k - 1].hips[1],
+                 f.hips[2] - frames[k - 1].hips[2]) / dt);
     /* JUDGED ONLY ON A SETTLED, TWO-FOOTED STANCE, and that one test does the
        work three different clip lists were doing badly. Locomotion is single
        support almost all of the time — a walk's double-support phase is brief
@@ -255,13 +281,24 @@ for (const name of names) {
     for (const s of ['L', 'R']) for (const p of f.sole[s]) {
       if (p[1] > floor + CONTACT) continue;
       if (s === 'L') onL++; else onR++;
-      pts.push([p[0] - BOOT_HALF_WIDTH, p[2]], [p[0] + BOOT_HALF_WIDTH, p[2]]);
+      pts.push([p[0] - BOOT_HALF_WIDTH, p[2] - BOOT_HALF_LEN], [p[0] + BOOT_HALF_WIDTH, p[2] - BOOT_HALF_LEN],
+               [p[0] - BOOT_HALF_WIDTH, p[2] + BOOT_HALF_LEN], [p[0] + BOOT_HALF_WIDTH, p[2] + BOOT_HALF_LEN]);
     }
     if (!onL || !onR || travel > STILL) continue;
     judged++;
     const h = hull(pts);
     const m = marginInside(h, [f.com[0], f.com[2]]);
-    if (m < worstMargin) { worstMargin = m; worstAt = k * dt; }
+    if (m < worstMargin) {
+      worstMargin = m; worstAt = k * dt;
+      /* WHICH WAY HE IS FALLING, not just how far. A margin on its own says a
+         pose is impossible and leaves you to guess whether the fix is the arms,
+         the lean or the stance — and guessing costs a full asset rebuild per
+         attempt. The offset from the base's own centroid names the direction:
+         +z is the way the rig faces, +x is its left. */
+      let cx = 0, cz = 0;
+      for (const q of h) { cx += q[0]; cz += q[1]; }
+      worstOff = h.length ? [f.com[0] - cx / h.length, f.com[2] - cz / h.length] : [0, 0];
+    }
     if (m < -SLACK) over++;
   }
 
@@ -295,7 +332,7 @@ for (const name of names) {
 
   rows.push({
     name, dur: clip.dur, cyclic, judged, gait: gaitSpeed > 0, frames: frames.length,
-    margin: judged ? worstMargin : NaN, marginAt: worstAt,
+    margin: judged ? worstMargin : NaN, marginAt: worstAt, off: worstOff,
     overPct: judged ? 100 * over / judged : 0,
     wind, windBone
   });

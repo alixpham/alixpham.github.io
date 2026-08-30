@@ -47,11 +47,17 @@ const opt = (k, d) => { const i = argv.indexOf('--' + k); return i >= 0 && argv[
 const FBX = opt('fbx', null);
 const TEX = opt('texture', null);
 const OUT = path.resolve(ROOT, opt('out', 'flagster/lib/ochiplayer.glb'));
-const MOTION = path.resolve(ROOT, 'tools', 'motion-ochi');
+const MOTION = opt('motion', path.resolve(ROOT, 'tools', 'motion-ochi'));
 const KEEP = argv.includes('--keep');
+/* Which of Studio Ochi's OWN six clips to take over the retargeted one of the
+   same name. Passed straight through to fbx-to-glb, which documents the format;
+   here so that what the shipped character is animated from is one visible
+   string in the build command rather than a fact buried two tools down. */
+const ADOPT = opt('adopt', null);
 
 if (!FBX || !TEX) {
-  console.error('usage: node tools/build-ochi-player.mjs --fbx <ManA.fbx> --texture <atlas.png> [--out flagster/lib/ochiplayer.glb]');
+  console.error('usage: node tools/build-ochi-player.mjs --fbx <ManA_ANIM.fbx> --texture <atlas.png> [--out flagster/lib/ochiplayer.glb] [--adopt "American Football Run Fast=Sprint"]');
+  console.error('       the FBX must be the rigged _ANIM one — the static meshes carry no skin');
   console.error('       the Ochi source assets are licensed and not in the repo — see HANDOFF.md');
   process.exit(2);
 }
@@ -105,7 +111,8 @@ try {
   const grounded = path.join(tmp, 'grounded.glb');
 
   step(1, 'convert the FBX, with the retargeted clips baked in',
-    [path.join(HERE, 'fbx-to-glb.mjs'), FBX, '-o', raw, '--texture', TEX, '--motion', MOTION, '--no-anim']);
+    [path.join(HERE, 'fbx-to-glb.mjs'), FBX, '-o', raw, '--texture', TEX, '--motion', MOTION, '--no-anim']
+      .concat(ADOPT ? ['--adopt', ADOPT] : []));
   step(2, 'split the palette atlas into tintable regions',
     [path.join(HERE, 'glb-repaint.mjs'), raw, painted, '--map', MAP]);
   step(3, "rebuild onto the game's rig conventions",

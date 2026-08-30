@@ -54,10 +54,32 @@ const OUT = arg('-o', arg('--out', null));
 const TEX = arg('--texture', null);
 const NO_ANIM = has('--no-anim');
 const MOTION = arg('--motion', null);
+/* ADOPTING STUDIO OCHI'S OWN CLIPS.
+
+   The character ships six hand-authored animations — Catch and Fall, Hold,
+   Kick, Kickoff, Run Fast, Throw 01 — on this exact metarig, so unlike the CMU
+   material they need no retargeting at all: they are already the right bones in
+   the right rest pose, and the converter above turns them into glTF samplers
+   like any other stack.
+
+   What they lack is the game's vocabulary. `--adopt "Run Fast=Sprint"` gives an
+   FBX clip a game clip's name, and any adopted name is then EXCLUDED from the
+   tools/motion-ochi swap below — otherwise the retargeted clip of the same name
+   would replace the very thing being adopted, silently and in the direction
+   nobody wanted. Explicit rather than a directory listing, because which of the
+   six is better than what this repo already authored is a question to be
+   measured one clip at a time, not assumed for all six. */
+const ADOPT = new Map();
+for (const pair of (arg('--adopt', '') || '').split(',').map(s => s.trim()).filter(Boolean)) {
+  const i = pair.indexOf('=');
+  if (i < 0) { console.error('--adopt wants "FBX clip name=GameName", got: ' + pair); process.exit(2); }
+  ADOPT.set(pair.slice(0, i).trim(), pair.slice(i + 1).trim());
+}
+const adopted = new Set();
 const STATS = has('--stats');
 
 if (!IN || !OUT) {
-  console.error('usage: node tools/fbx-to-glb.mjs in.fbx -o out.glb [--texture atlas.png] [--motion dir] [--no-anim] [--stats]');
+  console.error('usage: node tools/fbx-to-glb.mjs in.fbx -o out.glb [--texture atlas.png] [--motion dir] [--adopt "Run Fast=Sprint,..."] [--no-anim] [--stats]');
   process.exit(2);
 }
 
@@ -366,7 +388,12 @@ function skinFor(geoObj, geo, meshGlobal) {
 
 /* -------------------------------------------------------------- animations */
 function animations() {
-  if (NO_ANIM) return [];
+  /* `--no-anim` drops the FBX's own stacks — all six of Studio Ochi's clips are
+     713 KB of samplers the game has never played, and the shipped character is
+     animated entirely from tools/motion-ochi. An ADOPTED clip is the exception
+     by definition: it is the one thing being taken from the FBX, so it survives
+     --no-anim and nothing else does. */
+  if (NO_ANIM && !ADOPT.size) return [];
   const stacks = [...byId.values()].filter(o => o.type === 'AnimationStack');
   const out = [];
   for (const st of stacks) {
@@ -641,7 +668,11 @@ for (const a of anims) {
   }
   if (channels.length) {
     // "Metarig Man.013|American Football Run Fast" -> "American Football Run Fast"
-    const nm = a.name.includes('|') ? a.name.split('|').pop() : a.name;
+    const raw = a.name.includes('|') ? a.name.split('|').pop() : a.name;
+    // …and then to the game's own vocabulary, if this one is being adopted.
+    if (NO_ANIM && !ADOPT.has(raw)) continue;    // dropped, as --no-anim asks
+    const nm = ADOPT.get(raw) || raw;
+    if (ADOPT.has(raw)) adopted.add(nm);
     gltf.animations.push({ name: nm, channels, samplers });
   }
 }
@@ -654,10 +685,15 @@ for (const a of anims) {
    clip whose name matches one of the FBX's own replaces it — the same swap
    mechanism tools/motion/ has for the game's rig, and for the same reason: what
    ships should be a matter of listing a directory. */
+const skippedForAdopt = [];
 if (MOTION && fs.existsSync(MOTION)) {
   const files = fs.readdirSync(MOTION).filter(f => f.endsWith('.json')).sort();
   for (const f of files) {
     const m = JSON.parse(fs.readFileSync(path.join(MOTION, f), 'utf8'));
+    // An adopted clip is Studio Ochi's own, and it wins: replacing it here with
+    // the retargeted clip of the same name is exactly what adopting means not
+    // to do.
+    if (adopted.has(m.clip)) { skippedForAdopt.push(m.clip); continue; }
     /* A CYCLIC CLIP NEEDS ITS CLOSING KEY. The samples cover the cycle at
        dur*i/n for i < n, so the last one sits at dur*(n-1)/n and three.js — 
        which takes a clip's duration from its final keyframe — would loop
@@ -737,6 +773,7 @@ console.log(`  meshes        ${gltf.meshes.length}, ${totalVerts} vertices, ${to
 console.log(`  skin          ${gltf.skins.length ? 'yes' : 'NO'}, up to ${maxInfluences} influences per control point (top 4 kept)`);
 console.log(`  texture       ${gltf.images ? 'embedded' : 'none — pass --texture'}`);
 if (retargeted.length) console.log(`  retargeted    ${retargeted.join(', ')}`);
+if (adopted.size) console.log(`  adopted       ${[...adopted].join(', ')}  (Studio Ochi's own, kept over ${skippedForAdopt.join(', ') || 'nothing'})`);
 console.log(`  animations    ${gltf.animations.length}${gltf.animations.length ? ': ' + gltf.animations.map(a => a.name).join(', ') : ''}`);
 if (bbox) {
   /* Report in the frame a viewer will see: the -90 X puts raw Z up, and the
