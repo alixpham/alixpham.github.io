@@ -25,9 +25,10 @@ flagster/lib/flagplayer.glb   rigged, skinned, team-tintable player
 flagster/lib/ochiplayer.glb   the Studio Ochi athlete, converted and rebuilt
                               onto the same rig — helmeted; the graft's INPUT,
                               and the only way back to a helmet
-flagster/lib/ochibare.glb     the same athlete with the helmet cut off and
-                              flagplayer's head, hair and beards grafted on;
-                              what the game loads
+flagster/lib/ochibare.glb     the same athlete with the helmet cut off,
+                              flagplayer's head, hair and beards grafted on,
+                              and the shoulder pads sculpted away; what the
+                              game loads. Stamped, so a sculpt can't run twice
 tools/build-player-glb.mjs    regenerates flagplayer.glb (no deps, no Blender)
 tools/rig-def.mjs             the bone table + sole geometry, imported everywhere
 tools/rig-fk.mjs              general quaternion FK + the ground-speed measurement
@@ -44,6 +45,9 @@ tools/glb-gait.mjs            groundSpeed + blendUp measured off a baked clip,
 tools/glb-read.mjs            the GLB container, once
 tools/glb-skin.mjs            posing and skinning a GLB, once
 tools/build-ochi-player.mjs   all five stages -> flagster/lib/ochiplayer.glb
+tools/glb-deshoulder.mjs      takes the shoulder pads off — flag football is
+                              played in a shirt, and the pads are the SHAPE of
+                              that shirt, not a part and not a bone
 tools/glb-graft-head.mjs      cuts a helmet off one character and grafts
                               another's head, hair and beards on; --report
                               prints the neck seam as a number
@@ -234,6 +238,34 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   shirt. Measure the ring against the neck the cut LEAVES BEHIND, not against
   the file as it stands — the face-plate you are about to delete reads as an
   overhang that does not exist.
+- **A SHOULDER PAD IS NEITHER A PART NOR A BONE — IT IS THE SHAPE OF THE
+  SHIRT.** The helmet at least hung off `Head`, which is what made the graft
+  possible. The pads are 41 jersey vertices per `Shoulder_*` and 27 per
+  `UpperArm_*`, in the same primitive as the sleeve and the chest, sharing the
+  same accessors: nothing to delete, and deleting would open a hole in a closed
+  shirt. So the geometry is sculpted. Three formulations, and the two that
+  failed are the lesson. Shrinking TOWARD the joint moves a shell sitting at a
+  constant distance from that joint by almost nothing (5mm against a 90mm pad),
+  and widening the falloff to fix it reaches the elbow and SHORTENS THE ARM.
+  Deflating along the normal turns thin features inside out — the cap's lip is
+  thinner than the 65mm being taken off, so its underside was pushed up through
+  its own top and the measured shoulder went UP, 1.496 to 1.539. What works is
+  contracting the radius ABOUT THE ARM AXIS: a linear contraction in a plane
+  cannot invert, and the component along the bone is untouched so the arm keeps
+  its length by construction.
+- **And only the EXCESS radius comes off.** Contracting by a flat fraction
+  thinned the limb as well — the upper arm lost 40% along its whole length,
+  which is a padless player with the arms of a bird. `keep` is what a shoulder
+  is, and it is not a taste setting: it has to clear the LIMB's own radius
+  (0.061-0.084 here, so 0.095) or the tool is sculpting the arm rather than the
+  pad. At 0.070 the arm loses 14%; at 0.055, a third.
+- **Nothing tears, and that is not luck.** `glb-repaint.mjs` built the body so
+  all seven parts share ONE position accessor and differ only in index buffers,
+  so moving a vertex moves it for every part that uses it and the sleeve cannot
+  come away from the arm. Both `glb-deshoulder` and `glb-graft-head` assert the
+  sharing rather than assuming it. A deform also has to REBUILD normals — no
+  cheap rule carries them through a non-uniform change — and stamp the output,
+  because running a sculpt twice sculpts twice.
 - **`hair_long` was 326 vertices of NaN, and had been forever.** Its row in the
   builder's style table sets `rib` and forgets `ribs`, so the thickness term is
   `Math.cos(NaN)`: one player in six, bald, invisibly, because a style that
