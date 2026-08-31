@@ -1864,6 +1864,7 @@
      instead of each needing a branch. */
   var CATCH_RADIUS = 2.4;                 // yards from the ball you can play it
   var CATCH_NEED = 0.495;                  // how good the play on it has to be
+  var TIP_PICK = 0.20;                     // a deflected ball a defender comes down with
   var DEF_READ = 0.96;                    // a defender's expectation, vs 1.0 for the target
 
   Engine.prototype._resolveCatch = function () {
@@ -1944,8 +1945,28 @@
     var need = CATCH_NEED + contest;
 
     if (best.score < need) {
-      if (rival && !best.isOff) this._incomplete('Broken up by ' + best.p.last + '!', pt);
-      else if (!best.isOff) this._incomplete('Broken up by ' + best.p.last + '!', pt);
+      /* A BREAK-UP DOES NOT ALWAYS HIT THE FLOOR. Every contested failure was an
+         incompletion, so the only way to be intercepted was for a defender to
+         win the ball outright — and since v3.10.0 taught the quarterback to
+         measure separation where the ball ARRIVES, he almost never throws one
+         there. Picks fell to 0.8% of attempts against a real 3-5%.
+
+         The fix is not a worse quarterback; it is the thing that actually
+         produces interceptions in a sport with no pass rush to speak of. A ball
+         that is got to and not caught goes up, and whoever is standing there
+         has a play on it. Only a DEFENDER can turn it over — a tip that a
+         receiver recovers is just a completion nobody would credit — and only
+         when a defender was making the play, which is what `!best.isOff` and a
+         defending `rival` say. */
+      var deflector = !best.isOff ? best.p : (rival && !rival.isOff ? rival.p : null);
+      if (deflector && Math.random() < TIP_PICK * (this.difficulty ? this.difficulty.intScale : 1)) {
+        deflector.hasBall = true;
+        s.carrier = deflector;
+        s.ball.x = deflector.x; s.ball.y = deflector.y; s.ball.z = 0;
+        this._turnover('TIPPED — intercepted by ' + deflector.last + '!', deflector);
+        return;
+      }
+      if (!best.isOff) this._incomplete('Broken up by ' + best.p.last + '!', pt);
       else this._incomplete(best.p === receiver ? 'Dropped by ' + best.p.last : 'Incomplete', pt);
       return;
     }
@@ -3055,12 +3076,39 @@
      deciding what to call, not a restriction on what may be called. */
   var AI_PLAY_WEIGHT = { trick: 0.25 };
 
+  /* A ROUTE NEEDS SOMEWHERE TO RUN, and the call did not know how much field
+     was left. The CPU picked uniformly, so it called Four Verticals from the
+     five-yard line as readily as from its own thirty — and measured on
+     conversions, which are always snapped from the five, that is exactly what
+     it did: 35% of its calls were deep concepts, and they converted at 18-33%
+     against 62-67% for the short ones. A quarter of the game's touchdowns come
+     with a conversion attached, so a third of those being unrunnable calls is
+     points the offence simply left on the field, and it dragged the short-gain
+     rate up with it.
+
+     Roughly the depth each family of concept needs to exist at all. Inside it
+     the weight falls off as the SQUARE of how much room is missing, because
+     half a field is not half a Four Verticals — it is no Four Verticals. From
+     the five a deep call keeps 8% of its weight; from midfield it keeps all of
+     it, and nothing about calling deep when deep is available changes. */
+  var AI_PLAY_ROOM = { 'pass-long': 18, 'pass-med': 10, 'pass-short': 4 };
+
+  Engine.prototype._weightOf = function (play) {
+    var w = AI_PLAY_WEIGHT[play.type] || 1;
+    var need = AI_PLAY_ROOM[play.type];
+    if (need) {
+      var room = this.state.yardsToGoal;
+      if (room != null && room < need) { var f = room / need; w *= Math.max(0.05, f * f); }
+    }
+    return w;
+  };
+
   Engine.prototype._pickPlay = function (pool) {
     var total = 0, i;
-    for (i = 0; i < pool.length; i++) total += (AI_PLAY_WEIGHT[pool[i].type] || 1);
+    for (i = 0; i < pool.length; i++) total += this._weightOf(pool[i]);
     var r = Math.random() * total;
     for (i = 0; i < pool.length; i++) {
-      r -= (AI_PLAY_WEIGHT[pool[i].type] || 1);
+      r -= this._weightOf(pool[i]);
       if (r <= 0) return pool[i];
     }
     return pool[pool.length - 1];

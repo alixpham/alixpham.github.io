@@ -414,6 +414,42 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   know which. YAC is worth counting on a first down and worth nothing on a last
   one — you do not bet a series on five yards of run-after-catch — so the
   allowance is discounted by what the down is worth.
+- **THE TOUCHDOWN TARGET WAS WRONG, AND THE GAME WAS RIGHT.** `simstats` has
+  carried `touchdownsPerPlay: '~5-8%'` with no source since the beginning, and
+  REALISM.md has called the game "about double where it should be" since
+  v2.17.0. Hold the target against this file's own play count: 45-60 plays at
+  5-8% is **16 to 34 combined points a game**. Twenty real games — the 2024 IFAF
+  Men's World Championship group stage and the whole knockout bracket — average
+  **64.5 combined points**, which is ~9.2 touchdowns, which at ~60 plays is
+  **16% of plays**. Flagster measures 65.3 points and 16.1%. Eleven releases
+  were spent chasing a number that was half of reality. `simstats` reports
+  points and touchdowns per GAME now: it tracked the score all along and never
+  printed it, and every other line in that box score is a rate — a rate can be
+  right while the game it adds up to is nothing like the sport. Unsourced
+  targets are marked as such now. **Find the number before tuning the game to
+  it.**
+- **A ROUTE NEEDS SOMEWHERE TO RUN.** The CPU picked uniformly from the
+  playbook, so it called Four Verticals from the five-yard line as readily as
+  from its own thirty. Measured on conversions — always snapped from the five —
+  **35% of its calls were deep concepts**, converting at 18-33% against 62-67%
+  for the short ones. `AI_PLAY_ROOM` gives each family the depth it needs and
+  the weight falls off as the SQUARE of the room that is missing, because half a
+  field is not half a Four Verticals. Deep calls from the five 35% -> 11%.
+- **A BREAK-UP DOES NOT ALWAYS HIT THE FLOOR.** Every contested failure was an
+  incompletion, so the only way to be intercepted was for a defender to win the
+  ball outright — and since the QB started measuring separation where the ball
+  ARRIVES he almost never throws one there. Picks fell to **0.8% of attempts
+  against a real 3-5%**. The fix is not a worse quarterback: a ball that is got
+  to and not caught goes up, and whoever is standing there has a play on it.
+  `TIP_PICK` only turns over a deflection made by a DEFENDER — a tip a receiver
+  recovers is just a completion nobody would credit. 0.8% -> 4.8%, read
+  untouched.
+- **A CONVERSION IS A PLAY, AND THE PROBE COUNTED ZERO OF THEM.** `patPlays`
+  filtered on a field the row never set, so it was hard-wired to 0 while ~9.8
+  were being played every game. And reading success off the conversion's own
+  score delta reports 0% every time, because the points post from a drained
+  continuation one row later — the engine emits `patresult` with the answer in
+  it, so take that rather than inferring it.
 - **Measure the decision, then measure the OUTCOME, and believe the outcome.**
   Rewriting the read as an explicit expected-value model (catch and interception
   probabilities calibrated against arrival separation, priced in yards) is the

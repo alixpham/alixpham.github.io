@@ -88,10 +88,21 @@ load('flagster/js/engine.js');
 const F = win.FLAGSTER, D = F.data;
 
 /* ---- play one game, collecting per-play rows ---------------------------- */
+const finals = [];
+const pats = [];
 function playGame(gameIdx) {
   const rows = [];
   let ev = {};
-  const e = new F.Engine(canvas, { onEvent(x) { ev[x.type] = (ev[x.type] || 0) + 1; } });
+  const e = new F.Engine(canvas, { onEvent(x) {
+    ev[x.type] = (ev[x.type] || 0) + 1;
+    /* A CONVERSION'S RESULT ARRIVES AS AN EVENT AND NOTHING WAS LISTENING.
+       Counting events by type alone threw away the `good` flag, and reading the
+       score delta on the conversion's own play row reports 0% every time — the
+       points post from a drained continuation, one row later. The engine says
+       plainly whether it was good; take that. */
+    if (x.type === 'patresult') pats.push({ good: !!x.good, points: x.points,
+      play: (e.state.offPlay && e.state.offPlay.name) || '?', type: (e.state.offPlay && e.state.offPlay.type) || '?' });
+  } });
   /* Take the spot from the engine rather than inferring it. On an incompletion
      the ball object is left sitting downfield where the pass landed, so
      reading its x credits the offence with yards it never gained. */
@@ -129,6 +140,7 @@ function playGame(gameIdx) {
     const startX = s.losX;
     const startYTG = s.yardsToGoal;
     const startScore = { home: s.score.home, away: s.score.away };
+    const isPat = !!s.patActive;   // a conversion is a play, and it was never counted as one
     ev = {}; lastSpot = null;
     let threw = false, thrownAt = null, completed = false;
     let f = 0;
@@ -149,12 +161,17 @@ function playGame(gameIdx) {
     else gained = 0;
     rows.push({
       type, isPass, threw, thrownAt, completed: !!ev.catch, intercepted, incomplete,
-      scrambled: !!ev.scramble, flicked: ev.fleaback || 0, pastLine: !!ev.passerpastline,
-      gained: Math.max(-15, Math.min(50, gained)),
+      scrambled: !!ev.scramble, flicked: ev.fleaback || 0, pastLine: !!ev.passerpastline, pat: isPat,
+      gained: Math.max(-15, Math.min(50, gained)), scoredPts: scored,
       td, dur: f * DT, timedOut: f >= MAX_PLAY_FRAMES
     });
     if (s.phase === 'live') break;    // play never resolved; stop this game
   }
+  /* THE SCOREBOARD, which this harness tracked and never once reported. Every
+     other number here is a rate, and a rate can be right while the game it adds
+     up to is nothing like the sport — points per game is the one figure a real
+     result can be held against directly. */
+  finals.push({ home: e.state.score.home, away: e.state.score.away });
   return rows;
 }
 
@@ -198,8 +215,32 @@ if (AS_JSON) { console.log(JSON.stringify(box, null, 2)); process.exit(0); }
 const TARGET = {
   yardsPerPassPlay: '~7-9', yardsPerRun: '~4-5', passPlaysNeverThrown: '~2-4%',
   completionPct: '~55-65%', touchdownsPerPlay: '~5-8%', gainsOfThreeOrFewer: '~35%',
-  timeToThrow: '~2.5-3.5s', playsPerGame: '45-60'
+  timeToThrow: '~2.5-3.5s', playsPerGame: '45-60',
+  /* MEASURED OFF REAL RESULTS, not guessed. Twenty games from the 2024 IFAF
+     Men's Flag Football World Championship — group stage and the whole knockout
+     bracket including the final — average **64.5 combined points**, median 66,
+     range 36 to 86. At six for a touchdown plus the conversion that is about
+     **9.2 touchdowns a game between the two sides**.
+
+     WHICH IS WHY `touchdownsPerPlay: '~5-8%'` IS WRONG, and has been the whole
+     time. Hold it against this file's own play count: 45-60 plays a game at
+     5-8% is 2.2 to 4.8 touchdowns, i.e. **16 to 34 combined points** — half of
+     what the sport actually scores, or less. The two targets cannot both be
+     right, and the one with a source behind it is the scoreline. At ~57 plays
+     a game, 9.2 touchdowns is **16% of plays**. REALISM.md has called this
+     metric "about double where it should be" since v2.17.0; it was the target
+     that was out, not the game. */
+  pointsPerGame: '~55-75', touchdownsPerGame: '~8-10'
 };
+/* AND THE ONES WITHOUT A SOURCE ARE MARKED. `pointsPerGame` and
+   `touchdownsPerGame` come from twenty real scorelines. The rest of this table
+   was inherited unsourced, and at least one of them was demonstrably wrong, so
+   the others get no more credit than they have earned: `gainsOfThreeOrFewer` at
+   ~35% is hard to square with a 61% completion rate on its own (every
+   incompletion is a nought-yard play, so ~39% of pass plays land in that bucket
+   before a single short completion does), and `playsPerGame` at 45-60 sits just
+   under what two 20-minute halves on a running clock actually produce here. Do
+   not tune the game to an unsourced number. Find the number first. */
 const row = (label, value, target) =>
   `  ${label.padEnd(28)} ${String(value).padStart(8)}   ${target || ''}`;
 
@@ -227,10 +268,25 @@ const fl = all.filter(r => r.flicked);
 console.log(row('Flea flickers flicked',
   fl.length + ' plays, max ' + Math.max(0, ...fl.map(r => r.flicked)) + ' pitches in one', 'max must be 1'));
 console.log(row('Passer past the line', String(all.filter(r => r.pastLine).length), 'must be 0'));
+console.log(row('Points per game (both)', avg(finals.map(f => f.home + f.away)), TARGET.pointsPerGame));
+console.log(row('Touchdowns per game (both)', avg(all.filter(r => r.td).map(() => 1)) === 0 ? '0'
+  : (all.filter(r => r.td).length / GAMES).toFixed(1), TARGET.touchdownsPerGame));
 console.log(row('Plays per game', box.playsPerGame, TARGET.playsPerGame));
 console.log(row('  of which regulation', box.regulationPlaysPerGame, '45-60'));
 console.log(row('  overtime plays (total)', box.overtimePlays, ''));
-console.log(row('  conversion plays (total)', box.patPlays, ''));
+const patGood = pats.filter(p => p.good).length;
+const patTwo = pats.filter(p => p.points === 2).length;
+console.log(row('  conversion attempts',
+  pats.length + (pats.length ? '  ' + (100 * patGood / pats.length).toFixed(0) + '% good, '
+    + (100 * patTwo / pats.length).toFixed(0) + '% went for 2' : ''), '~60-75%? unsourced'));
+if (process.argv.includes('--pats')) {
+  const by = {};
+  for (const p of pats) { by[p.play] = by[p.play] || { n: 0, g: 0, type: p.type }; by[p.play].n++; if (p.good) by[p.play].g++; }
+  console.log('\n  what the CPU calls from the 5, and whether it works:');
+  Object.entries(by).sort((a, b) => b[1].n - a[1].n).forEach(([k, v]) =>
+    console.log('    ' + k.padEnd(18) + String(v.n).padStart(3) + ' calls  ' +
+      (100 * v.g / v.n).toFixed(0).padStart(3) + '% good   ' + v.type));
+}
 console.log(row('Avg play length', box.avgPlayLength + 's', ''));
 if (box.playsThatNeverResolved) console.log(row('NEVER RESOLVED', box.playsThatNeverResolved, '<- bug'));
 console.log('');

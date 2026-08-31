@@ -52,6 +52,71 @@ at pursuit and leverage again rather than at another rule.
 
 ---
 
+## v3.22.0 — the touchdown target was wrong, and had been since v2.17.0
+
+**`touchdownsPerPlay: '~5-8%'` has no source and cannot be right.** Hold it
+against this file's own play count: 45-60 plays a game at 5-8% is 2.2 to 4.8
+touchdowns, or **16 to 34 combined points**. Twenty real games — the 2024 IFAF
+Men's Flag Football World Championship group stage and the entire knockout
+bracket including the final — average **64.5 combined points**, median 66, range
+36 to 86. At six for a touchdown plus the conversion that is about **9.2
+touchdowns a game between the two sides**, and at ~60 plays a game that is
+**16% of plays**, not 5-8%.
+
+So the note under the v2.17.0 table — *"touchdowns per play is about double
+where it should be"* — was measuring the game against a target that was itself
+half of reality. It has been chased for eleven releases.
+
+Measured now, against the scoreline rather than the guess:
+
+| Metric | Real 5v5 | Flagster (4 seeds) |
+| --- | --- | --- |
+| **Combined points per game** | **64.5** (20 IFAF WC games) | **65.3** |
+| **Touchdowns per game (both)** | ~9.2 | 9.9 |
+| Touchdowns per play | ~16% | 16.1% |
+| Interception rate | 3-5% | 4.8% |
+| Completion % | 55-65% | 61.4% |
+| Yards per pass play | 7-9 | 8.8 |
+| Time to throw | 2.5-3.5s | 2.7s |
+
+`simstats` reports points and touchdowns per game now. It tracked the score all
+along and never once printed it — every other number in the box score is a
+rate, and a rate can be right while the game it adds up to is nothing like the
+sport.
+
+### Two real gaps found on the way there, and both are fixed
+
+**The play call did not know how much field was left.** The CPU picked uniformly
+from the playbook, so it called Four Verticals from the five-yard line as
+readily as from its own thirty. Measured on conversions — always snapped from
+the five — **35% of its calls were deep concepts**, and they converted at 18-33%
+against 62-67% for the short ones. `AI_PLAY_ROOM` gives each family of concept
+the depth it needs to exist, and the weight falls off as the square of the room
+that is missing, because half a field is not half a Four Verticals. Deep calls
+from the five: **35% -> 11%**. Conversions **41% -> ~48%**.
+
+**Every broken-up pass hit the floor.** The only way to be intercepted was for a
+defender to win the ball outright, and since v3.10.0 taught the quarterback to
+measure separation where the ball ARRIVES he almost never throws one there —
+picks fell to **0.8% of attempts against a real 3-5%**. The fix is not a worse
+quarterback: it is the thing that actually produces interceptions in a sport
+with no pass rush to speak of. A ball that is got to and not caught goes up, and
+whoever is standing there has a play on it. `TIP_PICK` turns a deflection into a
+turnover when the man who made the play was a defender. **0.8% -> 4.8%**, with
+the quarterback's read untouched.
+
+### Still out, and honestly so
+
+`yardsPerRun` reads 5.6 against a 4-5 target, and `gainsOfThreeOrFewer` 45%
+against 35%. Neither target has a source, and the second is hard to square with
+a 61% completion rate on its own: every incompletion is a nought-yard play, so
+~39% of pass plays are in that bucket before a single short completion joins
+them. `playsPerGame` at 45-60 likewise sits just under what two 20-minute halves
+on a running clock actually produce. **Find the number before tuning the game to
+it** — that is the whole lesson of this release.
+
+---
+
 ## v2.27.0 — the half break, and who has the ball
 
 A6 shipped two 20-minute halves in v2.17.0, but only the *clock* knew about
