@@ -52,6 +52,81 @@ at pursuit and leverage again rather than at another rule.
 
 ---
 
+## v3.23.0 — an interception is a live ball
+
+**There is such a thing as a pick six in flag football, and there was no such
+thing in Flagster.** A defender who came down with the ball was handed it, the
+whistle went in the same breath, and the ball was spotted for his side at
+`50 - yardsToGoal` — the mirror of the line of scrimmage. The one play in this
+sport that most often ends in six points could not end in any, and every
+interception in the game's existence was worth exactly zero yards.
+
+The rule is not in question. NFL Flag and IFAF both play interceptions live:
+the ball may be advanced, and a return to the other end zone is a touchdown.
+
+### What it took, and what it cost
+
+Everything in the update loop asks `offenseTeam()` and `defenseTeam()` rather
+than remembering a side, so moving possession **while the ball is still live**
+re-points all of it in one assignment: the man who caught it is driven as a
+carrier, his team-mates escort him, and the five who were running routes a
+frame ago become the pursuit and the only side that can take a flag.
+
+What does not come for free is the direction. The end zone a defender scores in
+is the one *behind* the offence he took it from, so a return runs toward -x
+while every goal line, leverage rule and lateral test in the file was written
+knowing that downfield is +x. `attackDir()` is that seam. `viewSign()` is the
+other half of it and had been the constant `+1` for eleven releases, under a
+comment promising that a camera which ever turned round again would only have
+to change that one line. It did, and it was.
+
+Three things that had to be found rather than reasoned about:
+
+* **`_update` takes its offence and defence lists at the top of the frame, and
+  the catch is resolved half way down it.** So on the frame of the pick the
+  flag-pull check was handed the new carrier's own side — himself included, at a
+  distance of zero. Measured, he is recorded as being grabbed by *himself* with
+  the meter already filling, 1.9% of a pull in one frame and the renderer
+  drawing it. The lists are right again on the next frame, so it is a flicker
+  rather than a whistle; `tools/ruletest.mjs` has to intercept from inside the
+  frame to catch it at all.
+* **A stale `outOfBounds`.** `_steer` flags any player whose step would have
+  left the field and only the carrier is ever asked about it, so a corner who
+  had been running the paint carried the flag into the first frame of being one
+  and the whistle went before he had taken a step.
+* **A marker on the field cannot survive the flip.** `against: 'defense'` is
+  resolved through `defenseTeam()` when the play ends, and a return changes what
+  that word means half way through the down — the offence would be charged with
+  the foul committed against it. A pick with a flag down is settled the old way,
+  which is also the case the live ball was there to allow: an interception
+  under a defensive foul comes back.
+
+### Measured, 8 seeds x 8 games each
+
+| | Before | After |
+| --- | --- | --- |
+| Interception rate | 4.8% | 4.5% |
+| Yards returned, average | **0, always** | **8.7** |
+| Longest return | — | 31 |
+| Pick sixes | **impossible** | 0.19 a game (one every ~5) |
+| Ball spotted after a pick | 22.6 yds to go | **27.2** |
+| Combined points per game | 66.3 +/- 1.8 | 66.0 +/- 1.5 |
+
+**The scoreline did not move, and the reason is the fifth row.** The old
+takeover was the mirror of the LINE OF SCRIMMAGE — where the ball was snapped
+from, not where it was caught — so it quietly ignored the fact that an
+interception happens downfield of the line. Spotting a return where it actually
+ends starts the returning side about ten yards worse off, and 8.7 yards of
+return earns most but not all of it back. A free six once every five games is
+paid for by five yards of field position on every other one.
+
+`npm run stats` reports the return and the pick sixes; `npm run pick` drives the
+real renderer, forces interceptions and asserts the shot comes round behind the
+man carrying it, because a camera on the wrong side of the ball still renders a
+clean frame with the ball in it.
+
+---
+
 ## v3.22.0 — the touchdown target was wrong, and had been since v2.17.0
 
 **`touchdownsPerPlay: '~5-8%'` has no source and cannot be right.** Hold it

@@ -20,7 +20,8 @@
     "slip": "node tools/gaitslip.mjs",
     "pose": "node tools/posecheck.mjs",
     "hero": "node tools/herocheck.mjs",
-    "touch": "node tools/touchcheck.mjs"
+    "touch": "node tools/touchcheck.mjs",
+    "pick": "node tools/pickcheck.mjs"
   },
   "devDependencies": {
     "playwright": "^1.61.1"

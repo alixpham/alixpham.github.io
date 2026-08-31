@@ -87,6 +87,11 @@ tools/touchcheck.mjs          can a THUMB play this? every control against the
                               the player before it becomes a route. Tracks the
                               carrier's screen box over a whole down, because
                               one frame is not a measurement
+tools/pickcheck.mjs           does the PICK SIX actually play? forces
+                              interceptions in a real game and reads the camera
+                              back off the renderer — a lens on the wrong side
+                              of the ball still draws a clean frame with the
+                              ball in it, so nothing else can catch this
 tools/smoke.mjs               every screen x both orientations, 0 errors, field3d alive
 VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
                         through this environment's proxy, so these are the
@@ -409,6 +414,52 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   three trick plays counted as runs — and the moment Flea Flicker became a real
   deep shot its completions dragged "yards per run" from 4.5 to 8.0 with no
   handoff changing at all. Runs 5.3, tricks 9.1, on their own lines.
+- **AN INTERCEPTION IS A LIVE BALL, AND THE FIELD TURNS ROUND WITH IT.** A pick
+  used to be a whistle and a spot at `50 - yardsToGoal`, so the play that most
+  often ends in six points could not end in any. `state.possession` moves the
+  instant the ball is caught, and because every role in the update loop is
+  asked of `offenseTeam()`/`defenseTeam()` rather than remembered, that one
+  assignment re-points all of it. The direction does NOT come free:
+  `attackDir()` is -1 while `state.returning`, and every goal line, leverage
+  test and lateral goes through it. Four things bit. `_update` takes
+  its offence and defence lists at the TOP of the frame and the catch is
+  resolved half way down it, so on the frame of the pick the flag-pull check is
+  handed the new carrier's OWN side, himself included at range zero: measured,
+  he is recorded as grabbed by *himself* with the meter filling, 1.9% of a pull
+  in one frame and the renderer drawing the grab. It comes right on the next
+  frame, so a test that intercepts from OUTSIDE `_update` cannot see it at all —
+  `ruletest` forces the pick from inside the frame, where `_resolveCatch` does. `_steer` flags ANY player who would have left the
+  field and only the carrier is ever asked, so a corner who has been running
+  the paint carries a stale `outOfBounds` into the first frame of being one.
+  A marker already on the field cannot survive the flip — `against: 'defense'`
+  is resolved through `defenseTeam()` at the end of the play — so a pick with a
+  flag down is settled the old way, which is also the case the live ball exists
+  to allow (an interception under a defensive foul comes back). And the
+  takeover cannot go through `_takeOver`: possession has ALREADY changed, so
+  mirroring it a second time hands the ball straight back.
+- **THE OLD SPOT WAS TOO KIND, WHICH IS WHY THE SCORELINE DID NOT MOVE.**
+  `50 - yardsToGoal` is the mirror of the LINE OF SCRIMMAGE — where the ball
+  was snapped, not where it was caught — and an interception happens downfield
+  of the line. Spotting a return where it really ends starts the returning side
+  about five yards worse off on average (22.6 -> 27.2 to go), and 8.7 yards of
+  average return earns most of that back. Combined points per game 66.3 +/- 1.8
+  before, 66.0 +/- 1.5 after, over 64 games each: a free six every five games,
+  paid for on every other one. A mechanic that adds a way to score is not
+  automatically a buff — measure the field position it replaces.
+- **A PROBE MUST CHANGE THE STATE WHERE THE ENGINE CHANGES IT.** `pickcheck`
+  forces an interception from inside `externalRender`, and forcing it AFTER the
+  inner render call left the camera one frame behind the flip — 1.9% of return
+  frames on the wrong side of the ball, which is precisely the failure the probe
+  exists to find. A real pick is resolved in `_update`, which runs before the
+  renderer sees the state; force it there and it reads 0%. The same lesson as
+  `celebcheck` waiting on the celebration rather than on the clock: match the
+  engine's own ordering or you measure your own harness.
+- **A CONVERSION AND AN OVERTIME POSSESSION HAVE NO RETURN,** and neither is a
+  shortcut: the try is over the moment the defence has the ball, and a change
+  of possession in overtime ends the possession. Some codes award points for a
+  defensive return on a try; this file has no source for that number and does
+  not invent one — see `touchdownsPerPlay`, which was guessed at and wrong for
+  eleven releases.
 - **There are no chains: four downs to reach midfield, three to score once you
   have.** So there is always exactly one line that matters, and the read has to
   know which. YAC is worth counting on a first down and worth nothing on a last
@@ -610,9 +661,14 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   the GAME'S rig happens to be authored at, which silently overrode the
   `authorHeight` normalisation `playermodel.js` does for exactly this reason,
   and rendered a 1.744m character 6% short. Divide by the model's own height.
-- The camera sits behind whoever HAS THE BALL, and the offence always attacks
-  +x, so it never turns round; `engine.viewSign()` is the seam that says which
-  way is downfield and now always returns 1.
+- The camera sits behind whoever HAS THE BALL. For the whole of an ordinary
+  down the offence attacks +x, so it never turns round — **and an interception
+  return is the one time it does.** `engine.viewSign()` is the seam that says
+  which way is downfield, `state.viewDir` is the answer, and the same number
+  rotates the stick, so the controls and the picture cannot disagree. `viewDir`
+  outlives `state.returning` on purpose: it holds through the dead ball so the
+  shot does not whip back across the field over the celebration, and
+  `setupFormation` is what puts it back to +1.
 - **THE CONTROLS' CONTAINER IS NOT A CONTROL.** `pointer-events:auto` on
   `.right-cluster` made the whole column eat touches — the 8px flex gaps, the
   ragged edge where a row wraps short, the strip above SNAP — and none of it
@@ -723,6 +779,7 @@ merges, restart the branch instead — `git checkout -B <branch> origin/master`
   `npm run pose` (can a body hold these poses at all),
   `npm run hero` (…and is every move on the FRONT PAGE one of them),
   `npm run touch` (can a thumb play it — targets, safe areas, dead zones),
+  `npm run pick` (does the pick six play, and is the camera behind him),
   `node tools/posesheet.mjs <Clip>` (a clip big enough to judge the pose —
   measure-clip says whether it is correct, this says whether it is any good). Playwright is a
   devDependency purely so the browser harnesses survive a new container — the
