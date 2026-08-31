@@ -355,6 +355,45 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   was most of what kept the ball in the flat. Project the defender onto the LINE
   of the throw and ask whether he can cross it before the ball reaches his
   station.
+- **A QUARTERBACK SCRAMBLES SIDEWAYS, BECAUSE A3 SAYS SO.** `AI_SCRAMBLE_AT`
+  sat unreferenced for its whole life under a comment saying "before a QB tucks
+  and runs", while `_aiQBOrCarrier` said the opposite in prose. Both were half
+  right: tucking and running FORWARD is a dead ball at the line, but a passer
+  who has held it past his read does not stand in the pocket shuffling half a
+  yard either. He breaks it laterally, at a run, away from the nearest man and
+  toward the wider side. Two things it must have: the target clamped behind the
+  line AND `qb.x` held there outright, because `_seek` integrates and a clamp on
+  the target is not a clamp on where a frame lands him; and a POSSESSION gate —
+  `_dropback` is called for the quarterback on every frame of every pass play,
+  thrown or not, so a time test without one reported the pocket broken on 92% of
+  pass plays, most of them after the ball had gone. 28% with the gate, and
+  `simstats` asserts passers-past-the-line is 0.
+- **A FLEA FLICKER IS PLAY-ACTION HERE, AND THE POSSESSION FAKE WAS MEASURED AND
+  REJECTED.** The play names the QB as its carrier because he is the man who
+  THROWS it, and `op.carrier !== 'QB'` therefore skipped the transfer and just
+  set `handoffDone` — the flag that stops him being a passer — so a designed
+  deep shot resolved as a quarterback keeper. He stays the passer now and
+  throws. Handing it to the back for real and pitching it back also works, and
+  costs too much: `_isRunner` sends ALL FIVE defenders at a live runner, so the
+  fake empties the secondary and the ball comes back to a field with nobody in
+  it — **four flea flickers in five scored, and touchdowns went 13.9% of plays
+  to 17.6% on that one play alone.** Holding the deepest defender out of the
+  pursuit is the obvious answer and is worse: yards per carry 4.5 -> 9.2,
+  because this run defence is balanced on all five committing. Delaying his
+  commit by a beat helped neither number. The fake is worth having only
+  alongside a run-defence rebalance.
+- **AND `handoffDone` GOING FALSE AGAIN RE-ARMS THE AUTO-HANDOFF.** The pitch
+  back set it false on purpose; the auto-handoff is gated on exactly that flag,
+  so the next frame handed the ball straight back — **343 pitches in a single
+  down**, ping-ponging every other frame. It survived a first look because the
+  play still LOOKED right (the quarterback ends up with it and throws) and
+  because the probe recorded a BOOLEAN "did this play flick?", which reported a
+  contented 1. Count the thing itself. `trickStage` is the real "has this trick
+  already resolved" flag.
+- **A TRICK IS NOT A RUN.** `simstats` bucketed by `/pass/.test(type)`, so all
+  three trick plays counted as runs — and the moment Flea Flicker became a real
+  deep shot its completions dragged "yards per run" from 4.5 to 8.0 with no
+  handoff changing at all. Runs 5.3, tricks 9.1, on their own lines.
 - **There are no chains: four downs to reach midfield, three to score once you
   have.** So there is always exactly one line that matters, and the read has to
   know which. YAC is worth counting on a first down and worth nothing on a last
