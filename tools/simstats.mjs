@@ -149,7 +149,7 @@ function playGame(gameIdx) {
     else gained = 0;
     rows.push({
       type, isPass, threw, thrownAt, completed: !!ev.catch, intercepted, incomplete,
-      scrambled: !!ev.scramble, pastLine: !!ev.passerpastline,
+      scrambled: !!ev.scramble, flicked: ev.fleaback || 0, pastLine: !!ev.passerpastline,
       gained: Math.max(-15, Math.min(50, gained)),
       td, dur: f * DT, timedOut: f >= MAX_PLAY_FRAMES
     });
@@ -220,6 +220,12 @@ const scr = all.filter(r => r.scrambled).length;
 const scrOf = all.filter(r => r.isPass).length;
 console.log(row('Pockets broken (scramble)',
   scr + ' of ' + scrOf + ' pass plays (' + (100 * scr / Math.max(1, scrOf)).toFixed(0) + '%)', ''));
+const fl = all.filter(r => r.flicked);
+/* COUNT THE PITCHES, NOT THE PLAYS. A boolean "did this flick?" reported a
+   contented 1 while the ball was ping-ponging between the quarterback and the
+   back 343 times in a single down, because the play still ended the right way. */
+console.log(row('Flea flickers flicked',
+  fl.length + ' plays, max ' + Math.max(0, ...fl.map(r => r.flicked)) + ' pitches in one', 'max must be 1'));
 console.log(row('Passer past the line', String(all.filter(r => r.pastLine).length), 'must be 0'));
 console.log(row('Plays per game', box.playsPerGame, TARGET.playsPerGame));
 console.log(row('  of which regulation', box.regulationPlaysPerGame, '45-60'));

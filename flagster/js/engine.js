@@ -426,6 +426,7 @@
     s.handoffDone = false;
     s.passThrown = false;                 // A9 — one forward pass per down
     s.trickStage = 0;
+    s.trickAt = null;
     for (var pi = 0; pi < s.players.length; pi++) s.players[pi].scrambled = false;
     s.stats[this.offenseTeam()].plays++;
     // trick / run handoff timing
@@ -710,7 +711,16 @@
        committing — and delaying his commit by a beat helped neither number.
        The fake is worth having only alongside a run-defence rebalance, which is
        a bigger change than this one. */
-    if (op.trick === 'flea') { s.trickStage = 2; return; }
+    if (op.trick === 'flea') {
+      var back = off.filter(function (p) { return p.slot === 'RB'; })[0];
+      if (back) {
+        var passer0 = s.carrier;
+        passer0.hasBall = false; back.hasBall = true; s.carrier = back;
+        s.handoffDone = true; s.trickStage = 1;
+        return;
+      }
+      s.trickStage = 2; return;                 // no back to fake to; play it straight
+    }
     var tgt = off.filter(function (p) { return p.slot === op.carrier; })[0];
     if (!tgt) return;
     if (tgt !== s.carrier) {
@@ -722,10 +732,42 @@
     s.handoffDone = true;
   };
 
-  /* A flea flicker is a slow developer: the whole point is that the routes get
-     time while the defence reads run. Without this it inherited the 1.6s
-     default and came out before anyone was past the sticks. */
-  var AI_FLEA_DEVELOP = 2.6;
+  /* STAGE 2 — THE FLICK BACK.
+
+     The back carries it at the line to make the defence commit, then pitches it
+     back to the quarterback, who is still behind it. Two rules decide the
+     details rather than taste.
+
+     THE PITCH MUST GO BACKWARD. A ball thrown forward from downfield is an
+     illegal pass whoever throws it, so if the quarterback is not actually
+     behind the back when the moment comes there is no pitch — the play stays a
+     run and the back keeps it. That is the honest outcome, not a failure.
+
+     AND THE MAN WHO GETS IT BACK IS THE ORIGINAL PASSER AGAIN. `handoffDone`
+     means the ball has left his hands; when it comes back it has not, so it
+     goes false. That is not bookkeeping — it puts him back under A3 (he still
+     may not advance past the line), makes `_isRunner` false so the defence
+     covers instead of pursuing, and lets `_aiThrow` fire at all, since it
+     refuses to throw with anyone who is not `s.passer`. */
+  var FLEA_BACK_AT = 1.35;               // seconds after the snap, at the latest
+  var FLEA_BACK_X = 1.5;                 // …or this near the line, whichever first
+  var AI_FLEA_DEVELOP = 0.8;             // and then a beat to gather and look
+
+  Engine.prototype._fleaBack = function () {
+    var s = this.state, op = s.offPlay;
+    if (!op || op.trick !== 'flea' || s.trickStage !== 1) return;
+    var rb = s.carrier, qb = s.passer;
+    if (!rb || !qb || rb === qb) return;
+    if (rb.x < s.losX - FLEA_BACK_X && s.snapT < FLEA_BACK_AT) return;
+    s.trickStage = 2;
+    if (qb.x >= rb.x || qb.flagPulled) return;   // backward only, or no pitch
+    rb.hasBall = false; qb.hasBall = true;
+    s.carrier = qb;
+    s.handoffDone = false;                       // he is the passer again
+    s.trickAt = s.snapT;
+    this._flash('Flea flicker!');
+    this.onEvent({ type: 'fleaback' });
+  };
 
   /* ---------------------------- UPDATE LOOP ------------------------------ */
   Engine.prototype._update = function (dt) {
@@ -779,6 +821,7 @@
 
     // Auto handoff for run/trick shortly after snap
     if (s.autoHandoff && !s.handoffDone && s.snapT > 0.55) this._doHandoff();
+    if (s.trickStage === 1) this._fleaBack();
 
     // Move receivers along routes
     off.forEach(function (p) {
@@ -925,7 +968,7 @@
        catches the pitch, so he would throw on the first frame he held it — at
        receivers who have been running for a second and a half and are exactly
        where the play wants them NOT to be caught. */
-    if (s.trickStage === 2) return AI_FLEA_DEVELOP;
+    if (s.trickStage === 2 && s.trickAt != null) return s.trickAt + AI_FLEA_DEVELOP;
     return (p && AI_DEVELOP[p.type]) || 1.6;
   };
 
@@ -1694,10 +1737,51 @@
       if (covering || reachable) { this._seek(d, to, dt, 1.05); return; }
       // otherwise fall through and keep playing your assignment
     }
+    /* D9 — THE LAST MAN PLAYS LEVERAGE, NOT THE BALL.
+
+       `_isRunner` sent ALL FIVE defenders at the carrier the instant anyone
+       took a handoff, so the secondary emptied on contact. Two things were
+       wrong with that, and only one of them is about trick plays.
+
+       It is not how a defence works. Four men chase and one plays the last
+       line; that man does not run AT the ball, he holds his depth, mirrors the
+       carrier across the field and comes downhill when the run reaches him.
+       Running at it is how a safety gets outrun to the corner by his own
+       momentum.
+
+       And it is what made the flea flicker unstoppable: with every defender
+       drawn to the fake, the ball came back to a field with nobody in it, so
+       every completion was a touchdown.
+
+       TWO WAYS OF KEEPING HIM HOME WERE MEASURED AND ARE WORSE. Holding him out
+       of the pursuit entirely took yards per carry from 4.5 to 9.2 — nobody is
+       then goal-side of the runner at all. Making him idle for a beat before
+       committing (1.3s) cost most of the same, because the handoff is at 0.55s
+       and idling to 1.3 throws away six yards of pursuit. Depth is the thing to
+       keep, not stillness: he stays goal-side and useful against the run the
+       whole time, and he is still deep when a play-action throw goes up. */
     if (this._isRunner(s.carrier)) {
-      // Pursue where the carrier is GOING, not where they are.
       var spd = this.speedYds(d.data.speed) * this.staminaScale(d) *
                 ((!this.demo && this.difficulty && d.team !== this.userSide) ? this.difficulty.defSpeed : 1);
+      var deepest = null;
+      for (var di = 0; di < s.players.length; di++) {
+        var o2 = s.players[di];
+        if (o2.team !== d.team || o2.flagPulled) continue;
+        if (!deepest || o2.x > deepest.x) deepest = o2;
+      }
+      /* Goal-side and out of the runner's reach: hold depth, mirror him across
+         the field, and let him come. Applying this to EVERY deep defender
+         rather than only the last one was measured and is worse on both counts
+         — yards per carry 5.6 -> 7.2 and touchdowns no better — because it
+         peels off the second-level help that actually makes the tackles. One
+         man stays home; the rest chase. Once the carrier is inside
+         DEEP_TRIGGER the last man attacks like anyone else: a defender who
+         never closes is not one either. */
+      if (d === deepest && (d.x - s.carrier.x) > DEEP_TRIGGER) {
+        this._seek(d, { x: d.x, y: clamp(s.carrier.y, 1.5, FIELD_WID - 1.5) }, dt, 1.0);
+        return;
+      }
+      // Pursue where the carrier is GOING, not where they are.
       this._seek(d, this._interceptPoint(d, s.carrier, spd), dt, 1.0);
       return;
     }
@@ -2144,6 +2228,7 @@
      someone to move them — you can only fail to stand inside them. The radius
      is a little under the flag-pull reach, so it never pushes a defender out
      of range of a grab they had earned. */
+  var DEEP_TRIGGER = 9;                  // yards: inside this, the last man comes downhill
   var BODY_R = 0.45;
   var BREAK_RADIUS = 9;                  // how near the catch you must be to leave coverage
   var SEP_PUSH = 6.0;                    // yd/s of mutual avoidance at full overlap
@@ -2958,11 +3043,34 @@
     s.defPlay = D.DEF_PLAYS[Math.floor(Math.random() * D.DEF_PLAYS.length)];
     this.setupFormation();
   };
+  /* A TRICK IS RARE BY DESIGN, AND THAT IS WHAT MAKES IT WORK. The CPU picked
+     uniformly from the whole playbook, so with three trick plays in fifteen a
+     FIFTH of every game was a trick — a flea flicker every five possessions,
+     which no defence in any sport is built to see coming that often. It is also
+     the reason a working flea flicker moved the game's touchdown rate on its
+     own: not because one is too strong, but because twenty of them are.
+
+     Weighted by type, so the mechanic keeps its full strength on the snaps it
+     is actually called. The human's playbook is untouched — this is the CPU
+     deciding what to call, not a restriction on what may be called. */
+  var AI_PLAY_WEIGHT = { trick: 0.25 };
+
+  Engine.prototype._pickPlay = function (pool) {
+    var total = 0, i;
+    for (i = 0; i < pool.length; i++) total += (AI_PLAY_WEIGHT[pool[i].type] || 1);
+    var r = Math.random() * total;
+    for (i = 0; i < pool.length; i++) {
+      r -= (AI_PLAY_WEIGHT[pool[i].type] || 1);
+      if (r <= 0) return pool[i];
+    }
+    return pool[pool.length - 1];
+  };
+
   Engine.prototype.callDefense = function (play) {
     var s = this.state;
     s.defPlay = play;
     // CPU picks offense
-    s.offPlay = D.PLAYS[Math.floor(Math.random() * D.PLAYS.length)];
+    s.offPlay = this._pickPlay(D.PLAYS);
     this.setupFormation();
   };
 
@@ -2993,7 +3101,7 @@
     var s = this.state;
     if (!s || s.phase !== 'playcall') return;
     var legal = this.legalPlays();
-    s.offPlay = legal[Math.floor(Math.random() * legal.length)];
+    s.offPlay = this._pickPlay(legal);
     s.defPlay = D.DEF_PLAYS[Math.floor(Math.random() * D.DEF_PLAYS.length)];
     this.setupFormation();
   };

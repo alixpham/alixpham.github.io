@@ -368,20 +368,35 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   thrown or not, so a time test without one reported the pocket broken on 92% of
   pass plays, most of them after the ball had gone. 28% with the gate, and
   `simstats` asserts passers-past-the-line is 0.
-- **A FLEA FLICKER IS PLAY-ACTION HERE, AND THE POSSESSION FAKE WAS MEASURED AND
-  REJECTED.** The play names the QB as its carrier because he is the man who
-  THROWS it, and `op.carrier !== 'QB'` therefore skipped the transfer and just
-  set `handoffDone` — the flag that stops him being a passer — so a designed
-  deep shot resolved as a quarterback keeper. He stays the passer now and
-  throws. Handing it to the back for real and pitching it back also works, and
-  costs too much: `_isRunner` sends ALL FIVE defenders at a live runner, so the
-  fake empties the secondary and the ball comes back to a field with nobody in
-  it — **four flea flickers in five scored, and touchdowns went 13.9% of plays
-  to 17.6% on that one play alone.** Holding the deepest defender out of the
-  pursuit is the obvious answer and is worse: yards per carry 4.5 -> 9.2,
-  because this run defence is balanced on all five committing. Delaying his
-  commit by a beat helped neither number. The fake is worth having only
-  alongside a run-defence rebalance.
+- **A FLEA FLICKER HANDS IT OVER FOR REAL, AND IT TOOK THREE THINGS TO AFFORD
+  IT.** The play names the QB as its carrier because he is the man who THROWS
+  it, and `op.carrier !== 'QB'` therefore skipped the transfer and just set
+  `handoffDone` — the flag that stops him being a passer — so a designed deep
+  shot resolved as a quarterback keeper. The ball goes to the back now and comes
+  back on a pitch, and `handoffDone` going false again is what puts the QB back
+  under A3, keeps `_isRunner` false so the defence covers, and lets `_aiThrow`
+  fire at all.
+- **AND THE FAKE WAS UNSTOPPABLE UNTIL THE PLAY-CALLING WAS FIXED, NOT THE
+  DEFENCE.** `_isRunner` sent ALL FIVE defenders at a live runner, so the fake
+  emptied the secondary and the ball came back to a field with nobody in it:
+  four flea flickers in five scored, and touchdowns went 13.9% of plays to
+  **17.6% on that one play alone**. Five defensive answers were measured and
+  every one of them cost more than it saved — holding the deepest man out of the
+  pursuit entirely took yards per carry 4.5 -> 9.2, making him idle for a beat
+  cost most of the same, and applying leverage to every deep defender rather
+  than one took it to 7.2 while helping touchdowns not at all. **The actual
+  problem was that the CPU picked uniformly from fifteen plays, so a FIFTH of
+  every game was a trick and a flea flicker came round every five possessions.**
+  It is not that one is too strong; it is that twenty of them are.
+  `AI_PLAY_WEIGHT` puts tricks at a quarter weight — about 5% of snaps — and the
+  fake then ships at 15.9% touchdowns against 15.7% without it, inside the
+  seed-to-seed noise. Weight the CALL before nerfing the mechanic.
+- **THE LAST MAN PLAYS LEVERAGE, NOT THE BALL.** The one defensive change worth
+  keeping: the deepest defender holds his depth and mirrors the carrier across
+  the field rather than running at him, and comes downhill only once the run is
+  inside `DEEP_TRIGGER` (9 yards). Depth is the thing to keep, not stillness —
+  he stays goal-side and useful against the run the whole time, and he is still
+  deep when a play-action throw goes up. Costs 0.4 yards a carry.
 - **AND `handoffDone` GOING FALSE AGAIN RE-ARMS THE AUTO-HANDOFF.** The pitch
   back set it false on purpose; the auto-handoff is gated on exactly that flag,
   so the next frame handed the ball straight back — **343 pitches in a single
