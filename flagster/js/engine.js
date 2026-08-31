@@ -49,7 +49,26 @@
      so shaking someone off means genuinely getting away rather than wobbling
      out of range for a few frames. */
   var GRAB_DRAIN_S = 0.7;
-  var AI_SCRAMBLE_AT = 3.4;              // seconds holding the ball before a QB tucks and runs
+  /* D5 — THE SCRAMBLE, WHICH IS LATERAL, BECAUSE A3 SAYS SO.
+
+     This constant sat here unreferenced for its whole life under a comment
+     saying "before a QB tucks and runs", and `_aiQBOrCarrier` said the opposite
+     in prose: the passer never becomes a runner, because carrying it past the
+     line is a dead ball. Both were half right. Tucking and running FORWARD is
+     illegal and stays illegal — A3 kills the play at the line — but a
+     quarterback who has held the ball for three and a half seconds with nobody
+     open does not stand in the pocket shuffling sideways by half a yard, which
+     is exactly what `_dropback` had him doing for the other three and a half.
+
+     So he breaks the pocket. Laterally and backward, at a run rather than a
+     shuffle, away from whoever is closest and toward whichever sideline has
+     more room — buying a throwing lane, which is the legal half of what the
+     unused constant was reaching for. `AI_POCKET_EDGE` is the safety: the
+     scramble target is clamped behind the line with a yard and a half to spare,
+     so the AI can never talk itself into the one thing that ends the down. */
+  var AI_SCRAMBLE_AT = 4.4;              // seconds holding the ball before he breaks the pocket
+  var AI_SCRAMBLE_HEAT = 2.6;            // …or a defender this close, whichever comes first
+  var AI_POCKET_EDGE = 1.5;              // yards behind the line the scramble will not give up
   /* D6 — HOW OPEN IS OPEN ENOUGH, measured WHERE THE BALL ARRIVES.
 
      These used to be separation at the instant of the decision, and the ball
@@ -407,6 +426,7 @@
     s.handoffDone = false;
     s.passThrown = false;                 // A9 — one forward pass per down
     s.trickStage = 0;
+    for (var pi = 0; pi < s.players.length; pi++) s.players[pi].scrambled = false;
     s.stats[this.offenseTeam()].plays++;
     // trick / run handoff timing
     var op = s.offPlay;
@@ -644,13 +664,56 @@
   Engine.prototype._doHandoff = function () {
     var s = this.state;
     var op = s.offPlay;
-    if (!op || s.handoffDone) return;
+    /* ONCE PER DOWN, AND `handoffDone` ALONE CANNOT SAY SO. A flea leaves it
+       FALSE on purpose — that is what keeps the quarterback a passer — and the
+       auto-handoff that calls this is gated on exactly that flag, so without a
+       second test it fires again on the very next frame, and every frame after.
+       `trickStage` is the real "has this trick already resolved" question, and
+       it is zero for every play that is not one. */
+    if (!op || s.handoffDone || s.trickStage !== 0) return;
     var off = s.players.filter(function (p) { return p.team === this.offenseTeam(); }, this);
-    var carrierSlot = op.carrier;
-    if (op.trick === 'reverse') carrierSlot = 'QB'; // QB hands to RB then RB to WR2 later
-    var tgt = off.filter(function (p) { return p.slot === (op.carrier === 'QB' ? 'QB' : op.carrier); })[0];
+    /* A FLEA FLICKER IS TWO HANDOFFS, AND THIS ONLY EVER DID THE FIRST HALF OF
+       NOTHING. The play names the QB as its carrier — because he is the man who
+       ends up THROWING it — and `op.carrier !== 'QB'` therefore skipped the
+       transfer entirely and just set `handoffDone`. The ball never left his
+       hands, so the defence had nothing to bite on, and with `handoffDone` true
+       A3 stopped applying and he simply ran: a designed deep shot that resolved
+       as a quarterback keeper, which is neither what the play is called nor
+       anything a flea flicker does.
+
+       So stage 1 puts it in the back's hands for real. Stage 2, below, pitches
+       it back. `s.trickStage` has been initialised at every snap since the
+       trick plays were written and read by nothing until now. */
+    /* A FLEA FLICKER ENDS WITH A THROW, AND THIS ONE ENDED WITH A JOG. The play
+       names the QB as its carrier — because he is the man who throws it — and
+       `op.carrier !== 'QB'` therefore skipped the transfer entirely and just set
+       `handoffDone`, which is the flag that stops him being a passer. So a
+       designed deep shot resolved as a quarterback keeper: he kept the ball,
+       became a runner, and ran. Neither the name of the play nor anything a
+       quarterback does with a flea flicker.
+
+       He stays the passer instead. `handoffDone` is left FALSE — that is what
+       keeps him under A3, keeps `_isRunner` false so the defence covers rather
+       than pursues, and lets `_aiThrow` fire at all, since it refuses to throw
+       with anyone who is not `s.passer` — and `trickStage` records that this
+       trick has already resolved so the auto-handoff above does not run again.
+
+       MODELLED AS PLAY-ACTION, NOT AS A POSSESSION FAKE, and that was measured
+       rather than chosen. Handing the ball to the back for real and pitching it
+       back does work — the pitch fires once, backward-only, and he throws — but
+       `_isRunner` sends ALL FIVE defenders at a live runner, so the fake empties
+       the secondary and the ball comes back to a field with nobody in it: flea
+       flickers scored on about four snaps in five and took the game's touchdown
+       rate from 13.9% of plays to 17.6% on their own. Holding the deepest man
+       out of the pursuit fixes that and costs far more than it saves — yards per
+       carry 4.5 -> 9.2, because this run defence is balanced on all five
+       committing — and delaying his commit by a beat helped neither number.
+       The fake is worth having only alongside a run-defence rebalance, which is
+       a bigger change than this one. */
+    if (op.trick === 'flea') { s.trickStage = 2; return; }
+    var tgt = off.filter(function (p) { return p.slot === op.carrier; })[0];
     if (!tgt) return;
-    if (op.carrier !== 'QB') {
+    if (tgt !== s.carrier) {
       var qb = s.carrier;
       qb.hasBall = false;
       tgt.hasBall = true;
@@ -658,6 +721,11 @@
     }
     s.handoffDone = true;
   };
+
+  /* A flea flicker is a slow developer: the whole point is that the routes get
+     time while the defence reads run. Without this it inherited the 1.6s
+     default and came out before anyone was past the sticks. */
+  var AI_FLEA_DEVELOP = 2.6;
 
   /* ---------------------------- UPDATE LOOP ------------------------------ */
   Engine.prototype._update = function (dt) {
@@ -851,7 +919,13 @@
 
   /* When the concept he called is ready to be thrown. See D7. */
   Engine.prototype._readyAt = function () {
-    var p = this.state.offPlay;
+    var s = this.state, p = s.offPlay;
+    /* A FLEA FLICKER'S READ STARTS WHEN THE BALL COMES BACK, not at the snap.
+       Measured from the snap the quarterback is already "late" the instant he
+       catches the pitch, so he would throw on the first frame he held it — at
+       receivers who have been running for a second and a half and are exactly
+       where the play wants them NOT to be caught. */
+    if (s.trickStage === 2) return AI_FLEA_DEVELOP;
     return (p && AI_DEVELOP[p.type]) || 1.6;
   };
 
@@ -862,9 +936,50 @@
        and standing rigid until the throw, which on an extended play is one
        more frozen player. */
     qb.shuf = (qb.shuf || 0) + dt;
-    var target = { x: s.losX - 5 + Math.sin(qb.shuf * 1.4) * 0.5,
-                   y: qb.y + Math.cos(qb.shuf * 1.1) * 0.6 };
-    this._seek(qb, target, dt, 0.7);
+
+    /* How close the nearest man is, the same measure `_aiThrow` calls `heat`. */
+    var heat = 99, near = null;
+    for (var i = 0; i < s.players.length; i++) {
+      var d = s.players[i];
+      if (d.team === this.offenseTeam() || d.flagPulled) continue;
+      var dd = dist(d, qb);
+      if (dd < heat) { heat = dd; near = d; }
+    }
+
+    /* ONLY WHILE HE STILL HAS IT. `_dropback` is called for the quarterback on
+       every frame of every pass play, thrown or not — after the release he goes
+       on "dropping back" while the receiver runs — so a time-based test with no
+       possession check fires on almost every down. Measured, it reported the
+       pocket broken on 92% of pass plays, most of them after the ball had
+       already gone. A man who has thrown it is not scrambling. */
+    var holding = (qb === s.carrier) && !s.passThrown && !(s.ball && s.ball.inAir);
+
+    var target;
+    if (holding && (s.snapT > AI_SCRAMBLE_AT || heat < AI_SCRAMBLE_HEAT)) {
+      // Once per down, not once per frame: this is a thing that happened, not
+      // a state the play is in.
+      if (!qb.scrambled) { qb.scrambled = true; this.onEvent({ type: 'scramble' }); }
+      /* BREAK THE POCKET. Away from the nearest man in y, except when that
+         runs him at the paint — a sideline is as good as a defender to a
+         quarterback, so when there is more room the other way he takes it. */
+      var away = near ? (qb.y >= near.y ? 1 : -1) : 1;
+      if (qb.y + away * 6 < 2 || qb.y + away * 6 > FIELD_WID - 2) {
+        if ((FIELD_WID - qb.y) > qb.y) away = 1; else away = -1;
+      }
+      target = { x: Math.min(qb.x - 0.6, s.losX - AI_POCKET_EDGE),
+                 y: clamp(qb.y + away * 6, 2, FIELD_WID - 2) };
+      this._seek(qb, target, dt, 1.0);
+    } else {
+      target = { x: s.losX - 5 + Math.sin(qb.shuf * 1.4) * 0.5,
+                 y: qb.y + Math.cos(qb.shuf * 1.1) * 0.6 };
+      this._seek(qb, target, dt, 0.7);
+    }
+    /* A3 IS NOT A THING TO STEER NEAR. `_seek` integrates toward a target and
+       the clamp above is on the TARGET, not on where a frame of movement
+       actually lands him; a scramble that starts near the line could still
+       step across it and end the down on a rule the AI is not even trying to
+       break. Hold him behind it outright. */
+    qb.x = Math.min(qb.x, s.losX - 0.6);
     if (s.snapT > this._readyAt() && !s.ball.inAir && !s.pendingThrow) this._aiThrow();
   };
 

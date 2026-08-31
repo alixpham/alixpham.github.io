@@ -149,6 +149,7 @@ function playGame(gameIdx) {
     else gained = 0;
     rows.push({
       type, isPass, threw, thrownAt, completed: !!ev.catch, intercepted, incomplete,
+      scrambled: !!ev.scramble, pastLine: !!ev.passerpastline,
       gained: Math.max(-15, Math.min(50, gained)),
       td, dur: f * DT, timedOut: f >= MAX_PLAY_FRAMES
     });
@@ -162,7 +163,13 @@ const all = [];
 for (let g = 0; g < GAMES; g++) all.push(...playGame(g));
 
 const passPlays = all.filter(r => r.isPass);
-const runPlays = all.filter(r => !r.isPass);
+/* A TRICK IS NOT A RUN, and calling it one made this line lie. `isPass` is
+   `/pass/.test(type)`, so all three trick plays fell into the run bucket — and
+   once Flea Flicker became a genuine deep shot instead of a quarterback keeper,
+   its completions dragged "yards per run" from 4.5 to 8.0 without a single
+   handoff changing. Runs are runs; tricks get their own line. */
+const runPlays = all.filter(r => r.type === 'run');
+const trickPlays = all.filter(r => r.type === 'trick');
 const thrown = passPlays.filter(r => r.threw);
 const pct = (n, d) => d ? +(100 * n / d).toFixed(1) : 0;
 const avg = a => a.length ? +(a.reduce((x, y) => x + y, 0) / a.length).toFixed(2) : 0;
@@ -199,12 +206,21 @@ const row = (label, value, target) =>
 console.log(`\nFLAGSTER box score — ${GAMES} games, ${DIFFICULTY}, seed ${SEED}, ${all.length} plays\n`);
 console.log(row('Yards per pass play', box.yardsPerPassPlay, TARGET.yardsPerPassPlay));
 console.log(row('Yards per run', box.yardsPerRun, TARGET.yardsPerRun));
+console.log(row('Yards per trick play', avg(trickPlays.map(r => r.gained)) + '  (' + trickPlays.length + ' plays)', ''));
 console.log(row('Pass plays never thrown', box.passPlaysNeverThrown + '%', TARGET.passPlaysNeverThrown));
 console.log(row('Completion %', box.completionPct + '%', TARGET.completionPct));
 console.log(row('Interception rate', box.interceptionPct + '%', '~3-5%'));
 console.log(row('Touchdowns per play', box.touchdownsPerPlay + '%', TARGET.touchdownsPerPlay));
 console.log(row('Gains of 3 yards or fewer', box.gainsOfThreeOrFewer + '%', TARGET.gainsOfThreeOrFewer));
 console.log(row('Time to throw', box.timeToThrow + 's', TARGET.timeToThrow));
+/* WHAT THE QUARTERBACK DID WITH HIS FEET, and the one thing he must never do.
+   A3 kills the down if the passer crosses the line, so a scramble that ever
+   causes one is a bug in the scramble, not a rules event worth having. */
+const scr = all.filter(r => r.scrambled).length;
+const scrOf = all.filter(r => r.isPass).length;
+console.log(row('Pockets broken (scramble)',
+  scr + ' of ' + scrOf + ' pass plays (' + (100 * scr / Math.max(1, scrOf)).toFixed(0) + '%)', ''));
+console.log(row('Passer past the line', String(all.filter(r => r.pastLine).length), 'must be 0'));
 console.log(row('Plays per game', box.playsPerGame, TARGET.playsPerGame));
 console.log(row('  of which regulation', box.regulationPlaysPerGame, '45-60'));
 console.log(row('  overtime plays (total)', box.overtimePlays, ''));
