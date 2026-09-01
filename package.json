@@ -23,7 +23,8 @@
     "touch": "node tools/touchcheck.mjs",
     "pick": "node tools/pickcheck.mjs",
     "audition": "node tools/clip-audition.mjs",
-    "ochi:fetch": "node tools/ochi-fetch.mjs"
+    "ochi:fetch": "node tools/ochi-fetch.mjs",
+    "subpath": "node tools/subpathcheck.mjs"
   },
   "devDependencies": {
     "playwright": "^1.61.1"

@@ -1,6 +1,6 @@
 # Where this repo is — read before doing anything else
 
-**`master` is v3.25.1 and it is live at https://alixpham.github.io/.** Nothing
+**`master` is v3.25.2 and it is live at https://alixpham.github.io/.** Nothing
 is unmerged and nothing is waiting on a human. `claude/status-sx79gn` is the
 working branch and is restarted from `origin/master` after every squash merge.
 
@@ -32,7 +32,7 @@ Both were put to the user and answered:
 ## 2. How to check the ground is where you think it is
 
 ```sh
-npm run lint      # 60/60 files parse
+npm run lint      # 63/63 files parse
 npm test          # 55 rule assertions
 npm run smoke     # every screen x both orientations, 0 errors, field3d alive
 node tools/simstats.mjs
@@ -72,6 +72,7 @@ it. They are cheap; run the ones near what you touched.
 | `npm run feet` | where the feet really are relative to the turf |
 | `npm run celebs` | every celebration, forced and read off the renderer |
 | `npm run touch` | can a thumb play it — targets, safe areas, dead zones |
+| `npm run subpath` | does the site still work served from a project-page folder |
 
 ---
 
@@ -121,7 +122,77 @@ This is the part a new container silently loses.
 
 ---
 
-## 4. What is open
+## 4. MOVING THIS REPO TO PRIVATE `malixsys/flagster`
+
+Decided, not yet done. The goal is that **the code is private and only the page
+is public**, so the public mobile-testing URL survives.
+
+`malixsys` is a personal account on a **paid** plan, which is the fact that
+makes this simple: GitHub publishes Pages from a *private* repo on Pro, and the
+published site is public. So this needs **no split and no publish step** — one
+private repo, one public page. (On a free plan Pages only publishes from public
+repos, which is why the alternative was ever considered.)
+
+**The site moves from a domain root to a project page**, i.e. from
+`alixpham.github.io/` to `https://malixsys.github.io/flagster/`. That is the one
+technical risk, and it is checked: `npm run subpath` serves the repo under a
+`/flagster` prefix, refuses everything outside it, and asserts Three.js loaded,
+the menu rendered, no console errors and **no failed requests**. It passes,
+because every path in the site is relative — the import map uses
+`./flagster/lib/...`, the boot script has no leading slash, and `playermodel.js`
+derives its base from its own `<script src>`. Run it again after the move.
+
+### Why a Claude session cannot do this for you
+
+Both were tried and both are hard limits, not workarounds waiting to be found:
+
+* **Creating the repo** — the GitHub App returns `403 Resource not accessible by
+  integration`. It can read and write repos it is installed on; it cannot make
+  new ones.
+* **Attaching it** — `add_repo` refuses: *"cross-tier adds are not supported in
+  v1: requested malixsys/flagster but session already has repos from owner(s)
+  [alixpham]"*. A session bound to one owner cannot reach another.
+
+### The migration, which is two commands
+
+The copy does not need Claude at all, and doing it with `--mirror` keeps every
+branch, tag and commit rather than flattening to a snapshot:
+
+```sh
+# 1. create an EMPTY private repo at github.com/malixsys/flagster
+#    (no README, no .gitignore, no licence — an init commit makes step 2 messier)
+
+# 2. mirror the whole history across
+git clone --mirror https://github.com/alixpham/alixpham.github.io.git
+git push --mirror https://github.com/malixsys/flagster.git   # from inside the .git dir
+```
+
+Then, in the new repo: **Settings → Pages → Deploy from a branch → `master` →
+`/ (root)`**. Confirm it reports the site live at
+`https://malixsys.github.io/flagster/`.
+
+### After the move
+
+* **Start the next Claude session with `malixsys/flagster` as its source.** This
+  one cannot follow you there.
+* Decide what `alixpham/alixpham.github.io` becomes. `ROLLBACK.md` restores the
+  original portfolio to it; leaving it as a stale copy of the game is the one
+  outcome worth avoiding, since it will keep serving an old build forever.
+* Update the live URL in `CLAUDE.md` (the "always output the live page URL" rule
+  names the old one) and at the bottom of this file.
+* **The `rlkey` argument changes.** `tools/ochi-fetch.mjs` keeps the Dropbox key
+  out of the repo *because the repo is public*. Once it is private that reason
+  is gone and the full link can live in the tool, so `npm run ochi:fetch` needs
+  no environment variable. Nothing forces that change — but the comment
+  explaining the omission will be wrong, and a wrong comment is worse than none.
+* Going private does **not** retroactively unpublish. Everything here has been
+  public since 2014 and this work has been public throughout. There are no forks
+  (`forks_count` 0), but assume anything committed so far is public forever. No
+  secret has been committed — the Dropbox key was deliberately kept out.
+
+---
+
+## 5. What is open
 
 1. **Presentation (E3), the only phase never finished.** Benches, coaches,
    officials, a chain crew, a crowd that is not static. Nothing to do with
