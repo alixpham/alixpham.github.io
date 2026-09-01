@@ -1,6 +1,6 @@
 # Where this repo is — read before doing anything else
 
-**`master` is v3.23.0 and it is live at https://alixpham.github.io/.** Nothing
+**`master` is v3.24.0 and it is live at https://alixpham.github.io/.** Nothing
 is unmerged and nothing is waiting on a human. `claude/status-sx79gn` is the
 working branch and is restarted from `origin/master` after every squash merge.
 
@@ -103,36 +103,30 @@ This is the part a new container silently loses.
 
 ## 4. What is open
 
-Ordered, with the dependency that matters called out.
+1. **Evaluate the five unmeasured Studio Ochi clips.** Catch and Fall, Hold,
+   Kick, Kickoff, Throw 01. Each is a 4.125s *performance*, not a cycle, so each
+   needs a segment pulled with `tools/mocap/ochi-cycle.mjs` and measured against
+   the authored clip it would replace. `Run Fast` is the one that has been done:
+   5.43 m/s, slower than this game's own Run, measured and declined. Needs the
+   licensed FBX re-fetched first — see section 3.
 
-1. **Source or retire the last unsourced targets.** `simstats` still carries
-   `yardsPerRun: '~4-5'`, `gainsOfThreeOrFewer: '~35%'` and
-   `playsPerGame: '45-60'` with nothing behind them, plus a conversion rate
-   guessed at 60-75%. One target in that same set —
-   `touchdownsPerPlay: '~5-8%'` — was chased for eleven releases and turned out
-   to be **half of reality**; the others have earned no more credit than they
-   can show. See REALISM.md v3.22.0 for the method: twenty real scorelines,
-   held against the game's own play count.
-
-2. **Defensive pursuit and contain — BLOCKED ON (1).** Yards per carry reads
-   5.6 against that unsourced 4-5, so do not tune to it until the number is
-   found. The structural problem is real either way: `_isRunner` sends all five
-   defenders at the carrier, there is no contain behind them, and that is what
-   made the flea flicker unstoppable until the play-calling was weighted.
-
-3. **The five unmeasured Studio Ochi clips.** Catch and Fall, Hold, Kick,
-   Kickoff, Throw 01. Each is a 4.125s performance, so each needs a segment
-   pulled with `tools/mocap/ochi-cycle.mjs` and measured against the authored
-   clip it would replace. `Run Fast` is the one that has been done: 5.43 m/s,
-   slower than this game's own Run, measured and declined.
-
-4. **Presentation (E3), the only phase never finished.** Benches, coaches,
+2. **Presentation (E3), the only phase never finished.** Benches, coaches,
    officials, a chain crew, a crowd that is not static. Nothing to do with
    correctness — but the simulation is now more finished than the stadium
    around it.
 
-Also true and worth stating: **points per game has drifted to ~70 against a
-real 64.5** since the live interception return landed. Still inside the band,
-but it is the one number with a source, so it is the one to watch.
+3. **Three targets that cannot be sourced.** `yardsPerRun`,
+   `gainsOfThreeOrFewer` and `playsPerGame` have nothing behind them, plus a
+   conversion rate guessed at 60-75%. They were searched for in v3.24.0 and
+   **there is no public statistical database for either code** — only rulebooks
+   and scorelines. They are marked unsourced in `simstats` and should stay that
+   way until a real number turns up. One target in that same set,
+   `touchdownsPerPlay: '~5-8%'`, was chased for eleven releases and turned out
+   to be half of reality.
+
+**The metric to steer by is combined points per game**, because scorelines are
+the one thing about this sport that IS public: 64.5 across twenty IFAF World
+Championship games, and the game currently measures 64.0. If a change moves
+that, it matters; if it only moves an unsourced band, ask what the band is for.
 
 Live page: **https://alixpham.github.io/**
