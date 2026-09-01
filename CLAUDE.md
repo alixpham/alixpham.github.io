@@ -52,6 +52,9 @@ tools/glb-graft-head.mjs      cuts a helmet off one character and grafts
                               another's head, hair and beards on; --report
                               prints the neck seam as a number
 tools/mocap/ochi-clips.mjs    the game's own 22 clips -> the Ochi metarig
+tools/ochi-fetch.mjs          gets the licensed pack back into tools/ochi/ from
+                              $FLAGSTER_OCHI_URL — the folder is named in the
+                              tool, the rlkey stays out of a PUBLIC repo
 tools/clip-audition.mjs       is a bought clip worth adopting? peak hand speed,
                               root travel, and whether it ends where it began,
                               for a whole pack in one table
@@ -292,6 +295,16 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   not automatically good geometry — `glb-graft-head` refuses non-finite
   positions and names them, and `showOne` falls back to a style the model
   actually carries.
+- **THE LINK TO THE LICENSED PACK DOES NOT GO IN THIS REPO, BECAUSE THIS REPO IS
+  PUBLIC.** `alixpham.github.io` is a GitHub Pages site with `visibility:
+  public`, so a Dropbox share link committed here is a working download of
+  licensed artwork for anyone who reads it — the same redistribution the
+  `.gitignore` entries for `*.fbx`, `*.blend` and `tools/ochi/` exist to
+  prevent, one hop removed. The FOLDER is named in `tools/ochi-fetch.mjs` and
+  HANDOFF.md so nobody has to describe it from memory; the `rlkey` lives in
+  `$FLAGSTER_OCHI_URL` in the environment config, beside `FLAGSTER_CHROME`.
+  `npm run ochi:fetch` is then one command, and prints the folder and asks for
+  the key when the variable is unset.
 - **THE STUDIO OCHI SOURCE IS IN THE DROPBOX, AND IT REPRODUCES THE SHIPPED
   CHARACTER BYTE FOR BYTE.** `build-ochi-player.mjs --fbx <_ANIM.fbx> --texture
   <atlas.png>` remakes `ochiplayer.glb` at the same 856,816 bytes and the same
