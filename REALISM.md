@@ -52,6 +52,82 @@ at pursuit and leverage again rather than at another rule.
 
 ---
 
+## v3.24.0 — the fourth down, and the flag pull that was hiding it
+
+**The game plays IFAF everywhere except two places.** `data.js` says "5v5 IFAF
+Olympic flag football"; the engine models IFAF halves, no-run zones, the 7-yard
+rush line and 1- and 2-point conversions from the 5 and the 10. But it gave the
+offence **three downs to score** after midfield, which is NFL Flag's rule —
+IFAF gives four — and `engine.js`'s own header claimed a 70x25 IFAF field
+against a constant that read 30.
+
+Sourced from three rulebooks: [Flag Football Global](https://www.flagfootballglobal.com/en/rules),
+[NFL FLAG](https://nflflag.com/coaches/flag-football-rules), and IFAF's own
+overview. NFL Flag: 70x30, four downs to midfield, **three** to score. IFAF:
+70x25, four to midfield, **four** to score. Everything else is common to both.
+
+The width stays at 30 — that is a deliberate gameplay choice, five yards being
+a fifth of the surface and the dimension that decides a receiver's room against
+man coverage. The header now says so instead of contradicting the constant.
+
+### The rules-correct change made the game LESS like the sport
+
+| | combined points per game |
+| --- | --- |
+| Three downs to score (as shipped) | 67.0 |
+| **Four downs to score (IFAF)** | **76.3** |
+| **Real — 20 IFAF World Championship games** | **64.5** |
+
+The three-down rule had been masking a defence that gives up too much per
+possession. So the fix was not shippable alone; it was shippable with the thing
+it exposed.
+
+### And what it exposed was the flag pull, not pursuit
+
+The yards were not going to bad angles. **12% of pass plays gained 25+**, and
+15-yard-plus plays carried **73% of all passing yardage**. The average throw
+travelled 7.2 yards against 14.4 yards per completion — so **over half of all
+passing yardage was run after the catch.**
+
+`npm run pulls` said why, against its own bars:
+
+| | before | after | target |
+| --- | --- | --- | --- |
+| Plays where a defender got a hand on that ended in a pull | 71.2% | **80.8%** | 75-90% |
+| Time to pull, median | 1.35s | **1.12s** | 0.6-1.0s |
+| Engagements needed per pull | 1.99 | 1.87 | 1-2 |
+
+**Only the closest defender fed the meter.** A carrier surrounded by three men
+was pulled at exactly the speed of being chased by one — and gang pursuit is the
+only thing this sport has to stop anybody with, there being no tackling. A
+second man reaching in is now worth half a man and a third half of that; a
+fourth is worth nothing, which is also true.
+
+### Where it landed
+
+| Metric | Real 5v5 | Flagster (4 seeds) |
+| --- | --- | --- |
+| **Combined points per game** | **64.5** | **64.0** |
+| Touchdowns per game (both) | ~9.2 | 9.8 |
+| Yards per run | 4-5 (unsourced) | **4.75** |
+| Yards per pass play | 7-9 | 8.1 |
+| Completion % | 55-65% | 62.5% |
+| Interception rate | 3-5% | 3.4% |
+
+Yards per carry fell into its band **on its own**, without being tuned toward —
+which is how you find out a band was right and the mechanic was wrong.
+
+### And the targets that cannot be sourced at all
+
+`yardsPerRun`, `gainsOfThreeOrFewer` and `playsPerGame` were searched for and
+**there is no public statistical database for either code** — only rulebooks and
+scorelines. They stay marked as unsourced. Scorelines ARE public, which is
+exactly why points per game is the metric to steer by and the reason
+`touchdownsPerPlay` could be caught at half of reality in v3.22.0. Its target
+now reads ~16% rather than the ~5-8% that was chased for eleven releases.
+
+---
+
 ## v3.23.0 — an interception is a live ball
 
 **There is such a thing as a pick six in flag football, and there was no such

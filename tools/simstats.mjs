@@ -241,7 +241,7 @@ if (AS_JSON) { console.log(JSON.stringify(box, null, 2)); process.exit(0); }
 
 const TARGET = {
   yardsPerPassPlay: '~7-9', yardsPerRun: '~4-5', passPlaysNeverThrown: '~2-4%',
-  completionPct: '~55-65%', touchdownsPerPlay: '~5-8%', gainsOfThreeOrFewer: '~35%',
+  completionPct: '~55-65%', touchdownsPerPlay: '~16%', gainsOfThreeOrFewer: '~35%?',
   timeToThrow: '~2.5-3.5s', playsPerGame: '45-60',
   /* MEASURED OFF REAL RESULTS, not guessed. Twenty games from the 2024 IFAF
      Men's Flag Football World Championship — group stage and the whole knockout
@@ -316,6 +316,21 @@ const patTwo = pats.filter(p => p.points === 2).length;
 console.log(row('  conversion attempts',
   pats.length + (pats.length ? '  ' + (100 * patGood / pats.length).toFixed(0) + '% good, '
     + (100 * patTwo / pats.length).toFixed(0) + '% went for 2' : ''), '~60-75%? unsourced'));
+if (process.argv.includes('--gains')) {
+  /* WHERE THE YARDS ACTUALLY COME FROM. A mean hides a distribution, and a
+     defence that leaks is not leaking evenly — it is giving up a tail. */
+  const buckets = [[-99,0],[1,3],[4,7],[8,14],[15,24],[25,99]];
+  for (const [lab, rows2] of [['pass', passPlays], ['run', runPlays], ['trick', trickPlays]]) {
+    const n = rows2.length || 1;
+    const line = buckets.map(([a,b]) => {
+      const c = rows2.filter(r => r.gained >= a && r.gained <= b).length;
+      return (a<=0?'<=0':a+'-'+(b>90?'+':b)) + ' ' + (100*c/n).toFixed(0) + '%';
+    }).join('  ');
+    const tail = rows2.filter(r => r.gained >= 15);
+    console.log('  ' + lab.padEnd(6) + line + '   | 15+ yd plays carry ' +
+      (100 * tail.reduce((a,r)=>a+r.gained,0) / Math.max(1, rows2.reduce((a,r)=>a+r.gained,0))).toFixed(0) + '% of all its yards');
+  }
+}
 if (process.argv.includes('--pats')) {
   const by = {};
   for (const p of pats) { by[p.play] = by[p.play] || { n: 0, g: 0, type: p.type }; by[p.play].n++; if (p.good) by[p.play].g++; }

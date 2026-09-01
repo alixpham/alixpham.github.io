@@ -460,9 +460,14 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   defensive return on a try; this file has no source for that number and does
   not invent one — see `touchdownsPerPlay`, which was guessed at and wrong for
   eleven releases.
-- **There are no chains: four downs to reach midfield, three to score once you
-  have.** So there is always exactly one line that matters, and the read has to
-  know which. YAC is worth counting on a first down and worth nothing on a last
+- **There are no chains: four downs to reach midfield, FOUR more to score.** So
+  there is always exactly one line that matters, and the read has to know which.
+  It was three to score for a long time, which is NFL Flag's rule in a game that
+  calls itself IFAF everywhere else — `data.js` says "5v5 IFAF Olympic flag
+  football" and the engine header lists IFAF halves, no-run zones and rush line.
+  **The width is the one deliberate departure**: 70 x 30 is NFL Flag's, kept on
+  purpose because five yards is a fifth of the surface and decides how much room
+  a receiver has against man coverage. YAC is worth counting on a first down and worth nothing on a last
   one — you do not bet a series on five yards of run-after-catch — so the
   allowance is discounted by what the down is worth.
 - **THE TOUCHDOWN TARGET WAS WRONG, AND THE GAME WAS RIGHT.** `simstats` has
@@ -495,6 +500,29 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   `TIP_PICK` only turns over a deflection made by a DEFENDER — a tip a receiver
   recovers is just a completion nobody would credit. 0.8% -> 4.8%, read
   untouched.
+- **THE RULES-CORRECT CHANGE MADE THE GAME LESS LIKE THE SPORT, AND THAT WAS THE
+  FINDING.** Giving the offence IFAF's fourth down to score took combined points
+  from 67.0 a game to **76.3**, against a real 64.5 — the three-down rule had
+  been masking a defence that gives up too much per possession. So the rule fix
+  is not shippable on its own; it is shippable with the thing it exposes.
+- **AND WHAT IT EXPOSED WAS THE FLAG PULL, NOT PURSUIT.** The yards were not
+  going to bad angles. 12% of pass plays were gaining 25+, 15-yard-plus plays
+  carried **73% of all passing yardage**, and the average throw travelled 7.2
+  yards against 14.4 yards per completion — so **over half of passing yardage
+  was run after the catch**. `npm run pulls` said why: a pull took 1.35s against
+  its own 0.6-1.0s bar, and only 71% of plays where a defender got a hand on
+  ended in one. **Only the CLOSEST defender fed the meter**, so a carrier
+  surrounded by three men was pulled at the speed of being chased by one, and
+  gang pursuit is the only thing this sport has to stop anybody with. A second
+  man is worth half a man and a third half of that. Pull conversion 71% ->
+  **81%**, median 1.35s -> 1.12s, and yards per carry fell into its 4-5 band on
+  its own — which is how you find out a band was right and the mechanic was
+  wrong, rather than tuning to the band.
+- **NO PUBLIC BOX SCORE EXISTS FOR THIS SPORT.** `yardsPerRun`,
+  `gainsOfThreeOrFewer` and `playsPerGame` were searched for and cannot be
+  sourced — there is no statistical database for IFAF or NFL Flag, only
+  rulebooks and scorelines. They stay marked. **Scorelines are the one thing
+  that IS public**, which is why points per game is the metric to steer by.
 - **A CONVERSION IS A PLAY, AND THE PROBE COUNTED ZERO OF THEM.** `patPlays`
   filtered on a field the row never set, so it was hard-wired to 0 while ~9.8
   were being played every game. And reading success off the conversion's own
