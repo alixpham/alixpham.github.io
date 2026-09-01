@@ -1179,6 +1179,7 @@
 
     var camFx = MID;           // smoothed camera focus (field X)
     var camFz = null;          // smoothed camera lateral follow (world Z)
+    var camDir = 1;            // which way the lens is looking (see updateCamera)
     var chaseW = 0;            // 0..1: how much the look-at is on a ball in flight
     var holdW = 0;             // 0..1: ...and how much of it is on a ball carrier
                                // (not ud.carryW, which is the carry-POSE blend)
@@ -1471,14 +1472,21 @@
       var yawT = ud.yaw;
       if (cel) {
         /* A celebration is PLAYED TO somebody or it is a man waving at grass.
-           The scorer turns to the camera — which is always behind the offence,
-           so that is yaw PI, always — and spins once on the way round; every
-           team-mate turns to face them. */
+           The scorer turns to the camera and spins once on the way round; every
+           team-mate turns to face them.
+
+           WHICH WAY THE CAMERA IS was a constant PI — behind the offence,
+           looking +x. A pick six is celebrated in the other end zone with the
+           lens on the other side of the ball (state.viewDir, and it holds
+           through the dead ball for exactly this reason), so the man who
+           scored it would have spent his whole celebration with his back to
+           it. */
+        var camYaw = (state.viewDir === -1) ? 0 : Math.PI;
         if (cel.star) {
           var spin = cel.cfg.spin;
-          // One full turn over `spin` seconds, ending exactly back at PI so
-          // there is no jump when it finishes.
-          yawT = Math.PI - (spin && cel.age < spin ? (cel.age / spin) * Math.PI * 2 : 0);
+          // One full turn over `spin` seconds, ending exactly back at the
+          // camera so there is no jump when it finishes.
+          yawT = camYaw - (spin && cel.age < spin ? (cel.age / spin) * Math.PI * 2 : 0);
           yawT += Math.sin(cel.age * 3.1) * 0.18;             // never quite still
         } else {
           yawT = Math.atan2(celeb.y - gp.y, celeb.x - gp.x) + Math.sin(cel.age * 2.7 + ud.idx) * 0.16;
@@ -1924,14 +1932,19 @@
          This used to be behind whichever side the USER was playing, flipping
          end-for-end with possession so that on defence you watched the offence
          run at the lens. The offence always attacks +x, whichever team it is,
-         so "behind the ball" is not a variable at all — it is one side of the
-         field, always, and an interception simply hands the shot to the other
-         eleven without the camera going anywhere.
+         so for the whole of an ordinary down "behind the ball" is not a
+         variable at all — it is one side of the field, and a change of
+         possession between downs hands the shot to the other five without the
+         camera going anywhere.
 
-         `s` is kept rather than folded away because it is the whole geometry of
-         this camera (back one way, look-at the other) and every use of it
-         downstream still wants to say which way is downfield. */
-      var s = 1;                                   // the offence attacks toward +x
+         A RETURN IS THE ONE TIME IT MOVES. A defender who has just intercepted
+         is running at the end zone BEHIND the offence, so the lens has to come
+         round behind him or the whole play is shot into the camera. `s` was
+         kept as a variable for exactly this — it is the geometry of the shot
+         (back one way, look-at the other) — and the engine publishes the
+         answer as `state.viewDir`, the same number it rotates the stick by, so
+         the controls and the picture can never disagree. */
+      var s = (state.viewDir === -1) ? -1 : 1;
       var C = (viewAspect < 1.0) ? CAM.tall : CAM.wide;
 
       if (camera.fov !== C.fov) { camera.fov = C.fov; camera.updateProjectionMatrix(); }
@@ -1993,7 +2006,14 @@
          fourteen is not a camera following something, it is a camera that has
          been left at the other end of the field. */
       var live3d = (state.phase === 'live');
-      var jumped = Math.abs(focusFx - camFx) > (live3d ? 14 : 8);
+      /* AND THE FLIP IS A CUT, NOT A MOVE. Reversing `s` swings the lens from
+         one side of the ball to the other — some 25 yards — and easing across
+         that at 3.2/s takes the best part of a second, all of it with the
+         camera somewhere out in front of a man running the other way. A
+         broadcast cuts here, so this cuts. */
+      var flipped = (camDir !== s);
+      if (flipped) camDir = s;
+      var jumped = flipped || Math.abs(focusFx - camFx) > (live3d ? 14 : 8);
       if (jumped) camFx = focusFx;
       else camFx = lerp(camFx, focusFx, ease(chasing ? 7.0 : 4.5, dt));
       var anchorX = wx(camFx);
@@ -2223,8 +2243,12 @@
         downMark.position.set(wx(state.losX), 0, wz(WID) + 1.4);
       } else { spotMark.visible = false; downMark.visible = false; }
 
-      // Line of scrimmage & line-to-gain
-      if (state.losX != null && state.phase !== 'final') {
+      /* Line of scrimmage & line-to-gain — and NEITHER OF THEM SURVIVES A
+         CHANGE OF POSSESSION. Both belong to the down that is being played;
+         the moment a defender intercepts, the line he was defending is behind
+         him and the one he is running at is a goal line. Leaving them up draws
+         a yellow line the man carrying the ball has no reason to reach. */
+      if (state.losX != null && state.phase !== 'final' && !state.returning) {
         losLine.visible = true; losLine.position.x = wx(state.losX);
         var ltg = state.crossedMid ? GOAL_R : MID;
         ltgLine.visible = true; ltgLine.position.x = wx(ltg);
@@ -2502,6 +2526,25 @@
         }
         if (!seen) return null;
         return { idx: i, x: minX, y: minY, w: maxX - minX, h: maxY - minY, corners: seen };
+      },
+
+      /* WHERE THE LENS IS, in field yards. The camera is the one thing in this
+         renderer with no engine state to check it against — every other number
+         a probe reads back can be held against what the simulation says should
+         be true, and "the shot is behind the man with the ball" is a fact about
+         a matrix and nothing else. It matters most on an interception return,
+         which is the only time in the game the camera changes sides: get it
+         wrong and the play is shot head-on, with the returner running at the
+         lens and the pursuit hidden behind him. tools/pickcheck.mjs asks. */
+      debugCamera: function () {
+        camera.updateMatrixWorld();
+        return {
+          x: camera.position.x + LEN / 2,          // back into field coordinates
+          y: camera.position.z + WID / 2,
+          height: camera.position.y,
+          lookX: _target.x + LEN / 2,
+          lookY: _target.z + WID / 2
+        };
       },
 
       debugLimbs: function () {

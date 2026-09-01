@@ -208,6 +208,13 @@
       openingPossession: cfg.startPossession || 'away',
       yardsToGoal: 45, down: 1, crossedMid: false,
       phase: 'playcall',
+      /* A LIVE INTERCEPTION RETURN. True from the moment a defender comes down
+         with the ball until the whistle: possession has flipped, the play has
+         not stopped, and the man carrying it is running the other way.
+         `viewDir` is what the camera and the stick are rotated by, and it
+         outlives `returning` — it holds through the dead ball so the shot does
+         not whip back across the field over the celebration. */
+      returning: false, viewDir: 1,
       players: [], ball: null,
       carrier: null, userControlled: null,
       playType: null, offPlay: null, defPlay: null,
@@ -227,6 +234,14 @@
   Engine.prototype.defenseTeam = function () { return this.state.possession === 'home' ? 'away' : 'home'; };
   Engine.prototype.nationId = function (side) { return this.state[side].id; };
   Engine.prototype.userOnOffense = function () { return this.state.possession === this.userSide; };
+  /* WHICH WAY THE MAN WITH THE BALL IS RUNNING. +1 for the whole of a normal
+     down — the offence always attacks +x — and -1 while an interception is
+     being returned, because the end zone a defender scores in is the one
+     BEHIND the offence he just took it from. Everything that talks about
+     goal-side, downfield or backwards asks this rather than assuming. */
+  Engine.prototype.attackDir = function () { return this.state.returning ? -1 : 1; };
+  // The line the current ball carrier is running at, and the one behind him.
+  Engine.prototype.goalX = function () { return this.state.returning ? GOAL_L : GOAL_R; };
   /* A difficulty knob, read from the perspective of the side it acts on. See
      MIRROR above: the CPU gets the preset, the user's own players get its
      mirror, so "Rookie" means easy whichever way the ball is going. */
@@ -307,6 +322,11 @@
     }
     s.phase = 'presnap';
     s.playClockLeft = PLAY_CLOCK;        // fresh 25 on every new down
+    /* The field is canonical again: whoever has the ball attacks +x, and the
+       camera comes back round with them. A return leaves both of these
+       flipped on purpose, and the new formation is the moment that ends. */
+    s.returning = false;
+    s.viewDir = 1;
     this.clearSlash();
   };
 
@@ -440,6 +460,12 @@
   Engine.prototype.throwTo = function (slot) {
     var s = this.state;
     if (s.phase !== 'live' || !s.carrier || s.ball.inAir || s.pendingThrow) return;
+    /* There is no forward pass after a change of possession — a return is
+       carried and lateralled, and the four receiver buttons are still on the
+       screen under a thumb that has just intercepted something. Saying so
+       beats a button that silently does nothing (`off.filter(WR1)` finds
+       nobody on that side of the ball, which is what used to happen). */
+    if (s.returning) { this._flash('No forward pass on a return'); return; }
     var carrier = s.carrier;
     if (carrier.slot === 'QB' && D.POS_INFO.QB) { /* QB or trick passer */ }
     // Only the ball carrier who is a legal passer may throw, and only behind LOS-ish
@@ -819,9 +845,10 @@
     var off = s.players.filter(function (p) { return p.team === this.offenseTeam(); }, this);
     var def = s.players.filter(function (p) { return p.team === this.defenseTeam(); }, this);
 
-    // Auto handoff for run/trick shortly after snap
-    if (s.autoHandoff && !s.handoffDone && s.snapT > 0.55) this._doHandoff();
-    if (s.trickStage === 1) this._fleaBack();
+    // Auto handoff for run/trick shortly after snap. Neither belongs to a
+    // return: the play that called them belongs to the other side now.
+    if (s.autoHandoff && !s.handoffDone && s.snapT > 0.55 && !s.returning) this._doHandoff();
+    if (s.trickStage === 1 && !s.returning) this._fleaBack();
 
     // Move receivers along routes
     off.forEach(function (p) {
@@ -834,6 +861,8 @@
          (a cut, a shove, coverage) left them stranded from the catch point and
          the pass fell incomplete. */
       if (s.ball && s.ball.inAir && s.thrownTo === p) { this._seek(p, s.ball.to, dt, 1.05); return; }
+      // A return has no routes and no pocket: the other four get out in front.
+      if (s.returning) { this._escort(p, dt); return; }
       if (p.slot === 'QB' && !s.autoHandoff) { this._dropback(p, dt); return; }
       this._runRoute(p, dt);
     }, this);
@@ -854,6 +883,20 @@
 
     // Ball in air
     if (s.ball && s.ball.inAir) this._updateBall(dt);
+
+    /* THE SIDES CAN CHANGE INSIDE THE FRAME. _updateBall resolves the catch,
+       and a catch by a defender flips possession where it stands — so the two
+       lists taken at the top of this function are a play out of date the
+       moment it happens. Measured without this: `def` is still the
+       INTERCEPTING side, so the flag-pull check is handed the new carrier's own
+       team-mates, himself included at a distance of zero, and he is recorded as
+       being grabbed by HIMSELF with the meter already filling — 1.9% of a pull
+       in one frame, with the renderer drawing the grab. It comes right on the
+       next frame, so it is a flicker and not a whistle; it is also a grab meter
+       filling against the man carrying the ball, which is not a thing that
+       should ever be true. */
+    off = s.players.filter(function (p) { return p.team === this.offenseTeam(); }, this);
+    def = s.players.filter(function (p) { return p.team === this.defenseTeam(); }, this);
 
     // Defense AI (and user-controlled defender)
     def.forEach(function (d) {
@@ -1135,6 +1178,30 @@
     }
   };
 
+  /* THE CONVOY. What the other four do on a return, and it is deliberately not
+     blocking: blocking is illegal in this sport and B2's separation carries no
+     momentum, so there is nothing to lean on and nothing to lean with. What a
+     lead runner actually has to offer is a body between the return and the
+     pursuit's line, which is a matter of being goal-side and wide — so they
+     run to a point ahead of the ball, holding the lateral offset they already
+     had when it was caught. Holding it is what keeps them spread: four men all
+     seeking "five yards in front of the carrier" is one man drawn four times. */
+  var ESCORT_LEAD = 5.0;                 // yards ahead of the ball
+  var ESCORT_SPREAD = 9.0;               // …and the widest offset worth keeping
+
+  Engine.prototype._escort = function (p, dt) {
+    var s = this.state, c = s.carrier;
+    if (!c) { this._steer(p, 0, 0, dt); return; }
+    var dir = this.attackDir();
+    if (p.escOff == null) p.escOff = clamp(p.y - c.y, -ESCORT_SPREAD, ESCORT_SPREAD);
+    // A man already wide leads from further back — he has further to come.
+    var lead = ESCORT_LEAD + Math.abs(p.escOff) * 0.25;
+    this._seek(p, {
+      x: clamp(c.x + dir * lead, GOAL_L - EZ + 2, GOAL_R + EZ - 2),
+      y: clamp(c.y + p.escOff, 2, FIELD_WID - 2)
+    }, dt, 1.0);
+  };
+
   /* B1 — MOMENTUM.
 
      _seek and _moveByInput used to assign velocity directly:
@@ -1241,17 +1308,20 @@
      or "right" travels sideways down the pitch.
 
      The camera USED to sit behind whichever team you were playing as, and so
-     flipped end-for-end with possession; this returned -1 to match. It now
-     sits behind whoever has the ball, and the offence always attacks +x, so
-     the shot never turns around and the answer is always +1:
+     flipped end-for-end with possession; this returned -1 to match. It sits
+     behind whoever has the BALL now, and for the whole of a normal down that
+     is a man attacking +x:
 
-        we always look toward +x -> screen-up = +x, screen-right = +y
+        looking toward +x -> screen-up = +x, screen-right = +y
 
-     The seam is kept — every caller still asks the camera which way is
-     downfield rather than assuming — so a camera that ever does turn round
-     again only has to change this one line. */
+     AND THIS IS WHY THE SEAM WAS KEPT. For eleven releases the answer was the
+     constant +1 with a note saying a camera that ever turned round again would
+     only have to change this one line. An interception return is that camera:
+     the man with the ball is running at the other end zone, the shot cuts
+     behind him, and a stick that still pushed toward +x would drive him
+     straight back into the pursuit. `state.viewDir` is the one line. */
   Engine.prototype.viewSign = function () {
-    return 1;
+    return (this.state && this.state.viewDir === -1) ? -1 : 1;
   };
 
   Engine.prototype._moveByInput = function (p, dt) {
@@ -1429,7 +1499,9 @@
   Engine.prototype._aiCarrier = function (p, dt) {
     // AI ball carrier: head toward end zone, avoid nearest defender
     var s = this.state;
-    var goalX = GOAL_R + 3;
+    // A returner runs at the OTHER end zone; everybody else at GOAL_R.
+    var dir = this.attackDir();
+    var goalX = this.goalX() + 3 * dir;
     var def = s.players.filter(function (d) { return d.team === this.defenseTeam() && !d.flagPulled; }, this);
     var nearest = null, nd = 999;
     def.forEach(function (d) { var dd = dist(d, p); if (dd < nd) { nd = dd; nearest = d; } });
@@ -1763,11 +1835,16 @@
     if (this._isRunner(s.carrier)) {
       var spd = this.speedYds(d.data.speed) * this.staminaScale(d) *
                 ((!this.demo && this.difficulty && d.team !== this.userSide) ? this.difficulty.defSpeed : 1);
+      /* GOAL-SIDE IS A DIRECTION. On a return the pursuit is chasing toward
+         -x, so the last man back is the one with the SMALLEST x — read it off
+         attackDir() rather than off the sign that happened to be true for
+         every play written before returns existed. */
+      var gdir = this.attackDir();
       var deepest = null;
       for (var di = 0; di < s.players.length; di++) {
         var o2 = s.players[di];
         if (o2.team !== d.team || o2.flagPulled) continue;
-        if (!deepest || o2.x > deepest.x) deepest = o2;
+        if (!deepest || o2.x * gdir > deepest.x * gdir) deepest = o2;
       }
       /* Goal-side and out of the runner's reach: hold depth, mirror him across
          the field, and let him come. Applying this to EVERY deep defender
@@ -1777,7 +1854,7 @@
          man stays home; the rest chase. Once the carrier is inside
          DEEP_TRIGGER the last man attacks like anyone else: a defender who
          never closes is not one either. */
-      if (d === deepest && (d.x - s.carrier.x) > DEEP_TRIGGER) {
+      if (d === deepest && (d.x - s.carrier.x) * gdir > DEEP_TRIGGER) {
         this._seek(d, { x: d.x, y: clamp(s.carrier.y, 1.5, FIELD_WID - 1.5) }, dt, 1.0);
         return;
       }
@@ -1963,7 +2040,7 @@
         deflector.hasBall = true;
         s.carrier = deflector;
         s.ball.x = deflector.x; s.ball.y = deflector.y; s.ball.z = 0;
-        this._turnover('TIPPED — intercepted by ' + deflector.last + '!', deflector);
+        this._interception('TIPPED — intercepted by ' + deflector.last + '!', deflector);
         return;
       }
       if (!best.isOff) this._incomplete('Broken up by ' + best.p.last + '!', pt);
@@ -1992,7 +2069,7 @@
         pick.hasBall = true;
         s.carrier = pick;
         s.ball.x = pick.x; s.ball.y = pick.y; s.ball.z = 0;
-        this._turnover('INTERCEPTED by ' + pick.last + '!', pick);
+        this._interception('INTERCEPTED by ' + pick.last + '!', pick);
       } else {
         this._incomplete('Broken up by ' + pick.last + '!', pt);
       }
@@ -2072,12 +2149,15 @@
     var s = this.state;
     var c = s && s.carrier;
     if (!c || s.phase !== 'live' || (s.ball && s.ball.inAir) || s.pendingThrow) return false;
+    var dir = this.attackDir();
     var back = null, bestD = 1e9;
     for (var i = 0; i < s.players.length; i++) {
       var p = s.players[i];
       if (p === c || p.team !== c.team || p.flagPulled) continue;
-      // A lateral is a BACKWARDS pass; forward from a runner is not legal.
-      if (p.x >= c.x - 0.6) continue;
+      /* A lateral is a BACKWARDS pass, and backwards is behind the man
+         carrying it — which on a return is toward +x. Laterals on a return are
+         legal and are half of what makes one worth watching. */
+      if ((p.x - c.x) * dir >= -0.6) continue;
       var d = dist(p, c);
       if (d <= PITCH_RANGE && d < bestD) { bestD = d; back = p; }
     }
@@ -2215,6 +2295,10 @@
     this.anim.push({ type: 'flag', x: carrier.x, y: carrier.y, t: 0, dur: 0.7,
       color: this._jerseyColor(carrier.team)[0] });
     this.onEvent({ type: 'flagpull', defender: defender, carrier: carrier });
+    /* A RETURN ENDS AT THE FLAG TOO, and it is a different ending: possession
+       has already changed, so there is no down to advance and no safety to
+       call — the line at GOAL_L behind him is the one he is running AT. */
+    if (s.returning) { this._endReturn(spotX, defender.last + ' pulls the flag!'); return; }
     // THE safety condition: the flag came off behind your own goal line.
     if (spotX <= GOAL_L) {
       this._flash(defender.last + ' pulls the flag — SAFETY!');
@@ -2507,6 +2591,20 @@
     var s = this.state;
     var c = s.carrier;
     if (!c) return;
+    /* A RETURN IS PLAYED ON THE SAME FIELD BACKWARDS. He scores at GOAL_L,
+       there is no safety available to him (the end zone he is defending is the
+       one he is running away from, and being brought down in it is a touchback
+       rather than two points), and going out of bounds simply ends it where he
+       left. */
+    if (s.returning) {
+      if (c.x <= GOAL_L) { this._endReturn(c.x); return; }
+      if (c.outOfBounds) {
+        s.clockStops = true;
+        var rspot = c.outAt || { x: c.x, y: c.y };
+        this._endReturn(rspot.x, 'Out of bounds');
+      }
+      return;
+    }
     // Touchdown
     if (c.x >= GOAL_R) { this._touchdown(); return; }
     /* NO automatic safety for merely being back there. This used to fire on
@@ -2736,13 +2834,155 @@
      and the repo's rule (four downs to cross, three to score) then gives the
      three-down set that a team already in scoring territory should have. */
   Engine.prototype._takeOver = function (side) {
+    this._takeOverSpot(side, clamp(50 - this.state.yardsToGoal, 8, 45));
+  };
+
+  /* The same handover, from a spot that is KNOWN rather than mirrored — a
+     return ends where the returner was stopped, and the clamp that keeps an
+     ordinary handover off its own goal line has no business moving a ball
+     somebody carried to the two. */
+  Engine.prototype._takeOverSpot = function (side, ytg) {
     var s = this.state;
     s.possession = side;
-    s.yardsToGoal = clamp(50 - s.yardsToGoal, 8, 45);
+    s.yardsToGoal = clamp(ytg, 2, 45);
     s.down = 1;
     /* `<=` rather than `<`, to agree with _endPlay's `spotX >= MIDFIELD`:
        arriving exactly ON midfield counts as having crossed it. */
     s.crossedMid = s.yardsToGoal <= MID_YTG;
+  };
+
+  /* ======================= THE INTERCEPTION RETURN ========================
+
+     AN INTERCEPTION IS A LIVE BALL, AND FOR TWENTY-TWO RELEASES IT WAS NOT.
+     The pick was resolved by handing the ball to the defender, blowing the
+     whistle in the same breath and spotting it at the mirror of the offence's
+     own yard line — so the one play in this sport that most often ends in six
+     points could not end in any. There is such a thing as a pick six in flag
+     football; there was no such thing in Flagster.
+
+     Everything the update loop does is asked of `offenseTeam()` and
+     `defenseTeam()` rather than remembered, so moving possession while the
+     ball is still live re-points all of it in a single assignment: the man who
+     caught it is driven as a ball carrier, his team-mates escort him, and the
+     five who were running routes a frame ago become the pursuit and the only
+     side that can take a flag. What does NOT come for free is the direction.
+     The end zone a defender scores in is the one BEHIND the offence he took it
+     from, so the return runs toward -x while every goal-line, leverage and
+     lateral test in the file was written knowing that downfield is +x.
+     `attackDir()` is that seam, and `viewDir` is the camera's half of it. */
+  Engine.prototype._interception = function (msg, pick) {
+    var s = this.state;
+    /* THREE DOWNS DO NOT GET A RETURN, and each is a rule rather than a
+       shortcut.
+
+       A MARKER ON THE FIELD. `against: 'defense'` and `against: 'offense'` are
+       resolved through defenseTeam() when the play is over, and a return flips
+       what those two words mean halfway through it — an illegal rush would come
+       back as a foul on the side that was fouled against. _turnover already
+       weighs a foul against the takeaway properly (a defensive one hands the
+       ball back, which is the whole reason the play is allowed to finish), so a
+       down with a flag down is settled the way it always was.
+
+       A CONVERSION. The try is over the moment the defence has the ball; there
+       is no return and no defensive score on it here. Some codes do award one
+       — this file does not have a source for the number, and does not invent
+       one (see `touchdownsPerPlay`, which was guessed at and wrong for eleven
+       releases).
+
+       AND OVERTIME, where a change of possession ENDS the possession: the ball
+       is dead where it was caught and the other side gets their set. */
+    if (s.flag || s.patActive || s.overtime || s.gameOver) { this._turnover(msg, pick); return; }
+
+    this._flash(msg);
+    this.onEvent({ type: 'interception', player: pick });
+    s.possession = pick.team;            // …and with it every role in the loop
+    s.returning = true;
+    s.viewDir = -1;                      // the shot cuts round behind him
+    s.returnFrom = { x: pick.x, y: pick.y };
+    s.pendingThrow = null;
+    s.thrownTo = null;
+    s.passThrown = true;                 // no forward pass after a change of possession
+    /* A grip on the passer died with the pass, and the meter it was filling
+       belongs to a man who is no longer carrying anything. */
+    if (s.grabbedBy) { s.grabbedBy.grabbing = false; s.grabbedBy = null; }
+    s.grabProgress = 0;
+    pick.grabT = 0; pick.jukeCount = 0; pick.brokeFrom = null;
+    /* _steer flags ANY player whose step would have left the field, and only
+       the carrier is ever asked about it — so a corner who has been running the
+       paint carries a stale `outOfBounds` into the first frame of being one.
+       The whistle would go before he had taken a step. */
+    pick.outOfBounds = false;
+    this.clearSlash();                   // the stroke was drawn for the other side
+    /* Who the user is driving. Intercept it yourself and it is the man with the
+       ball; throw it and it is whoever is nearest to him, because chasing him
+       down with the quarterback — who is stood forty yards away where he threw
+       it — is not a choice anybody would make. */
+    s.userControlled = this.userOnOffense() ? pick : this._nearestDefenderToBall();
+    this.onEvent({ type: 'return', player: pick });
+  };
+
+  /* THE RETURN IS OVER. Possession changed hands when the ball was caught, so
+     there is nothing left to take over — all this decides is where it is
+     spotted, and whether he got there.
+
+     `spotX` is where the play ended in the ORIGINAL frame; the returning side
+     is attacking GOAL_L, so what they have left to go is `spotX - GOAL_L`, and
+     that number survives the flip back to attacking +x on the next snap
+     untouched. */
+  Engine.prototype._endReturn = function (spotX, msg) {
+    var s = this.state;
+    if (s.phase !== 'live') return;
+    this.clearSlash();
+    s.pendingThrow = null;
+    s.returning = false;                 // …but viewDir holds until the next formation
+    var by = s.carrier;
+    if (msg) this._flash(msg);
+
+    /* THE ONLY FOUL A RETURN CAN DRAW is the returner guarding his flag: A2's
+       illegal rush is gated on the passer still holding the ball, and a return
+       never starts with a marker already down. Ten yards from the spot of the
+       foul, and it is not declinable by the side that has just given the ball
+       away — they have nothing to compare it against. It wipes a score, which
+       is why it is applied before the goal line is tested. */
+    var spot = spotX;
+    if (s.flag) {
+      var f = s.flag; s.flag = null;
+      if (f.against === 'offense') {
+        spot = clamp(f.spot + f.yards, GOAL_L + 1, GOAL_R - 1);
+        this._flash(f.msg + ' — ' + f.yards + ' yards from the spot');
+        this.onEvent({ type: 'penalty', kind: f.kind, player: f.player, accepted: true });
+      } else {
+        this._flash(f.msg + ' — declined');
+        this.onEvent({ type: 'penalty', kind: f.kind, player: f.player, accepted: false });
+      }
+    }
+
+    var yards = Math.round((s.returnFrom ? s.returnFrom.x : spot) - spot);
+    s.deadSpot = { x: spot, y: by ? by.y : FIELD_WID / 2 };
+    this.onEvent({ type: 'turnover', returned: yards, six: spot <= GOAL_L });
+
+    if (spot <= GOAL_L) {
+      this._touchdown('PICK SIX — ' + (by ? by.last : s[s.possession].abbr) + '!  🏈');
+      return;
+    }
+
+    s.phase = 'dead';
+    this._celebrate('takeaway', s.deadSpot, this.offenseTeam());
+    /* Brought down in the end zone he was DEFENDING — he picked it off deep and
+       never got out of there — is a TOUCHBACK and not a safety, because the
+       ball only reached that end zone on the throwing side's impetus and not
+       his own. He takes it out to his own 5. */
+    var ytg = (spot >= GOAL_R) ? 45 : clamp(spot - GOAL_L, 2, 45);
+    var self = this;
+    setTimeout(function () {
+      if (!self.state || self.state !== s || s.gameOver) return;
+      self._takeOverSpot(s.possession, ytg);
+      // A returner who ran out of bounds stopped the clock doing it.
+      self.runPlayClock(s.snapT || 0, !!s.clockStops);
+      s.clockStops = false;
+      self._announceTakeover(s.possession);
+      self._nextSnap();
+    }, TAKEAWAY_HOLD);
   };
 
   Engine.prototype._turnoverOnDowns = function () {
@@ -2762,7 +3002,9 @@
     }.bind(this), 1200);
   };
 
-  Engine.prototype._touchdown = function () {
+  /* `msg` overrides the flash — a defensive touchdown is not "TOUCHDOWN GBR",
+     it is a pick six, and the man's name belongs in it. */
+  Engine.prototype._touchdown = function (msg) {
     var s = this.state;
     /* Nothing a five-yard penalty can offer the offence beats six points, so a
        defensive foul is declined. An offensive one is the opposite case: you
@@ -2787,7 +3029,7 @@
     }
     s.score[off] += 6;
     s.stats[off].td++;
-    this._flash('TOUCHDOWN ' + s[off].abbr + '!  🎉');
+    this._flash(msg || ('TOUCHDOWN ' + s[off].abbr + '!  🎉'));
     this._celebrate('td', { x: c ? c.x : GOAL_R, y: c ? c.y : FIELD_WID / 2 });
     this.onEvent({ type: 'touchdown', team: off });
     /* Hold the shot on the celebration before asking about the conversion.

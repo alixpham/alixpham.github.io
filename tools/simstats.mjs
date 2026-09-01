@@ -90,6 +90,12 @@ const F = win.FLAGSTER, D = F.data;
 /* ---- play one game, collecting per-play rows ---------------------------- */
 const finals = [];
 const pats = [];
+/* WHAT THE INTERCEPTION WAS WORTH, which is a different question from how
+   often one happens. Every pick used to be a dead ball at the mirror of the
+   offence's own spot, so the answer was "nothing, ever". The engine reports
+   the return on the turnover event; take it from there rather than diffing
+   field position, which cannot tell a return from the mirroring. */
+const rets = [];
 function playGame(gameIdx) {
   const rows = [];
   let ev = {};
@@ -102,6 +108,7 @@ function playGame(gameIdx) {
        plainly whether it was good; take that. */
     if (x.type === 'patresult') pats.push({ good: !!x.good, points: x.points,
       play: (e.state.offPlay && e.state.offPlay.name) || '?', type: (e.state.offPlay && e.state.offPlay.type) || '?' });
+    if (x.type === 'turnover' && x.returned != null) rets.push({ yards: x.returned, six: !!x.six });
   } });
   /* Take the spot from the engine rather than inferring it. On an incompletion
      the ball object is left sitting downfield where the pass landed, so
@@ -155,12 +162,17 @@ function playGame(gameIdx) {
     const incomplete = !!ev.incomplete;
     const intercepted = !!ev.turnover;
     let gained;
-    if (td) gained = startYTG;                       // in from wherever it started
-    else if (incomplete || intercepted) gained = 0;  // ball comes back to the spot
+    /* AN INTERCEPTION IS TESTED FIRST, and it has to be. A pick six scores six
+       points on a pass play, so `td` is true and the old order credited the
+       side that THREW it with the whole field — a turnover read as the longest
+       gain in the game. Nobody gains anything on a pick. */
+    if (intercepted) gained = 0;
+    else if (td) gained = startYTG;                  // in from wherever it started
+    else if (incomplete) gained = 0;                 // ball comes back to the spot
     else if (lastSpot != null) gained = lastSpot - startX;
     else gained = 0;
     rows.push({
-      type, isPass, threw, thrownAt, completed: !!ev.catch, intercepted, incomplete,
+      type, isPass, threw, thrownAt, completed: !!ev.catch, intercepted, incomplete, startYTG,
       scrambled: !!ev.scramble, flicked: ev.fleaback || 0, pastLine: !!ev.passerpastline, pat: isPat,
       gained: Math.max(-15, Math.min(50, gained)), scoredPts: scored,
       td, dur: f * DT, timedOut: f >= MAX_PLAY_FRAMES
@@ -177,7 +189,22 @@ function playGame(gameIdx) {
 
 /* ---- run and summarise --------------------------------------------------- */
 const all = [];
-for (let g = 0; g < GAMES; g++) all.push(...playGame(g));
+/* Per game, so "the play after the interception" cannot reach across the gap
+   between two games and read the opening snap of the next one as a takeover. */
+const games = [];
+for (let g = 0; g < GAMES; g++) { const r = playGame(g); games.push(r); all.push(...r); }
+
+/* WHERE THE BALL IS SPOTTED AFTER A PICK. The takeover used to be the MIRROR
+   of the line of scrimmage — `50 - yardsToGoal`, which is where the ball was
+   snapped from and not where it was caught — so it quietly ignored the fact
+   that an interception happens downfield of the line. A return starts from the
+   catch, which is worse ground, and earns it back. */
+const afterPick = [];
+for (const rows of games) {
+  for (let i = 0; i + 1 < rows.length; i++) {
+    if (rows[i].intercepted && !rows[i].td && !rows[i + 1].pat) afterPick.push(rows[i + 1].startYTG);
+  }
+}
 
 const passPlays = all.filter(r => r.isPass);
 /* A TRICK IS NOT A RUN, and calling it one made this line lie. `isPass` is
@@ -251,6 +278,16 @@ console.log(row('Yards per trick play', avg(trickPlays.map(r => r.gained)) + '  
 console.log(row('Pass plays never thrown', box.passPlaysNeverThrown + '%', TARGET.passPlaysNeverThrown));
 console.log(row('Completion %', box.completionPct + '%', TARGET.completionPct));
 console.log(row('Interception rate', box.interceptionPct + '%', '~3-5%'));
+/* AND WHAT HAPPENED NEXT. A pick is a live ball: the man who caught it runs it
+   back until his flag comes off, out of bounds, or into the end zone behind the
+   offence he took it from. */
+const sixes = rets.filter(r => r.six).length;
+console.log(row('  returned', rets.length ? rets.length + ' live, ' + avg(rets.map(r => r.yards))
+  + ' yds avg, longest ' + Math.max(...rets.map(r => r.yards)) : '0 returns', ''));
+console.log(row('  pick sixes', sixes + (rets.length ? '  (' + (100 * sixes / rets.length).toFixed(0)
+  + '% of returns, ' + (sixes / GAMES).toFixed(2) + ' a game)' : ''), ''));
+console.log(row('  ball spotted after a pick', afterPick.length
+  ? avg(afterPick) + ' yds to go  (' + afterPick.length + ')' : 'n/a', 'lower is better for them'));
 console.log(row('Touchdowns per play', box.touchdownsPerPlay + '%', TARGET.touchdownsPerPlay));
 console.log(row('Gains of 3 yards or fewer', box.gainsOfThreeOrFewer + '%', TARGET.gainsOfThreeOrFewer));
 console.log(row('Time to throw', box.timeToThrow + 's', TARGET.timeToThrow));

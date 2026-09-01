@@ -515,6 +515,221 @@ function gripped(e) {
     'msg=' + JSON.stringify(s.message));
 }
 
+/* ================== A11 — THE INTERCEPTION RETURN ========================
+
+   A pick used to be a whistle: the ball changed hands and was spotted at the
+   mirror of the offence's own yard line, so the one play in this sport that
+   most often ends in six points could not end in any. These assert the parts
+   that averages cannot see — a return that flips the wrong side, runs at the
+   wrong end zone, or hands the returner's flag to his own team-mates all leave
+   the box score looking fine. */
+{
+  const { GOAL_L, GOAL_R } = F.Engine.FIELD;
+
+  /* Hand the ball to a defender the way _resolveCatch does, and start the
+     return. Returns the interceptor. */
+  function pickItOff(e) {
+    const s = e.state;
+    const qb = s.carrier;
+    const d = s.players.find(p => p.team !== qb.team && !p.flagPulled);
+    qb.hasBall = false; d.hasBall = true; s.carrier = d;
+    s.ball.x = d.x; s.ball.y = d.y; s.ball.z = 0; s.ball.inAir = false;
+    e._interception('INTERCEPTED by ' + d.last + '!', d);
+    return d;
+  }
+
+  { // the ball stays live, the sides swap, and the man runs the other way
+    const { e, s } = kickoff('man');
+    e.snap();
+    const threw = s.possession;
+    const d = pickItOff(e);
+    check('an interception does not blow the whistle',
+      s.phase === 'live' && s.returning === true, 'phase=' + s.phase + ' returning=' + s.returning);
+    check('possession flips where the ball is caught',
+      s.possession === d.team && s.possession !== threw && e.offenseTeam() === d.team,
+      'possession=' + s.possession + ' (was ' + threw + ')');
+    check('the returner attacks the other end zone',
+      e.attackDir() === -1 && e.goalX() === GOAL_L && s.viewDir === -1,
+      'dir=' + e.attackDir() + ' goal=' + e.goalX() + ' viewDir=' + s.viewDir);
+  }
+
+  { /* HIS OWN SIDE IS NOT OFFERED HIS FLAG. `_update` takes its offence and
+       defence lists at the TOP of the frame and the catch is resolved half way
+       down it, so on the frame of the pick they are a play out of date: the
+       flag-pull check is handed the intercepting side, the returner included
+       at a distance of zero. Measured without the re-read, he is recorded as
+       being grabbed by HIMSELF with the meter already filling (1.9% in one
+       frame) and his team-mates are driven through the defender AI. The lists
+       are right again on the next frame, so it is a flicker rather than a
+       whistle — but it is a grab meter filling against the man carrying the
+       ball, and the renderer draws it.
+
+       It has to be intercepted from INSIDE the frame to be caught at all;
+       calling _interception from out here leaves nothing stale. */
+    const { e, s } = kickoff('man');
+    e.snap();
+    e._dt = DT;
+    const qb = s.carrier;
+    const realBall = e._updateBall.bind(e);
+    let picked = null;
+    s.ball.inAir = true;                       // …so _update reaches _updateBall
+    e._updateBall = function () {
+      s.ball.inAir = false;
+      picked = s.players.find(p => p.team !== qb.team && !p.flagPulled);
+      qb.hasBall = false; picked.hasBall = true; s.carrier = picked;
+      e._interception('INTERCEPTED', picked);
+      e._updateBall = realBall;                // once
+    };
+    e._update(DT);
+    check('the frame of the pick does not hand his own side his flag',
+      s.phase === 'live' && !picked.flagPulled &&
+      !(s.grabbedBy && s.grabbedBy.team === picked.team) && !(s.grabProgress > 0),
+      'grabbedBy=' + (s.grabbedBy ? s.grabbedBy.last + '/' + s.grabbedBy.team +
+        (s.grabbedBy === picked ? ' (HIMSELF)' : '') : 'none') +
+      ' meter=' + (s.grabProgress || 0).toFixed(4));
+  }
+
+  { // reaching the end zone behind the offence is six points
+    const { e, ev, s } = kickoff('man');
+    e.snap();
+    const d = pickItOff(e);
+    const side = d.team, before = s.score[side];
+    s.players.forEach(p => { if (p.team !== side) { p.x = GOAL_R; p.y = 1; } });   // nobody near
+    d.x = GOAL_L + 2; d.vx = -8; d.vy = 0;
+    const said = [];
+    for (let f = 0; f < 120 && s.phase === 'live'; f++) { d.x -= 8 * DT; e._update(DT); said.push(s.message); }
+    said.push(s.message);
+    drain(); drain();
+    check('a return to the other end zone is a touchdown',
+      s.score[side] - before === 6 && ev.some(x => x.type === 'touchdown' && x.team === side),
+      'points=' + (s.score[side] - before) + ' said=' + JSON.stringify(said[said.length - 1]));
+    /* Read while the play is ending, not after: the conversion's own prompt is
+       up within a second of the score. */
+    check('...and it is called a pick six', said.some(m => /pick six/i.test(m || '')),
+      'said=' + JSON.stringify(said[said.length - 1]));
+  }
+
+  { /* Stopped short, the ball is spotted where he was stopped — and what he
+       has left to go is measured to the line he was running AT, which is the
+       number that survives the field flipping back on the next snap. */
+    const { e, s } = kickoff('man');
+    e.snap();
+    const d = pickItOff(e);
+    const side = d.team;
+    d.x = GOAL_L + 18; d.y = 15;
+    e._endReturn(d.x, 'stopped');
+    drain(); drain(); drain();
+    check('a return that is stopped keeps the ball for the returning side',
+      s.possession === side && s.down === 1, 'possession=' + s.possession + ' down=' + s.down);
+    check('the ball is spotted where the return ended',
+      Math.abs(s.yardsToGoal - 18) < 0.01, 'ytg=' + s.yardsToGoal + ', want 18');
+  }
+
+  { // brought down in the end zone he was defending is a touchback, not a safety
+    const { e, s } = kickoff('man');
+    e.snap();
+    const d = pickItOff(e);
+    const side = d.team, before = s.score;
+    d.x = GOAL_R + 4;
+    e._endReturn(d.x, 'stopped in the end zone');
+    drain(); drain(); drain();
+    check('a return downed in his own end zone is a touchback',
+      s.possession === side && s.yardsToGoal === 45 &&
+      before.home === s.score.home && before.away === s.score.away,
+      'ytg=' + s.yardsToGoal + ' score=' + JSON.stringify(s.score));
+  }
+
+  { // no forward pass once the ball has changed hands
+    const { e, s } = kickoff('man');
+    e.snap();
+    pickItOff(e);
+    s.pendingThrow = null;
+    e.throwTo('WR1');
+    check('there is no forward pass on a return',
+      !s.pendingThrow && /no forward pass/i.test(s.message || ''),
+      'msg=' + JSON.stringify(s.message));
+  }
+
+  { /* A lateral is still legal, and BACKWARDS now means the other way: the man
+       to pitch to is the one further from the end zone the return is heading
+       for, which is the one with the LARGER x. */
+    const { e, s } = kickoff('man');
+    e.snap();
+    const d = pickItOff(e);
+    const mate = s.players.find(p => p.team === d.team && p !== d && !p.flagPulled);
+    mate.x = d.x + 4; mate.y = d.y;                       // trailing him on a return
+    s.ball.inAir = false; s.pendingThrow = null;
+    check('a lateral on a return goes to the man behind him', e.pitch() === true,
+      'msg=' + JSON.stringify(s.message));
+  }
+
+  { // ...and a man in FRONT of him is not behind him
+    const { e, s } = kickoff('man');
+    e.snap();
+    const d = pickItOff(e);
+    s.players.forEach(p => { if (p.team === d.team && p !== d) { p.x = d.x - 4; p.y = d.y; } });
+    s.ball.inAir = false; s.pendingThrow = null;
+    check('a forward pitch on a return is refused', e.pitch() === false,
+      'msg=' + JSON.stringify(s.message));
+  }
+
+  { /* A CONVERSION HAS NO RETURN: the try is over the moment the defence has
+       the ball, and it simply fails. */
+    const { e, s } = kickoff('man');
+    e.snap();
+    s.patActive = true;
+    const d = pickItOff(e);
+    check('a pick on a conversion is dead where it is caught',
+      s.returning === false && s.phase === 'dead',
+      'returning=' + s.returning + ' phase=' + s.phase);
+  }
+
+  { /* AND NEITHER DOES AN OVERTIME POSSESSION: a change of possession ends
+       the possession, and the other side gets their set from the 5. */
+    const { e, s } = kickoff('man');
+    e.snap();
+    s.overtime = true;
+    const d = pickItOff(e);
+    check('a pick in overtime is dead where it is caught',
+      s.returning === false && s.phase === 'dead',
+      'returning=' + s.returning + ' phase=' + s.phase);
+  }
+
+  { /* A MARKER ON THE FIELD IS SETTLED THE OLD WAY. `against: 'defense'` is
+       read through defenseTeam() when the play ends, and a return would flip
+       what that word means half way through the down — the offence would be
+       charged with the foul committed against it. */
+    const { e, s } = kickoff('man');
+    e.snap();
+    s.flag = { kind: 'illegal-rush', against: 'defense', msg: 'Illegal rush', yards: 5, spot: s.losX };
+    const threw = s.possession;
+    pickItOff(e);
+    check('a pick with a flag down does not start a return',
+      s.returning === false && s.phase === 'dead' && s.possession === threw,
+      'returning=' + s.returning + ' phase=' + s.phase);
+  }
+
+  { /* END TO END: a real pass, really intercepted, really returned. Everything
+       above starts the return by hand; this proves _resolveCatch reaches it. */
+    let found = null;
+    for (let seed = 1; seed <= 60 && !found; seed++) {
+      const { e, ev, s } = kickoff('man', null, seed);
+      e.snap();
+      const threw = s.possession;
+      e.throwTo('WR1');
+      let live = 0;
+      for (let f = 0; f < 900 && s.phase === 'live'; f++) {
+        e._update(DT);
+        if (s.returning) live++;
+      }
+      if (ev.some(x => x.type === 'interception')) found = { threw, live, ev, s };
+    }
+    check('a thrown interception starts a live return',
+      !!found && found.live > 1 && found.s.possession !== found.threw,
+      found ? found.live + ' live frames of return' : 'no seed threw one in 60');
+  }
+}
+
 /* ------------------------------- report ---------------------------------- */
 let bad = 0;
 for (const r of results) {

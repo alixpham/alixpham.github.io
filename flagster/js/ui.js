@@ -493,6 +493,18 @@
       this.grab.classList.add('hidden');
     }
 
+    /* THE SIDE YOU ARE ON CAN CHANGE WITHOUT THE PHASE CHANGING. An
+       interception flips possession while the ball is still live, and the two
+       button clusters were swapped only on a phase transition — so a user who
+       had just picked one off was handed SWITCH and PULL to run it back with,
+       with no sprint button on the screen at all (sprint lives in the offence
+       cluster), while a user who had just thrown one kept four receiver
+       buttons and no way to make a tackle. */
+    if (s.possession !== this._lastPoss) {
+      this._lastPoss = s.possession;
+      if (s.phase === 'presnap' || s.phase === 'live') this._showTouch();
+    }
+
     // Phase-driven panels
     if (s.phase !== this._lastPhase) {
       this._lastPhase = s.phase;
