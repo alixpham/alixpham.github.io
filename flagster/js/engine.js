@@ -1,18 +1,24 @@
 /* ============================================================================
    FLAGSTER — GAME ENGINE
-   Top-down 5v5 flag football. Field to IFAF scale (70yd x 25yd incl. two
-   10-yard end zones -> 50 yards between goal lines). Handles routes, throwing,
-   catching, running, defensive AI, and the signature flag-pull animation.
+   Top-down 5v5 flag football, to IFAF rules — two 20-minute halves, four downs
+   to cross midfield and four more to score, no-run zones, a 7-yard rush line,
+   1- and 2-point conversions from the 5 and the 10.
+
+   THE WIDTH IS THE ONE DELIBERATE DEPARTURE. IFAF plays 70 x 25; this field is
+   70 x 30, NFL Flag's, because five yards is a fifth of the playing surface and
+   it is the single dimension that decides how much room a receiver has against
+   man coverage. That is a gameplay choice, made knowingly. Everything else
+   follows the code the game is named for. (This header claimed 25 for a long
+   while against a constant that said 30, which is how you end up trusting the
+   wrong one.)
    ============================================================================ */
 (function (global) {
   'use strict';
   var D = global.FLAGSTER.data;
 
   // Field constants (yards)
-  /* NFL FLAG field: 70 x 30 with 10-yard end zones, so 50 between the goal
-     lines. The width was 25 — five yards narrow, which is a fifth of the
-     playing surface missing and the single dimension that decides how much
-     room a receiver has to work with against man coverage. */
+  /* 70 x 30 with 10-yard end zones, so 50 between the goal lines. The width is
+     NFL Flag's rather than IFAF's 25, deliberately — see the header. */
   var FIELD_LEN = 70, FIELD_WID = 30, EZ = 10;      // end zone depth
   var GOAL_L = EZ, GOAL_R = FIELD_LEN - EZ;         // x=10 (own), x=60 (target)
   var MIDFIELD = (GOAL_L + GOAL_R) / 2;             // x=35
@@ -49,6 +55,7 @@
      so shaking someone off means genuinely getting away rather than wobbling
      out of range for a few frames. */
   var GRAB_DRAIN_S = 0.7;
+  var GANG_PULL = 0.5;                   // what a second man reaching in is worth
   /* D5 — THE SCRAMBLE, WHICH IS LATERAL, BECAUSE A3 SAYS SO.
 
      This constant sat here unreferenced for its whole life under a comment
@@ -2089,7 +2096,7 @@
     if (!c || (c.slot === 'QB' && s.ball && s.ball.inAir)) return;
 
     // closest defender within reach
-    var grabber = null, best = 1e9;
+    var grabber = null, best = 1e9, hands = 0;
     for (var i = 0; i < def.length; i++) {
       var d = def[i];
       // A defender you just shook off cannot also be holding your flag. The
@@ -2100,6 +2107,7 @@
       var range = 1.15 + d.data.pull / 400;
       if (d === s.grabbedBy) range += GRAB_HOLD_BONUS;   // already holding on
       var dd = dist(d, c);
+      if (dd < range) hands++;
       if (dd < range && dd < best) { best = dd; grabber = d; }
     }
 
@@ -2123,7 +2131,19 @@
 
     // Fill rate: the defender's pull vs the carrier's agility. A very shifty
     // carrier can hold a defender off almost indefinitely.
-    var rate = (0.55 + grabber.data.pull / 150) * (1 - clamp(c.data.agi / 320, 0, 0.55));
+    /* AND A SECOND HAND ON THE BELT COUNTS. Only the CLOSEST defender fed the
+       meter, so a carrier surrounded by three men was pulled at exactly the
+       speed of being chased by one — and gang pursuit is how this sport stops
+       anybody, there being nothing else to stop them with. Measured, the pull
+       was taking 1.35s against its own 0.6-1.0s bar and only 71% of plays where
+       a defender got a hand on ended in one, which is most of the seven yards
+       of run-after-catch the box score could not account for.
+
+       Diminishing, because two men reaching for the same belt get in each
+       other's way: the second is worth half a man and the third half of that.
+       A fourth is worth nothing, which is also true. */
+    var gang = 1 + GANG_PULL * Math.min(hands - 1, 2) * (hands > 2 ? 0.75 : 1);
+    var rate = (0.55 + grabber.data.pull / 150) * (1 - clamp(c.data.agi / 320, 0, 0.55)) * gang;
     c.grabT = (c.grabT || 0) + dt * rate;
     s.grabProgress = clamp(c.grabT / need, 0, 1);
 
@@ -2699,7 +2719,7 @@
       }
     } else {
       s.down++;
-      if (s.down > 3) return this._turnoverOnDowns();
+      if (s.down > 4) return this._turnoverOnDowns();
     }
     this._nextSnap();
   };
