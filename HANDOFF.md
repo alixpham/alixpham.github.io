@@ -1,6 +1,6 @@
 # Where this repo is — read before doing anything else
 
-**`master` is v3.25.0 and it is live at https://alixpham.github.io/.** Nothing
+**`master` is v3.25.1 and it is live at https://alixpham.github.io/.** Nothing
 is unmerged and nothing is waiting on a human. `claude/status-sx79gn` is the
 working branch and is restarted from `origin/master` after every squash merge.
 
@@ -80,12 +80,32 @@ it. They are cheap; run the ones near what you touched.
 This is the part a new container silently loses.
 
 * **The Studio Ochi FBX files and their atlas PNG.** Licensed; `.gitignore`
-  excludes `*.fbx`, `*.blend` and `tools/ochi/`. They come from a Dropbox link
-  the user supplied. The finished `flagster/lib/ochiplayer.glb` and
-  `ochibare.glb` ARE committed, so the game works without them — but nothing in
-  the character chain can be REBUILT until they are fetched again.
+  excludes `*.fbx`, `*.blend` and `tools/ochi/`. The finished
+  `flagster/lib/ochiplayer.glb` and `ochibare.glb` ARE committed, so the game
+  works without them — but nothing in the character chain can be REBUILT until
+  they are fetched again.
 
-  **Two things about that pack are worth not rediscovering.** It reproduces the
+  **Getting them back is one command:**
+
+  ```sh
+  export FLAGSTER_OCHI_URL='<the Dropbox link, with its rlkey>'
+  npm run ochi:fetch          # -> 42 files into tools/ochi/, all gitignored
+  ```
+
+  It is **this** Dropbox folder, so nobody has to describe it from memory:
+
+  ```
+  https://www.dropbox.com/scl/fo/v3ywmu88tkucol936m52s/AM-8GX07Xxm0CCMC32Pgnj0
+  ```
+
+  …plus the `?rlkey=…` the owner supplies. **That key is deliberately not in
+  this repo, because this repo is public** — it is a GitHub Pages site, so a
+  complete share link committed here is a working download of licensed artwork
+  for anyone who reads it, which is the very thing the `.gitignore` entries
+  exist to prevent. Keep it in the environment config beside `FLAGSTER_CHROME`.
+  `npm run ochi:fetch` with nothing set prints the folder and asks for the key.
+
+  **Two things about the pack are worth not rediscovering.** It reproduces the
   shipped character *byte for byte* — `build-ochi-player.mjs` remakes
   `ochiplayer.glb` at the same 856,816 bytes and the same sha256 — so the chain
   is safe to re-run. And the `--fbx` must be one of the six `*_ANIM.fbx`: the
