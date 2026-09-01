@@ -52,6 +52,56 @@ at pursuit and leverage again rather than at another rule.
 
 ---
 
+## v3.25.0 — the bought pack, auditioned and declined whole
+
+The Studio Ochi pack ships six hand-authored clips on this character's own
+metarig. `Run Fast` was measured and declined in v3.19.0. The other five have
+now been measured too, and **all five are declined** — each for its own reason,
+none of them a matter of taste.
+
+`npm run audition` is the tool that says so, and it exists because this
+measurement had been rebuilt from scratch in a scratchpad twice and lost with
+the container both times.
+
+| clip | sec | peak hand m/s | body travel | ends | verdict |
+| --- | --- | --- | --- | --- | --- |
+| Catch and Fall | 4.13 | 6.28 | 1.19m | 1.46m off | goes to ground and stays |
+| Hold | 4.13 | 1.77 | 0.00m | started | placekick holder |
+| Kick | 4.13 | 2.57 | 0.00m | started | no kicking in this sport |
+| Kickoff | 4.13 | 1.12 | 0.17m | 0.19m off | no kicking in this sport |
+| Run Fast | 4.13 | 7.50 | 0.02m | started | 5.43 m/s — slower than our Run |
+| Throw 01 | 4.13 | 5.93 | 1.12m | 1.13m off | 5.93 against our 19.69 |
+
+**Kick, Kickoff and Hold are placekicking.** `engine.js` says it out loud —
+"there is no kicking of any kind in flag football" — and `Hold` is the holder's
+crouch, hand parked at 0.14m from t=1.57 to t=2.75. There is nothing in this
+game for any of them to be.
+
+**Catch and Fall is a fall.** It catches at 2.09m, then the head drops to 0.24m
+and stays down for the last two seconds. This game's `Catch` has to leave a
+receiver on his feet and running; a clip that ends prone cannot be it.
+
+**And Throw 01 is a third of the throw it would replace.** Peak hand speed
+**5.93 m/s against this game's authored Throw at 19.69** — and a real
+quarterback's hand is around 20 m/s at release, so it is the authored clip that
+is right. It also strides **1.12m** forward, where the passer is set and throws
+in place, and the engine's contract is a 1.10s clip releasing at 34% of it.
+
+**Sample finely or the number flatters the clip.** At ten samples a second that
+throw reads 4.45 m/s; at four hundred it reads 5.93. A coarse pass understates
+the very thing being judged by a third, which is how a slow clip gets adopted.
+
+### What the pack actually bought
+
+Not clips — the CHAIN. The FBX reproduces the shipped character byte for byte,
+which is what makes the whole rebuild path safe to re-run, and that is worth
+having on its own. But **every one of the six measured slower than the clip it
+would have replaced.** A bought pack is a stylised set; these clips are
+deliberately athletic. That is a finding, not a failure, and it is now written
+down so nobody re-fetches a licensed asset to learn it a third time.
+
+---
+
 ## v3.24.0 — the fourth down, and the flag pull that was hiding it
 
 **The game plays IFAF everywhere except two places.** `data.js` says "5v5 IFAF

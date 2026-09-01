@@ -1,6 +1,6 @@
 # Where this repo is — read before doing anything else
 
-**`master` is v3.24.0 and it is live at https://alixpham.github.io/.** Nothing
+**`master` is v3.25.0 and it is live at https://alixpham.github.io/.** Nothing
 is unmerged and nothing is waiting on a human. `claude/status-sx79gn` is the
 working branch and is restarted from `origin/master` after every squash merge.
 
@@ -103,19 +103,12 @@ This is the part a new container silently loses.
 
 ## 4. What is open
 
-1. **Evaluate the five unmeasured Studio Ochi clips.** Catch and Fall, Hold,
-   Kick, Kickoff, Throw 01. Each is a 4.125s *performance*, not a cycle, so each
-   needs a segment pulled with `tools/mocap/ochi-cycle.mjs` and measured against
-   the authored clip it would replace. `Run Fast` is the one that has been done:
-   5.43 m/s, slower than this game's own Run, measured and declined. Needs the
-   licensed FBX re-fetched first — see section 3.
-
-2. **Presentation (E3), the only phase never finished.** Benches, coaches,
+1. **Presentation (E3), the only phase never finished.** Benches, coaches,
    officials, a chain crew, a crowd that is not static. Nothing to do with
    correctness — but the simulation is now more finished than the stadium
-   around it.
+   around it. **This is the biggest thing a player would actually notice.**
 
-3. **Three targets that cannot be sourced.** `yardsPerRun`,
+2. **Three targets that cannot be sourced.** `yardsPerRun`,
    `gainsOfThreeOrFewer` and `playsPerGame` have nothing behind them, plus a
    conversion rate guessed at 60-75%. They were searched for in v3.24.0 and
    **there is no public statistical database for either code** — only rulebooks
@@ -123,6 +116,13 @@ This is the part a new container silently loses.
    way until a real number turns up. One target in that same set,
    `touchdownsPerPlay: '~5-8%'`, was chased for eleven releases and turned out
    to be half of reality.
+
+**The Studio Ochi clips are DONE and the answer was no.** All six were
+auditioned (`npm run audition`) and declined — Kick, Kickoff and Hold are
+placekicking, Catch and Fall ends prone, and Throw 01 and Run Fast are both
+about a third slower than the clips they would replace. Do not re-fetch the
+licensed pack to re-ask this; see REALISM.md v3.25.0. What the pack IS still
+needed for is rebuilding the character, per section 3.
 
 **The metric to steer by is combined points per game**, because scorelines are
 the one thing about this sport that IS public: 64.5 across twenty IFAF World
