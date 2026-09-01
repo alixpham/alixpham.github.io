@@ -52,6 +52,9 @@ tools/glb-graft-head.mjs      cuts a helmet off one character and grafts
                               another's head, hair and beards on; --report
                               prints the neck seam as a number
 tools/mocap/ochi-clips.mjs    the game's own 22 clips -> the Ochi metarig
+tools/clip-audition.mjs       is a bought clip worth adopting? peak hand speed,
+                              root travel, and whether it ends where it began,
+                              for a whole pack in one table
 tools/mocap/ochi-cycle.mjs    ONE cycle out of a bought 4-second performance:
                               period by whole-pose autocorrelation (harmonics
                               score better, so the shortest good lag wins),
@@ -312,6 +315,20 @@ VERSION, DEPLOY.md      version <-> commit records (git tags can't be pushed
   properly, and it is not reliable — matched against Sprint it gives a clean
   5.43 m/s and 18% spread, matched against Run it lands half a cycle out and
   measures 2.64 m/s at 255%.
+- **THE WHOLE STUDIO OCHI PACK WAS AUDITIONED AND DECLINED, EACH FOR ITS OWN
+  REASON.** `npm run audition` puts a pack in one table — peak hand speed, how
+  far the body travels, whether it ends where it began. **Kick, Kickoff and Hold
+  are placekicking**, and `engine.js` says out loud that "there is no kicking of
+  any kind in flag football"; Hold is the holder's crouch, hand at 0.14m.
+  **Catch and Fall** catches at 2.09m and then goes to ground and stays there —
+  its head ends at 0.24m, 1.46m from where it started — and this game's Catch has
+  to leave a receiver running. **Throw 01 peaks at 5.93 m/s at the hand against
+  this game's authored Throw at 19.69**, which is roughly where a real
+  quarterback is, and it strides 1.12m forward where the passer is set. Sample
+  finely or the number flatters it: at 10 samples a second that throw reads 4.45
+  m/s and at 400 it reads 5.93. **A bought pack is a stylised set; these clips
+  are deliberately athletic, and every one of the six measured slower than the
+  clip it would have replaced.**
 - **AND `Run Fast` IS NOT A SPRINT: 5.43 m/s, measured.** That is slower than
   this game's own Run (6.02) and a long way under its Sprint (8.83), so it
   cannot be the top rung and there is no rung it improves. Studio Ochi animated
