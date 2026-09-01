@@ -1,6 +1,6 @@
 # Where this repo is — read before doing anything else
 
-**`master` is v3.23.0 and it is live at https://alixpham.github.io/.** Nothing
+**`master` is v3.24.0 and it is live at https://alixpham.github.io/.** Nothing
 is unmerged and nothing is waiting on a human. `claude/status-sx79gn` is the
 working branch and is restarted from `origin/master` after every squash merge.
 
@@ -105,7 +105,7 @@ This is the part a new container silently loses.
 
 Ordered, with the dependency that matters called out.
 
-1. **Source or retire the last unsourced targets.** `simstats` still carries
+1. **Evaluate the five unmeasured Studio Ochi clips.** `simstats` still carries
    `yardsPerRun: '~4-5'`, `gainsOfThreeOrFewer: '~35%'` and
    `playsPerGame: '45-60'` with nothing behind them, plus a conversion rate
    guessed at 60-75%. One target in that same set —
